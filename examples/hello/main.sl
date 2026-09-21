@@ -4,7 +4,7 @@
 // and a wildcard, middleware that can end a request, an after hook that
 // runs either way, and failures that all look the same on the wire.
 import "http";
-import "zokor";
+import "../../src" as zokor;
 
 gc struct App {
     name: str,

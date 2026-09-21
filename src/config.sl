@@ -26,7 +26,7 @@ import "fs";
 import "os";
 import "proc";
 import "internal/envfile";
-import "internal/validate" as v;
+import "internal/validate" as rules;
 
 pub gc struct Problem {
     key: str,
@@ -141,7 +141,7 @@ pub fn bool_or(c: Config, key: str, fallback: bool) -> bool {
     guard let s = get(c, key) else {
         return fallback;
     }
-    let l = v.lower(s);
+    let l = rules.lower(s);
     if l == "1" || l == "true" || l == "yes" || l == "on" {
         return true;
     }
@@ -156,7 +156,7 @@ pub fn duration_or(c: Config, key: str, fallback_ns: int) -> int {
     guard let s = get(c, key) else {
         return fallback_ns;
     }
-    return v.duration_ns(s, fallback_ns);
+    return rules.duration_ns(s, fallback_ns);
 }
 
 // ---------------------------------------------------------------- //
@@ -166,7 +166,7 @@ pub fn duration_or(c: Config, key: str, fallback_ns: int) -> int {
 // A key whose name says it holds a secret is never echoed back in a
 // problem report, because those reports get logged.
 fn mask(key: str, value: str) -> str {
-    let k = v.lower(key);
+    let k = rules.lower(key);
     let secret = contains(k, "secret") || contains(k, "password") ||
                  contains(k, "token") || contains(k, "key") ||
                  contains(k, "dsn") || contains(k, "url") ||
@@ -226,7 +226,7 @@ pub fn require(c: Config, key: str) -> str {
         record(c, key, "", "is required but not set");
         return "";
     }
-    return checked(c, key, v.is_string(s), s);
+    return checked(c, key, rules.is_string(s), s);
 }
 
 pub fn require_int(c: Config, key: str) -> int {
@@ -234,7 +234,7 @@ pub fn require_int(c: Config, key: str) -> int {
         record(c, key, "", "is required but not set");
         return 0;
     }
-    checked(c, key, v.is_int(s), s);
+    checked(c, key, rules.is_int(s), s);
     return to_int(s) ?? 0;
 }
 
@@ -243,7 +243,7 @@ pub fn require_range(c: Config, key: str, lo: int, hi: int) -> int {
         record(c, key, "", "is required but not set");
         return lo;
     }
-    checked(c, key, v.in_range(s, lo, hi), s);
+    checked(c, key, rules.in_range(s, lo, hi), s);
     return to_int(s) ?? lo;
 }
 
@@ -252,7 +252,7 @@ pub fn require_port(c: Config, key: str) -> int {
         record(c, key, "", "is required but not set");
         return 0;
     }
-    checked(c, key, v.is_port(s), s);
+    checked(c, key, rules.is_port(s), s);
     return to_int(s) ?? 0;
 }
 
@@ -261,7 +261,7 @@ pub fn require_bool(c: Config, key: str) -> bool {
         record(c, key, "", "is required but not set");
         return false;
     }
-    checked(c, key, v.is_bool(s), s);
+    checked(c, key, rules.is_bool(s), s);
     return bool_or(c, key, false);
 }
 
@@ -270,7 +270,7 @@ pub fn require_float(c: Config, key: str) -> float {
         record(c, key, "", "is required but not set");
         return 0.0;
     }
-    checked(c, key, v.is_float(s), s);
+    checked(c, key, rules.is_float(s), s);
     return to_float(s) ?? 0.0;
 }
 
@@ -279,7 +279,7 @@ pub fn require_email(c: Config, key: str) -> str {
         record(c, key, "", "is required but not set");
         return "";
     }
-    return checked(c, key, v.is_email(s), s);
+    return checked(c, key, rules.is_email(s), s);
 }
 
 pub fn require_url(c: Config, key: str) -> str {
@@ -287,7 +287,7 @@ pub fn require_url(c: Config, key: str) -> str {
         record(c, key, "", "is required but not set");
         return "";
     }
-    return checked(c, key, v.is_url(s), s);
+    return checked(c, key, rules.is_url(s), s);
 }
 
 pub fn require_dsn(c: Config, key: str) -> str {
@@ -295,7 +295,7 @@ pub fn require_dsn(c: Config, key: str) -> str {
         record(c, key, "", "is required but not set");
         return "";
     }
-    return checked(c, key, v.is_dsn(s), s);
+    return checked(c, key, rules.is_dsn(s), s);
 }
 
 pub fn require_host(c: Config, key: str) -> str {
@@ -303,7 +303,7 @@ pub fn require_host(c: Config, key: str) -> str {
         record(c, key, "", "is required but not set");
         return "";
     }
-    return checked(c, key, v.is_host(s), s);
+    return checked(c, key, rules.is_host(s), s);
 }
 
 pub fn require_ipv4(c: Config, key: str) -> str {
@@ -311,7 +311,7 @@ pub fn require_ipv4(c: Config, key: str) -> str {
         record(c, key, "", "is required but not set");
         return "";
     }
-    return checked(c, key, v.is_ipv4(s), s);
+    return checked(c, key, rules.is_ipv4(s), s);
 }
 
 pub fn require_uuid(c: Config, key: str) -> str {
@@ -319,7 +319,7 @@ pub fn require_uuid(c: Config, key: str) -> str {
         record(c, key, "", "is required but not set");
         return "";
     }
-    return checked(c, key, v.is_uuid(s), s);
+    return checked(c, key, rules.is_uuid(s), s);
 }
 
 pub fn require_one_of(c: Config, key: str, allowed: [str]) -> str {
@@ -327,7 +327,7 @@ pub fn require_one_of(c: Config, key: str, allowed: [str]) -> str {
         record(c, key, "", "is required but not set");
         return "";
     }
-    return checked(c, key, v.is_one_of(s, allowed), s);
+    return checked(c, key, rules.is_one_of(s, allowed), s);
 }
 
 pub fn require_duration(c: Config, key: str) -> int {
@@ -335,8 +335,8 @@ pub fn require_duration(c: Config, key: str) -> int {
         record(c, key, "", "is required but not set");
         return 0;
     }
-    checked(c, key, v.is_duration(s), s);
-    return v.duration_ns(s, 0);
+    checked(c, key, rules.is_duration(s), s);
+    return rules.duration_ns(s, 0);
 }
 
 pub fn require_min_len(c: Config, key: str, n: int) -> str {
@@ -344,7 +344,7 @@ pub fn require_min_len(c: Config, key: str, n: int) -> str {
         record(c, key, "", "is required but not set");
         return "";
     }
-    return checked(c, key, v.min_len(s, n), s);
+    return checked(c, key, rules.min_len(s, n), s);
 }
 
 pub fn require_max_len(c: Config, key: str, n: int) -> str {
@@ -352,7 +352,7 @@ pub fn require_max_len(c: Config, key: str, n: int) -> str {
         record(c, key, "", "is required but not set");
         return "";
     }
-    return checked(c, key, v.max_len(s, n), s);
+    return checked(c, key, rules.max_len(s, n), s);
 }
 
 // An optional value that still has to be valid WHEN it is set: the
@@ -362,14 +362,14 @@ pub fn optional_one_of(c: Config, key: str, allowed: [str],
     guard let s = get(c, key) else {
         return fallback;
     }
-    return checked(c, key, v.is_one_of(s, allowed), s);
+    return checked(c, key, rules.is_one_of(s, allowed), s);
 }
 
 pub fn optional_url(c: Config, key: str, fallback: str) -> str {
     guard let s = get(c, key) else {
         return fallback;
     }
-    return checked(c, key, v.is_url(s), s);
+    return checked(c, key, rules.is_url(s), s);
 }
 
 // ---------------------------------------------------------------- //
