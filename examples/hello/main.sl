@@ -6,6 +6,7 @@
 // slang -- see the README). When `listen_and_serve` lands, that second
 // section is deleted and nothing in the first one changes.
 import "http";
+import "json";
 import "../../src" as zokor;
 
 // ---------------------------------------------------------------- //
@@ -37,13 +38,66 @@ fn show_org(c: zokor.Ctx[App]) -> http.Response {
     return zokor.ok_json("{\"org\":\"7\"}");
 }
 
+// A DTO: a declared shape. slang's own json.decode fills it, a missing
+// field is an error rather than a silent zero, and `decode_failed`
+// puts the field it names into the standard envelope.
+gc struct CreateOrg {
+    name: str,
+    plan: str,
+    seats: i32,
+    website: opt[str],
+}
+
 fn create_org(c: zokor.Ctx[App]) -> http.Response {
-    if len(c.body_str()) == 0 {
-        let fields = [zokor.field("name", "must not be empty")];
-        return zokor.respond_fields(c.state.errors, "validation_failed",
-                                    fields, c.request_id);
+    // the wire is camelCase, the struct is snake_case: no tags needed
+    let r: result[CreateOrg, str] = json.decode(zokor.snake_keys(c.body_str()));
+    guard let dto = r else let e = err_of(r) {
+        return zokor.decode_failed(c.state.errors, e, c.request_id);
     }
-    return zokor.created("{\"created\":true}", "/orgs/7");
+
+    // types are checked by the decoder; VALUES are checked here, and
+    // every problem is reported at once
+    let v = zokor.checker();
+    if len(dto.name) == 0 {
+        v.note("name", "must not be empty");
+    }
+    if dto.seats < 1 || dto.seats > 500 {
+        v.note("seats", "must be between 1 and 500");
+    }
+    if dto.plan != "free" && dto.plan != "pro" {
+        v.note("plan", "must be one of: free, pro");
+    }
+    if v.failed() {
+        return zokor.respond_fields(c.state.errors, "validation_failed",
+                                    v.fields, c.request_id);
+    }
+
+    let body = zokor.jobj()
+        .set_str("id", "org_7")
+        .set_str("name", dto.name)
+        .set_str("plan", dto.plan)
+        .set_int("seats", dto.seats as int)
+        .set_opt_str("website", dto.website);
+    return zokor.created(zokor.camel_keys(body.render()), "/orgs/org_7");
+}
+
+// A shape nobody declared: a webhook whose fields belong to somebody
+// else. `json_body` walks it without a struct.
+fn webhook(c: zokor.Ctx[App]) -> http.Response {
+    let r = c.json_body();
+    guard let body = r else let e = err_of(r) {
+        return zokor.respond_with(c.state.errors, e.code, e.detail,
+                                  c.request_id);
+    }
+    let event = body.get("type").str_or("unknown");
+    let city = body.path("data.customer.address.city").str_or("nowhere");
+    let first_item = body.path("data.items.0.sku").str_or("none");
+    return zokor.ok_json(zokor.jobj()
+        .set_str("event", event)
+        .set_str("city", city)
+        .set_str("first_item", first_item)
+        .set_int("item_count", body.path("data.items").size())
+        .render());
 }
 
 fn asset(c: zokor.Ctx[App]) -> http.Response {
@@ -119,6 +173,7 @@ r.get("/orgs/:id", show_org);
 r.post("/orgs", create_org);
 r.get("/files/*rest", asset);
 r.post("/avatars", upload_avatar);
+r.post("/webhooks/stripe", webhook);
 r.before(require_token);
 r.after(count);
 
@@ -135,6 +190,9 @@ fn req(method: str, p: str, token: str, body: str) -> http.Request {
     let h: map[str]str = {};
     if len(token) > 0 {
         h["authorization"] = "Bearer " + token;
+    }
+    if len(body) > 0 {
+        h["content-type"] = "application/json";
     }
     return http.Request {
         method: method,
@@ -200,7 +258,20 @@ show("GET    /orgs/7", r.serve(req("GET", "/orgs/7", "s3cret", "")));
 show("GET    /orgs/9", r.serve(req("GET", "/orgs/9", "s3cret", "")));
 show("GET    /orgs/7 (no token)", r.serve(req("GET", "/orgs/7", "", "")));
 show("POST   /orgs (empty body)", r.serve(req("POST", "/orgs", "s3cret", "")));
-show("POST   /orgs", r.serve(req("POST", "/orgs", "s3cret", "{\"name\":\"acme\"}")));
+show("POST   /orgs (bad values)",
+     r.serve(req("POST", "/orgs", "s3cret",
+                 "{\"name\":\"\",\"plan\":\"gold\",\"seats\":0}")));
+show("POST   /orgs (wrong type)",
+     r.serve(req("POST", "/orgs", "s3cret",
+                 "{\"name\":\"acme\",\"plan\":\"pro\",\"seats\":\"many\"}")));
+show("POST   /orgs (missing field)",
+     r.serve(req("POST", "/orgs", "s3cret", "{\"name\":\"acme\"}")));
+show("POST   /orgs",
+     r.serve(req("POST", "/orgs", "s3cret",
+                 "{\"name\":\"acme\",\"plan\":\"pro\",\"seats\":12,\"website\":\"https://acme.test\"}")));
+show("POST   /webhooks/stripe",
+     r.serve(req("POST", "/webhooks/stripe", "s3cret",
+                 "{\"type\":\"invoice.paid\",\"data\":{\"customer\":{\"address\":{\"city\":\"Lagos\"}},\"items\":[{\"sku\":\"A1\"},{\"sku\":\"B2\"}]}}")));
 show("POST   /avatars", r.serve(multipart_req("s3cret")));
 show("POST   /avatars (svg)", r.serve(bad_upload_req("s3cret")));
 show("GET    /files/a/b.txt", r.serve(req("GET", "/files/a/b.txt", "", "")));
