@@ -32,6 +32,11 @@ to enforce, so the framework follows them first.
   first failure.
 - **No regular expressions in a request path.** Routing is segment
   comparison against patterns split at registration.
+- **Nothing from a client is trusted as a name.** A filename is one
+  path segment, sanitised, with the original kept only for reporting.
+- **Every limit is the caller's.** A framework constant that a service
+  cannot change is a service that will be taken down by a body size
+  somebody else chose.
 - **No per-request allocation that can be avoided.** A literal segment
   costs a comparison; a near-miss route costs no map; a path with no
   query costs no copy.
@@ -40,9 +45,10 @@ to enforce, so the framework follows them first.
 ## Naming
 
 - Files in a package share ONE namespace, so an import alias and a
-  parameter cannot use the same name (`as rules`, not `as v`, when any
-  file has a `v`). A collision resolves to the package and the error
-  names a member you never wrote.
+  parameter cannot use the same name, and two files cannot define the
+  same helper. Aliases here are `valid`, `path`, `envfile`, `multipart`;
+  a collision resolves to the package and the error names a member you
+  never wrote.
 
 ## Style
 

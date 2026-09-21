@@ -31,6 +31,10 @@ fn h_state(c: Ctx[TestState]) -> http.Response {
     return text(200, c.state.name + ":" + to_str(c.state.hits));
 }
 
+fn h_method(c: Ctx[TestState]) -> http.Response {
+    return text(200, to_str(c.method()) + "|" + c.method_str());
+}
+
 fn h_created(c: Ctx[TestState]) -> http.Response {
     return created("{\"id\":\"new\"}", "/things/new");
 }
@@ -94,11 +98,12 @@ fn test_every_http_method_routes() {
     r.options("/m", h_ok);
     r.trace("/m", h_ok);
     r.connect("/m", h_ok);
-    let methods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE",
-                   "OPTIONS", "TRACE", "CONNECT"];
+    let methods = [Method.GET, Method.HEAD, Method.POST, Method.PUT,
+                   Method.PATCH, Method.DELETE, Method.OPTIONS,
+                   Method.TRACE, Method.CONNECT];
     let i = 0;
     while i < len(methods) {
-        let resp = r.serve(req(methods[i], "/m"));
+        let resp = r.serve(req(to_str(methods[i]), "/m"));
         assert(resp.status == 200);
         i = i + 1;
     }
@@ -107,7 +112,7 @@ fn test_every_http_method_routes() {
 
 fn test_any_registers_several() {
     let r = new_test_router();
-    r.any(["GET", "POST"], "/multi", h_ok);
+    r.any([Method.GET, Method.POST], "/multi", h_ok);
     assert(r.serve(req("GET", "/multi")).status == 200);
     assert(r.serve(req("POST", "/multi")).status == 200);
     assert(r.serve(req("DELETE", "/multi")).status == 405);
@@ -132,6 +137,19 @@ fn test_query_is_not_part_of_the_route() {
     let resp = r.serve(req("GET", "/s?q=slang&page=3"));
     assert(to_str(resp.body) == "slang|3");
     assert(to_str(r.serve(req("GET", "/s")).body) == "|1");
+}
+
+fn test_unknown_verb_is_not_implemented() {
+    let r = new_test_router();
+    r.get("/thing", h_ok);
+    let resp = r.serve(req("BREW", "/thing"));
+    assert(resp.status == 501);
+}
+
+fn test_method_reaches_the_handler_as_a_value() {
+    let r = new_test_router();
+    r.post("/echo", h_method);
+    assert(to_str(r.serve(req("POST", "/echo")).body) == "POST|POST");
 }
 
 fn test_405_carries_allow_and_404_does_not() {
