@@ -116,3 +116,51 @@ fn contains_bytes(hay: str, needle: str) -> bool {
     }
     return false;
 }
+
+// The shape is a default, not a rule the framework imposes: a service
+// with an existing contract installs its own renderer and keeps the
+// codes, the statuses and the registry.
+fn rfc7807(v: ErrorView) -> http.Response {
+    let body = "{\"type\":\"about:blank\",\"title\":" + quote(v.code) +
+               ",\"detail\":" + quote(v.message) +
+               ",\"status\":" + to_str(v.status) + "}";
+    let h: map[str]str = {};
+    h["content-type"] = "application/problem+json";
+    return http.Response {
+        status: v.status,
+        status_text: status_text(v.status),
+        headers: h,
+        body: to_bytes(body)
+    };
+}
+
+fn test_default_shape_is_replaceable() {
+    let reg = new_registry();
+    set_renderer(reg, rfc7807);
+    let r = respond(reg, "not_found", "req-1");
+    assert(r.status == 404);
+    assert(r.headers["content-type"] == "application/problem+json");
+    assert(body_of(r) ==
+        "{\"type\":\"about:blank\",\"title\":\"not_found\",\"detail\":\"no such resource\",\"status\":404}");
+}
+
+fn test_a_custom_renderer_still_sees_codes_and_fields() {
+    let reg = new_registry();
+    register(reg, "org.not_found", 404, "no such organisation");
+    set_renderer(reg, rfc7807);
+    let r = respond_with(reg, "org.not_found", "org 'acme' is gone", "");
+    assert(r.status == 404);
+    assert(body_of(r) ==
+        "{\"type\":\"about:blank\",\"title\":\"org.not_found\",\"detail\":\"org 'acme' is gone\",\"status\":404}");
+    let fields = [field("email", "must be an email address")];
+    let v = respond_fields(reg, "validation_failed", fields, "");
+    assert(v.status == 422);
+}
+
+fn test_registry_starts_on_the_default_renderer() {
+    let reg = new_registry();
+    let r = respond(reg, "internal", "");
+    assert(r.headers["content-type"] == "application/json; charset=utf-8");
+    assert(body_of(r) ==
+        "{\"error\":{\"code\":\"internal\",\"message\":\"something went wrong on our side\",\"status\":500}}");
+}

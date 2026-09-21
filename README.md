@@ -121,34 +121,68 @@ zokor.register(reg, "rate_limited", 429, "slow down");
 A code nobody registered answers **500 and names itself** — the mistake
 belongs in your logs, not hidden behind a generic message.
 
+### The shape is a default
+
+That envelope is what you get until you say otherwise. A service with an
+existing contract — a different key, `application/problem+json`, whatever
+its clients already parse — installs its own renderer and keeps the
+registry, the codes and the statuses:
+
+```slang
+fn problem_json(v: zokor.ErrorView) -> http.Response {
+    let body = "{\"type\":\"about:blank\",\"title\":" + zokor.quote(v.code) +
+               ",\"detail\":" + zokor.quote(v.message) +
+               ",\"status\":" + to_str(v.status) + "}";
+    return zokor.bytes_of(v.status, "application/problem+json", to_bytes(body));
+}
+
+zokor.set_renderer(reg, problem_json);
+```
+
+`ErrorView` carries the code, the message, the status, the request id and
+the field errors — a struct, not a parameter list, so a later addition
+does not break renderers people have already written. One renderer per
+registry: every failure in a service still comes out the same way, which
+is the point of having a registry at all.
+
 ## Layout
 
 ```
-zokor/            the package your service imports
+src/              the package your service imports
   router.sl       Router[S], Route[S], Ctx[S]
-  errors.sl       Registry, Code, the envelope
+  errors.sl       Registry, Code, ErrorView, the envelope
   config.sl       Config, load_config, require_*
   respond.sl      success responses
   internal/
     path/         split, query parsing, percent-decoding
     envfile/      .env parsing
     validate/     the value rules
-  examples/hello/ a service you can run
+examples/hello/   a service you can run
+docs/
 ```
 
-The public API is the repository root because that is what a slang `pkg`
-pin resolves to. `internal/` holds the pure parts, which is where the
-tests are cheapest and the hot paths are easiest to keep honest.
+`internal/` holds the pure parts: no sockets, no clock, no environment.
+That is where the tests are cheapest and the hot paths easiest to keep
+honest.
+
+## Requirements
+
+slang with **generic structs and methods** — on `dev`, not yet in a
+release. `pkg ... dir src` needs the sub-directory pin, also on `dev`.
 
 ## Install
 
 ```
-pkg zokor git https://github.com/dolphlabs/zokor tag v0.1.0
+pkg zokor git https://github.com/dolphlabs/zokor tag v0.1.0 dir src
 ```
 
 ```
 slangc get
 ```
+
+`dir src` points the pin at the package inside the repository, so the
+repository can hold its examples, docs and tests without shipping them
+into your build.
 
 ## Tests
 
