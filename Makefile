@@ -9,6 +9,7 @@ test:
 	$(SLANGC) test src/internal/path
 	$(SLANGC) test src/internal/envfile
 	$(SLANGC) test src/internal/validate
+	$(SLANGC) test src/internal/multipart
 
 example:
 	$(SLANGC) examples/hello/main.sl --run

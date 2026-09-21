@@ -34,11 +34,11 @@ fn test_every_problem_is_reported_at_once() {
     assert(!is_valid(c));
     let r = check(c);
     guard let _ok = r else let e = err_of(r) {
-        assert(contains_str(e, "SERVICE_NAME is required but not set"));
-        assert(contains_str(e, "PORT must be a TCP port (1-65535)"));
-        assert(contains_str(e, "DATABASE_URL is required but not set"));
-        assert(contains_str(e, "ALERT_FROM is required but not set"));
-        assert(contains_str(e, "MODE must be one of: dev, prod"));
+        assert(says(e, "SERVICE_NAME is required but not set"));
+        assert(says(e, "PORT must be a TCP port (1-65535)"));
+        assert(says(e, "DATABASE_URL is required but not set"));
+        assert(says(e, "ALERT_FROM is required but not set"));
+        assert(says(e, "MODE must be one of: dev, prod"));
         return;
     }
     panic("expected the configuration to be rejected");
@@ -63,8 +63,8 @@ fn test_secrets_are_masked_in_the_report() {
     require(c, "SERVICE_NAME");
     let r = check(c);
     guard let _ok = r else let e = err_of(r) {
-        assert(!contains_str(e, "not-a-dsn"));
-        assert(contains_str(e, "characters, hidden"));
+        assert(!says(e, "not-a-dsn"));
+        assert(says(e, "characters, hidden"));
         return;
     }
     panic("expected problems");
@@ -86,7 +86,7 @@ fn test_missing_file_is_not_an_error() {
     assert(str_or(c, "ANYTHING", "d") == "d");
 }
 
-fn contains_str(hay: str, needle: str) -> bool {
+fn says(hay: str, needle: str) -> bool {
     let a = to_bytes(hay);
     let b = to_bytes(needle);
     let n = len(a);
