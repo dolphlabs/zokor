@@ -503,6 +503,13 @@ impl Ctx[S] {
         return self.header("content-type");
     }
 
+    // The body as a JSON value, for a shape you have not declared.
+    // A declared one goes through slang's `json.decode` with your
+    // struct as the annotation, and `decode_failed` renders its error.
+    pub fn json_body(self: Ctx[S]) -> result[Json, FormError] {
+        return parse_body(self.content_type(), self.req.body);
+    }
+
     // The multipart form this request carries, under the caller's
     // rules. The failure names a registered code, so a handler reports
     // it the same way it reports anything else.

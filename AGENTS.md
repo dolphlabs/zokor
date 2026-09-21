@@ -29,7 +29,10 @@ to enforce, so the framework follows them first.
 - **Configuration is read once.** Nothing under `internal/` or in a
   handler reads the environment. `Config` is built at startup and passed.
 - **Every problem at once.** Validation collects; it does not stop at the
-  first failure.
+  first failure. That holds for configuration, for uploads and for
+  request bodies.
+- **A failure names its field.** A client should never have to guess
+  which part of its body was wrong.
 - **No regular expressions in a request path.** Routing is segment
   comparison against patterns split at registration.
 - **Protocol code is sans-io.** A parser takes bytes and returns
