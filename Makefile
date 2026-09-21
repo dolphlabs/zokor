@@ -10,9 +10,14 @@ test:
 	$(SLANGC) test src/internal/envfile
 	$(SLANGC) test src/internal/validate
 	$(SLANGC) test src/internal/multipart
+	$(SLANGC) test src/internal/ws
+	$(SLANGC) test src/internal/sio
 
 example:
 	$(SLANGC) examples/hello/main.sl --run
 
+example-chat:
+	$(SLANGC) examples/chat/main.sl --run
+
 # Everything CI runs.
-check: test example
+check: test example example-chat
