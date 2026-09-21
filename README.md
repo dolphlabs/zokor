@@ -53,6 +53,7 @@ declare, and every handler receives it.
 | `Registry`, `respond*` | every HTTP failure code, one JSON envelope, field-level validation errors |
 | `load_config`, `require_*` | `.env` then the environment, per-variable validation, **every** problem reported at once |
 | `parse_form`, `c.upload` | multipart/form-data: limits, type and extension allowlists, filenames made safe |
+| `upgrade`, `receive`, `sio_*` | WebSocket (RFC 6455) and Socket.IO, as a state machine you feed bytes |
 | `ok_json`, `created`, … | success responses with the headers they should carry |
 
 ## Configuration
@@ -203,6 +204,86 @@ sent with no `Content-Type` is refused unless you turn
 A body arrives whole, so this does not stream: set `max_total_bytes`
 for what a service can afford to hold.
 
+## WebSocket
+
+A connection is a **state machine, not a socket**: you hand it the bytes
+that arrived and it hands back whole messages and the bytes to send.
+That is why it is fully testable without a network, and why the same
+code serves a raw WebSocket client and a socket.io one.
+
+```slang
+let r = zokor.upgrade(c.req, zokor.default_ws());   // the 101
+guard let resp = r else let e = err_of(r) {
+    return zokor.respond_with(c.state.errors, "bad_request", e, c.request_id);
+}
+
+let conn = zokor.new_conn(zokor.default_ws());
+// ... once the connection is yours, per chunk of bytes read:
+let got = zokor.receive(conn, chunk);
+guard let messages = got else let why = err_of(got) {
+    write(zokor.close_because(conn, why));          // then hang up
+    return;
+}
+for m in messages {
+    if m.kind == zokor.Incoming.Text {
+        write(zokor.text_frame("you said: " + m.text));
+    }
+}
+write(zokor.pending(conn));   // pongs and close echoes, taken LAST:
+                              // handling a message can add to them
+```
+
+Ping/pong and the closing handshake are answered by the connection
+itself, because they are protocol rather than application: a service
+that only looks at `Text` messages still keeps its clients alive.
+
+**Refused rather than guessed at**, each closing the connection with
+1002: an unmasked client frame, a reserved bit or opcode, a fragmented
+or oversized control frame, a length that is not minimally encoded, a
+continuation with nothing to continue, a new message starting before
+the last finished, a text message that is not valid UTF-8, an invalid
+close code, and anything over `max_frame_bytes` / `max_message_bytes`.
+
+### Socket.IO
+
+socket.io clients speak Engine.IO inside WebSocket text frames. zokor
+speaks that:
+
+```slang
+write(zokor.sio_open(conn, session_id, zokor.default_sio()));
+
+let ev = zokor.sio_receive(conn, m);
+guard let e = ev else { return; }
+if e.kind == zokor.SioKind.Connect {
+    write(zokor.sio_connect_ok(conn, e.namespace));
+}
+if e.kind == zokor.SioKind.Event && e.name == "chat message" {
+    write(zokor.sio_emit("/", "chat message", e.args_json));
+    if e.ack >= 0 {
+        write(zokor.sio_ack(e.namespace, e.ack, "[\"got it\"]"));
+    }
+}
+```
+
+Namespaces, acknowledgements and the Engine.IO keepalive all work; the
+keepalive is answered for you. Point the client straight at this
+transport:
+
+```js
+const socket = io("http://localhost:8080", { transports: ["websocket"] });
+```
+
+`examples/chat` is a working chat service on both transports —
+handshake, fragments, ping, a protocol violation being closed, and a
+socket.io session with acknowledgements — driven by a stand-in client
+so you can run it today: `make example-chat`.
+
+**That option is required**, because a socket.io client otherwise opens
+an HTTP long-polling session first and upgrades, and polling is a
+separate transport zokor does not serve yet. Binary attachments
+(`BINARY_EVENT`) are recognised but their attachment frames are not
+reassembled yet.
+
 ## Layout
 
 ```
@@ -212,12 +293,17 @@ src/              the package your service imports
   config.sl       Config, load_config, require_*
   respond.sl      success responses
   upload.sl       uploads: rules, Form, Upload, safe filenames
+  ws.sl           WebSocket connections and Socket.IO
   internal/
     path/         split, query parsing, percent-decoding
     envfile/      .env parsing
     validate/     the value rules
     multipart/    the multipart/form-data parser
-examples/hello/   a service you can run
+    ws/           RFC 6455 frames and the handshake
+    sio/          Engine.IO and Socket.IO packets
+examples/
+  hello/          routes, config, errors, uploads
+  chat/           WebSocket and socket.io
 docs/
 ```
 
@@ -254,7 +340,9 @@ make test
 
 - **The serve loop.** `listen_and_serve` has to spawn a task carrying
   `Router[S]`, which needs generic **functions**; slang has generic
-  structs and methods today. It is the next thing to land.
-- **WebSocket**, rewritten from RFC 6455 (needs `crypto.sha1` in slang).
+  structs and methods today. It is the next thing to land, and it is
+  what turns the WebSocket state machine into a running server.
+- **Socket.IO over HTTP long-polling**, so a client needs
+  `transports: ["websocket"]`; and binary attachment frames.
 - **`zokor check`**, the layout checker.
 - **Postgres helpers and the testing kit.**

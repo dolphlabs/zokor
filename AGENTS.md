@@ -32,6 +32,9 @@ to enforce, so the framework follows them first.
   first failure.
 - **No regular expressions in a request path.** Routing is segment
   comparison against patterns split at registration.
+- **Protocol code is sans-io.** A parser takes bytes and returns
+  values; it never reads a socket. That is why every rule in RFC 6455
+  has a test and none of them needs a network.
 - **Nothing from a client is trusted as a name.** A filename is one
   path segment, sanitised, with the original kept only for reporting.
 - **Every limit is the caller's.** A framework constant that a service
