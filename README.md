@@ -53,6 +53,8 @@ declare, and every handler receives it.
 | `Registry`, `respond*` | every HTTP failure code, one JSON envelope, field-level validation errors |
 | `load_config`, `require_*` | `.env` then the environment, per-variable validation, **every** problem reported at once |
 | `parse_form`, `c.upload` | multipart/form-data: limits, type and extension allowlists, filenames made safe |
+| `snake_keys`, `decode_failed`, `checker` | DTOs: wire names, decode errors as field errors, validation |
+| `Json`, `parse`, `jobj` | JSON you did not declare: walk it, build it, render it |
 | `upgrade`, `receive`, `sio_*` | WebSocket (RFC 6455) and Socket.IO, as a state machine you feed bytes |
 | `ok_json`, `created`, … | success responses with the headers they should carry |
 
@@ -153,6 +155,89 @@ the field errors — a struct, not a parameter list, so a later addition
 does not break renderers people have already written. One renderer per
 registry: every failure in a service still comes out the same way, which
 is the point of having a registry at all.
+
+## JSON
+
+slang already does the part Go does badly: you decode into a struct,
+**a missing field is an error rather than a silent zero**, and the
+message names the field. No tags, no `interface{}`, no `omitempty`
+guessing. zokor adds the four things that are still missing.
+
+**A DTO, decoded and reported.** The wire is camelCase, your struct is
+snake_case, and there are no struct tags — so rewrite the keys:
+
+```slang
+gc struct CreateOrg { name: str, plan: str, seats: i32, website: opt[str] }
+
+let r: result[CreateOrg, str] = json.decode(zokor.snake_keys(c.body_str()));
+guard let dto = r else let e = err_of(r) {
+    return zokor.decode_failed(c.state.errors, e, c.request_id);
+}
+```
+
+`decode_failed` turns slang's own message into the standard envelope
+with the **field** named, so a client gets the same shape for a bad type
+as for a bad value:
+
+```json
+{"error":{"code":"validation_failed","status":422,
+          "fields":[{"field":"seats","reason":"expected a number, got a string"}]}}
+{"error":{"code":"validation_failed","status":422,
+          "fields":[{"field":"plan","reason":"is required"}]}}
+```
+
+**Values, checked all at once.** Decoding says a field is a string; it
+does not say it is an email between 3 and 40 characters. A `checker`
+collects every problem, because a client fixing one field per request is
+a client making five requests:
+
+```slang
+let v = zokor.checker();
+let name  = v.req_str(body, "name", 1, 80);
+let email = v.req_email(body, "email");
+let role  = v.req_one_of(body, "role", ["admin", "member"]);
+let age    = v.opt_int(body, "age", 0, 150, 0);
+if v.failed() {
+    return zokor.respond_fields(c.state.errors, "validation_failed",
+                                v.fields, c.request_id);
+}
+```
+
+`req_str`, `req_int`, `req_bool`, `req_email`, `req_url`, `req_uuid`,
+`req_one_of`, `req_strs`, `req_obj`, `opt_str`, `opt_int`, plus `note`
+for a rule of your own and `under("address", inner)` to report a nested
+check as `address.city`.
+
+**A shape nobody declared** — a webhook, a passthrough, somebody else's
+field. A missing key gives `Null` rather than an error, so a chain never
+has to be guarded at every step:
+
+```slang
+guard let body = c.json_body() else { ... }
+
+body.get("type").str_or("unknown")
+body.path("data.customer.address.city").str_or("nowhere")
+body.path("data.items.0.sku").str_or("none")
+body.path("data.items").size()
+body.has_key("note")          // present, even if null: PATCH semantics
+```
+
+**Building a response**, instead of concatenating strings and getting
+the quoting wrong:
+
+```slang
+zokor.jobj()
+    .set_str("id", id)
+    .set_int("seats", n)
+    .set_opt_str("website", dto.website)     // absent when none
+    .set("tags", zokor.jarr().add_str("a").add_str("b"))
+    .render()
+```
+
+Numbers keep the text they arrived as, so a 64-bit id survives a round
+trip; `\uXXXX` escapes and surrogate pairs decode; and the parser
+refuses what JSON refuses — a leading zero, a lone surrogate, an
+unescaped control character, nesting past 64 deep.
 
 ## Uploads
 
@@ -292,6 +377,7 @@ src/              the package your service imports
   errors.sl       Registry, Code, ErrorView, the envelope
   config.sl       Config, load_config, require_*
   respond.sl      success responses
+  json.sl         Json, the checker, DTO helpers
   upload.sl       uploads: rules, Form, Upload, safe filenames
   ws.sl           WebSocket connections and Socket.IO
   internal/
