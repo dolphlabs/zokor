@@ -16,6 +16,23 @@
 import "http";
 import "internal/path";
 
+// The HTTP methods, as a closed set. A service names `zokor.Method.GET`,
+// not "GET": a typo is then a compile error rather than a route that
+// silently never matches, and `r.handle(m, ...)` takes a value the
+// compiler has already checked. The variant names are exactly the
+// tokens on the wire, so `to_str` and `from_str` are the conversion.
+pub enum Method {
+    GET,
+    HEAD,
+    POST,
+    PUT,
+    PATCH,
+    DELETE,
+    OPTIONS,
+    TRACE,
+    CONNECT,
+}
+
 pub gc struct Ctx[S] {
     state: S,
     req: http.Request,
@@ -32,7 +49,7 @@ pub gc struct Ctx[S] {
 }
 
 pub gc struct Route[S] {
-    method: str,
+    method: Method,
     pattern: str,
     segs: [str],
     // Precomputed so matching never inspects a segment's first byte:
@@ -71,13 +88,11 @@ pub gc struct Router[S] {
 //         errors: zokor.new_registry(), auto_options: true, auto_head: true
 //     };
 
-pub fn get_method() -> str { return "GET"; }
-
 impl Router[S] {
     // Every method goes through here, including the ones with their own
     // helper below, so a pattern is split exactly once and the rules
     // about `:params` and `*rest` live in one place.
-    pub fn handle(self: Router[S], method: str, pattern: str,
+    pub fn handle(self: Router[S], method: Method, pattern: str,
                   h: fn(Ctx[S]) -> http.Response) -> int {
         let segs = path.split(pattern);
         let names: [str] = [];
@@ -107,35 +122,35 @@ impl Router[S] {
     // The full set of HTTP methods, so no service has to fall back to
     // `handle` with a string for anything standard.
     pub fn get(self: Router[S], p: str, h: fn(Ctx[S]) -> http.Response) -> int {
-        return self.handle("GET", p, h);
+        return self.handle(Method.GET, p, h);
     }
     pub fn head(self: Router[S], p: str, h: fn(Ctx[S]) -> http.Response) -> int {
-        return self.handle("HEAD", p, h);
+        return self.handle(Method.HEAD, p, h);
     }
     pub fn post(self: Router[S], p: str, h: fn(Ctx[S]) -> http.Response) -> int {
-        return self.handle("POST", p, h);
+        return self.handle(Method.POST, p, h);
     }
     pub fn put(self: Router[S], p: str, h: fn(Ctx[S]) -> http.Response) -> int {
-        return self.handle("PUT", p, h);
+        return self.handle(Method.PUT, p, h);
     }
     pub fn patch(self: Router[S], p: str, h: fn(Ctx[S]) -> http.Response) -> int {
-        return self.handle("PATCH", p, h);
+        return self.handle(Method.PATCH, p, h);
     }
     pub fn delete(self: Router[S], p: str, h: fn(Ctx[S]) -> http.Response) -> int {
-        return self.handle("DELETE", p, h);
+        return self.handle(Method.DELETE, p, h);
     }
     pub fn options(self: Router[S], p: str, h: fn(Ctx[S]) -> http.Response) -> int {
-        return self.handle("OPTIONS", p, h);
+        return self.handle(Method.OPTIONS, p, h);
     }
     pub fn trace(self: Router[S], p: str, h: fn(Ctx[S]) -> http.Response) -> int {
-        return self.handle("TRACE", p, h);
+        return self.handle(Method.TRACE, p, h);
     }
     pub fn connect(self: Router[S], p: str, h: fn(Ctx[S]) -> http.Response) -> int {
-        return self.handle("CONNECT", p, h);
+        return self.handle(Method.CONNECT, p, h);
     }
 
     // One handler for several methods on one pattern.
-    pub fn any(self: Router[S], methods: [str], p: str,
+    pub fn any(self: Router[S], methods: [Method], p: str,
                h: fn(Ctx[S]) -> http.Response) -> int {
         let i = 0;
         while i < len(methods) {
@@ -162,7 +177,8 @@ impl Router[S] {
         let out: [str] = [];
         let i = 0;
         while i < len(self.routes) {
-            push(out, self.routes[i].method + " " + self.routes[i].pattern);
+            push(out, to_str(self.routes[i].method) + " " +
+                      self.routes[i].pattern);
             i = i + 1;
         }
         return out;
@@ -210,9 +226,9 @@ impl Router[S] {
 
     // The methods registered for a path, for `Allow` on a 405 and for
     // an automatic OPTIONS.
-    pub fn allowed(self: Router[S], p: str) -> [str] {
+    pub fn allowed(self: Router[S], p: str) -> [Method] {
         let segs = path.split(path.strip_query(p));
-        let out: [str] = [];
+        let out: [Method] = [];
         let i = 0;
         while i < len(self.routes) {
             let probe: map[str]str = {};
@@ -237,23 +253,23 @@ impl Router[S] {
             let has_head = false;
             let k = 0;
             while k < len(out) {
-                if out[k] == "GET" { has_get = true; }
-                if out[k] == "HEAD" { has_head = true; }
+                if out[k] == Method.GET { has_get = true; }
+                if out[k] == Method.HEAD { has_head = true; }
                 k = k + 1;
             }
             if has_get && !has_head {
-                push(out, "HEAD");
+                push(out, Method.HEAD);
             }
         }
         if len(out) > 0 && self.auto_options {
             let has_opt = false;
             let k2 = 0;
             while k2 < len(out) {
-                if out[k2] == "OPTIONS" { has_opt = true; }
+                if out[k2] == Method.OPTIONS { has_opt = true; }
                 k2 = k2 + 1;
             }
             if !has_opt {
-                push(out, "OPTIONS");
+                push(out, Method.OPTIONS);
             }
         }
         return out;
@@ -270,12 +286,26 @@ impl Router[S] {
                     request_id: str) -> http.Response {
         let p = path.strip_query(req.path);
         let segs = path.split(p);
-        let method = req.method;
+        // An unknown verb cannot match any route, and is not a 404: the
+        // path may well exist. 501 is what it is.
+        let parsed = Method.from_str(req.method);
+        guard let method = parsed else {
+            let unknown: map[str]str = {};
+            let uc = Ctx[S] {
+                state: self.state,
+                req: req,
+                params: unknown,
+                route: "",
+                request_id: request_id
+            };
+            return self.finish(uc, respond(self.errors, "not_implemented",
+                                           request_id));
+        }
         // A HEAD with no HEAD route is served by the GET one, and the
         // body dropped after the handler and the hooks have run -- so
         // the headers a client gets are the ones it would get from GET.
         let head_of_get = false;
-        if self.auto_head && method == "HEAD" {
+        if self.auto_head && method == Method.HEAD {
             head_of_get = true;
         }
         let path_seen = false;
@@ -289,7 +319,7 @@ impl Router[S] {
             }
             path_seen = true;
             let m = r.method == method;
-            if !m && head_of_get && r.method == "GET" {
+            if !m && head_of_get && r.method == Method.GET {
                 m = true;
             }
             if !m {
@@ -304,7 +334,7 @@ impl Router[S] {
                 request_id: request_id
             };
             let resp = self.run(c, r.handler);
-            if head_of_get && r.method == "GET" {
+            if head_of_get && r.method == Method.GET {
                 resp.body = to_bytes("");
             }
             return resp;
@@ -322,7 +352,7 @@ impl Router[S] {
             return self.finish(c, respond(self.errors, "not_found", request_id));
         }
         let allow = self.allowed(p);
-        if self.auto_options && method == "OPTIONS" {
+        if self.auto_options && method == Method.OPTIONS {
             let ok_resp = http.Response {
                 status: 204,
                 status_text: "No Content",
@@ -384,20 +414,20 @@ impl Router[S] {
     }
 }
 
-fn join_methods(ms: [str]) -> str {
+pub fn join_methods(ms: [Method]) -> str {
     let out = "";
     let i = 0;
     while i < len(ms) {
         if i > 0 {
             out = out + ", ";
         }
-        out = out + ms[i];
+        out = out + to_str(ms[i]);
         i = i + 1;
     }
     return out;
 }
 
-fn allow_headers(allow: [str]) -> map[str]str {
+fn allow_headers(allow: [Method]) -> map[str]str {
     let h: map[str]str = {};
     h["allow"] = join_methods(allow);
     h["content-length"] = "0";
@@ -428,7 +458,14 @@ impl Ctx[S] {
         return self.req.body;
     }
 
-    pub fn method(self: Ctx[S]) -> str {
+    // The verb as a checked value. An unknown one never reaches a
+    // handler (serve answers 501), so this cannot fail here.
+    pub fn method(self: Ctx[S]) -> Method {
+        return Method.from_str(self.req.method) ?? Method.GET;
+    }
+
+    // The verb exactly as the client sent it, for logs.
+    pub fn method_str(self: Ctx[S]) -> str {
         return self.req.method;
     }
 
@@ -464,6 +501,26 @@ impl Ctx[S] {
 
     pub fn content_type(self: Ctx[S]) -> str {
         return self.header("content-type");
+    }
+
+    // The multipart form this request carries, under the caller's
+    // rules. The failure names a registered code, so a handler reports
+    // it the same way it reports anything else.
+    pub fn form(self: Ctx[S], rules: UploadRules) -> result[Form, FormError] {
+        return parse_form(self.content_type(), self.req.body, rules);
+    }
+
+    // The same, refused unless the request is a POST/PUT/PATCH: a body
+    // on a GET is a client doing something strange.
+    pub fn upload(self: Ctx[S], rules: UploadRules) -> result[Form, FormError] {
+        let m = self.method();
+        if m != Method.POST && m != Method.PUT && m != Method.PATCH {
+            return err(FormError {
+                code: "method_not_allowed",
+                detail: "a file upload must be POST, PUT or PATCH"
+            });
+        }
+        return self.form(rules);
     }
 
     pub fn wants_close(self: Ctx[S]) -> bool {
