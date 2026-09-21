@@ -1,0 +1,3 @@
+main.gen.c
+bin/
+*.o
