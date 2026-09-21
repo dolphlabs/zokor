@@ -15,6 +15,20 @@
 //
 //     {"error":{"code":"validation_failed","message":"...","status":422,
 //               "fields":[{"field":"email","reason":"must be an email"}]}}
+//
+// That shape is the DEFAULT, not the law. A service with an existing
+// contract -- a different key, RFC 7807 problem+json, XML, an envelope
+// its clients already parse -- installs its own renderer and keeps the
+// registry, the codes and the statuses:
+//
+//     fn my_shape(v: zokor.ErrorView) -> http.Response {
+//         return zokor.json_response(v.status,
+//             "{\"err\":" + zokor.quote(v.code) + "}");
+//     }
+//     zokor.set_renderer(reg, my_shape);
+//
+// One renderer per registry, so every failure in a service still comes
+// out the same way -- which is the point of having a registry at all.
 
 import "http";
 
@@ -29,8 +43,22 @@ pub gc struct FieldError {
     reason: str,
 }
 
+// Everything the renderer is given. A struct rather than a parameter
+// list so a later addition (a doc URL, a retry hint) does not break
+// every renderer anyone has written.
+pub gc struct ErrorView {
+    code: str,
+    message: str,
+    status: i32,
+    request_id: str,
+    fields: [FieldError],
+}
+
 pub gc struct Registry {
     codes: map[str]Code,
+    // How a failure becomes a response. `default_render` unless the
+    // application replaces it.
+    render: fn(ErrorView) -> http.Response,
 }
 
 // Every HTTP failure status, under the name a handler will reach for.
@@ -40,7 +68,7 @@ pub gc struct Registry {
 // without a second registry.
 pub fn new_registry() -> Registry {
     let m: map[str]Code = {};
-    let r = Registry { codes: m };
+    let r = Registry { codes: m, render: default_render };
 
     // 4xx -- the caller can do something about it
     register(r, "bad_request", 400, "the request could not be understood");
@@ -88,6 +116,13 @@ pub fn new_registry() -> Registry {
     register(r, "loop_detected", 508, "the request loops");
     register(r, "network_auth_required", 511, "network authentication is required");
     return r;
+}
+
+// Replace the shape every failure is rendered in. The codes, their
+// statuses and their wording are untouched -- only the bytes change.
+pub fn set_renderer(r: Registry, f: fn(ErrorView) -> http.Response) -> int {
+    r.render = f;
+    return len(r.codes);
 }
 
 pub fn register(r: Registry, name: str, status: i32, message: str) -> int {
@@ -159,22 +194,34 @@ pub fn field(name: str, reason: str) -> FieldError {
 
 fn render(r: Registry, code: str, message: str, request_id: str,
           fields: [FieldError]) -> http.Response {
-    let status = status_of(r, code);
-    let body = "{\"error\":{\"code\":" + quote(code) +
-               ",\"message\":" + quote(message) +
-               ",\"status\":" + to_str(status);
-    if len(request_id) > 0 {
-        body = body + ",\"request_id\":" + quote(request_id);
+    let view = ErrorView {
+        code: code,
+        message: message,
+        status: status_of(r, code),
+        request_id: request_id,
+        fields: fields
+    };
+    let f = r.render;
+    return f(view);
+}
+
+// zokor's own shape, and the one a service gets until it says otherwise.
+pub fn default_render(v: ErrorView) -> http.Response {
+    let body = "{\"error\":{\"code\":" + quote(v.code) +
+               ",\"message\":" + quote(v.message) +
+               ",\"status\":" + to_str(v.status);
+    if len(v.request_id) > 0 {
+        body = body + ",\"request_id\":" + quote(v.request_id);
     }
-    if len(fields) > 0 {
+    if len(v.fields) > 0 {
         body = body + ",\"fields\":[";
         let i = 0;
-        while i < len(fields) {
+        while i < len(v.fields) {
             if i > 0 {
                 body = body + ",";
             }
-            body = body + "{\"field\":" + quote(fields[i].field) +
-                   ",\"reason\":" + quote(fields[i].reason) + "}";
+            body = body + "{\"field\":" + quote(v.fields[i].field) +
+                   ",\"reason\":" + quote(v.fields[i].reason) + "}";
             i = i + 1;
         }
         body = body + "]";
@@ -183,12 +230,12 @@ fn render(r: Registry, code: str, message: str, request_id: str,
 
     let headers: map[str]str = {};
     headers["content-type"] = "application/json; charset=utf-8";
-    if len(request_id) > 0 {
-        headers["x-request-id"] = request_id;
+    if len(v.request_id) > 0 {
+        headers["x-request-id"] = v.request_id;
     }
     return http.Response {
-        status: status,
-        status_text: status_text(status),
+        status: v.status,
+        status_text: status_text(v.status),
         headers: headers,
         body: to_bytes(body)
     };
