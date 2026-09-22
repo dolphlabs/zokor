@@ -21,6 +21,8 @@
 //   * Content-Transfer-Encoding other than the ones the web actually
 //     uses (7bit/8bit/binary, which all mean "as-is")
 
+import "builder";
+
 pub gc struct Limits {
     max_parts: int,        // total parts, files and fields together
     max_files: int,
@@ -476,40 +478,59 @@ fn decode_ext_value(v: str) -> str {
 // Small string helpers, kept here so this package depends on nothing //
 // ---------------------------------------------------------------- //
 
+// "%20" and "+" decoding. Returns the input unchanged when there is
+// nothing to decode, which is the usual case.
+//
+// The clean stretches between escapes are copied as slices and each
+// escape is one byte, through a builder, so this is linear. (It used to
+// append one byte at a time with `+`: 128 KB of escapes took two
+// seconds.)
 pub fn percent_decode(s: str) -> str {
     let b = to_bytes(s);
     let n = len(b);
-    let needs = false;
     let i = 0;
     while i < n {
-        if b[i] == 37 {
-            needs = true;
-            i = n;
-        } else {
-            i = i + 1;
+        if b[i] == 37 || b[i] == 43 {
+            break;
         }
+        i = i + 1;
     }
-    if !needs {
+    if i == n {
         return s;
     }
-    let out: bytes = b"";
+    let out = builder.new_bytes();
+    let start = 0;
     i = 0;
     while i < n {
-        if b[i] == 37 && i + 2 < n {
+        let c = b[i];
+        if c == 43 {
+            if i > start {
+                out.write(b[start..i]);
+            }
+            out.write_byte(32);
+            i = i + 1;
+            start = i;
+            continue;
+        }
+        if c == 37 && i + 2 < n {
             let hi = hex_val(b[i + 1]);
             let lo = hex_val(b[i + 2]);
             if hi >= 0 && lo >= 0 {
-                let one: bytes = b" ";
-                one[0] = hi * 16 + lo;
-                out = out + one;
+                if i > start {
+                    out.write(b[start..i]);
+                }
+                out.write_byte(hi * 16 + lo);
                 i = i + 3;
+                start = i;
                 continue;
             }
         }
-        out = out + b[i..i + 1];
         i = i + 1;
     }
-    return to_str(out);
+    if n > start {
+        out.write(b[start..n]);
+    }
+    return to_str(out.finish());
 }
 
 fn hex_val(c: int) -> int {
