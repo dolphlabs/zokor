@@ -57,12 +57,12 @@ bench_one() {
 }
 
 echo "building..."
-(cd zokor && /Users/utee/Documents/slang/slangc main.sl -o zokor_bench) || exit 1
+(cd zokor-server && /Users/utee/Documents/slang/slangc main.sl -o zokor_bench) || exit 1
 (cd go-net-http && go build -o go_net_http_bench .) || exit 1
 (cd go-fiber && go build -o go_fiber_bench .) || exit 1
 
 echo "--- zokor ---"
-PORT=$ZOKOR_PORT ./zokor/zokor_bench > zokor.runlog 2>&1 &
+PORT=$ZOKOR_PORT ./zokor-server/zokor_bench > zokor.runlog 2>&1 &
 ZPID=$!
 wait_ready $ZOKOR_PORT && bench_one "zokor" $ZOKOR_PORT
 kill $ZPID 2>/dev/null
