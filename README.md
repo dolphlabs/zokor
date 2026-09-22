@@ -8,6 +8,10 @@
   A backend framework for <a href="https://github.com/dolphlabs/slang">slang</a>.
 </p>
 
+<p align="center">
+  <a href="https://flossafrica.com/m/xlaez?p=zokor"><img src="https://flossafrica.com/badge.svg" alt="Fund my work on FLOSSAfrica"></a>
+</p>
+
 zokor exists for one reason: a service should spend its code on what it
 does, not on the plumbing every service rewrites — routing, configuration,
 error shapes, limits. It is opinionated about the things that go wrong

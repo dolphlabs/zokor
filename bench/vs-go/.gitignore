@@ -1,0 +1,5 @@
+zokor/zokor_bench
+zokor/*.gen.c
+go-net-http/go_net_http_bench
+go-fiber/go_fiber_bench
+*.runlog
