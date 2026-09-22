@@ -60,12 +60,26 @@ body is not one anyone can put in front of the internet.
 
 ## 1. Language prerequisites
 
-- [ ] `new_router(state)` and `new_group(...)` constructors, replacing the
-  six-field struct literal every service writes today.
-- [ ] `c.dto[T]()`: decode a body into `T` and report failure through
-  `decode_failed`, in one call.
-- [ ] `c.query_as[T]()`: bind the query string into a struct, with the same
-  field-level errors.
+- [x] `new_router(state)` and `new_group(router, prefix)` constructors,
+  replacing the seven-field `Router[S] { ... }` literal every service
+  wrote by hand. `new_group` is a free-function alias of the existing
+  `router.group(prefix)` method, for services that want constructor-style
+  naming throughout.
+- [x] `zokor.dto[T](c)`: decode a body into `T` and report failure through
+  `decode_failed`, in one call -- `let r: result[T, http.Response] =
+  zokor.dto(c);`. A free function, not a method on `Ctx[S]`: a generic
+  method cannot yet declare a type parameter of its own beyond the
+  struct's. Needed `Ctx[S]` to carry its own `errors: Registry` (from the
+  router, not the app's own state by convention) so the failure response
+  can be built without it.
+- [x] `zokor.query_as[T](c)`: the same for the query string --
+  `internal/path.query_all` plus a value-shape heuristic (`true`/`false`
+  and anything `to_int`/`to_float` accept go in unquoted, everything else
+  quoted) build a JSON object slang's own `json.decode` then fills `T`
+  from, with the same field-level errors as `dto`. Not a full binder --
+  slang has no reflection, so there is no way to ask `T` what type each
+  field wants -- but it covers str/int/float/bool fields, which is most
+  of them.
 
 ## 2. The server edge (blocked on generic functions and the serve loop)
 

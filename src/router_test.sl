@@ -1,4 +1,5 @@
 import "http";
+import "strings";
 
 gc struct TestState {
     hits: int,
@@ -39,6 +40,32 @@ fn h_created(c: Ctx[TestState]) -> http.Response {
     return created("{\"id\":\"new\"}", "/things/new");
 }
 
+gc struct Greeting {
+    message: str,
+}
+
+fn h_dto(c: Ctx[TestState]) -> http.Response {
+    let r: result[Greeting, http.Response] = dto(c);
+    guard let body = r else let resp = err_of(r) {
+        return resp;
+    }
+    return text(200, "got:" + body.message);
+}
+
+gc struct Search {
+    q: str,
+    page: i32,
+    active: bool,
+}
+
+fn h_query_as(c: Ctx[TestState]) -> http.Response {
+    let r: result[Search, http.Response] = query_as(c);
+    guard let s = r else let resp = err_of(r) {
+        return resp;
+    }
+    return text(200, s.q + "|" + to_str(s.page) + "|" + to_str(s.active));
+}
+
 fn block_secret(c: Ctx[TestState]) -> opt[http.Response] {
     if c.route == "/secret" && c.bearer() != "letmein" {
         return some(respond(new_registry(), "unauthorized", c.request_id));
@@ -52,16 +79,7 @@ fn stamp(c: Ctx[TestState], r: http.Response) -> http.Response {
 }
 
 fn new_test_router() -> Router[TestState] {
-    let st = TestState { hits: 0, name: "t" };
-    return Router[TestState] {
-        routes: [],
-        befores: [],
-        afters: [],
-        state: st,
-        errors: new_registry(),
-        auto_options: true,
-        auto_head: true
-    };
+    return new_router(TestState { hits: 0, name: "t" });
 }
 
 fn req(method: str, p: str) -> http.Request {
@@ -239,4 +257,62 @@ fn test_trailing_slashes_are_the_same_route() {
     r.get("/a/b", h_ok);
     assert(r.serve(req("GET", "/a/b/")).status == 200);
     assert(r.serve(req("GET", "//a//b")).status == 200);
+}
+
+fn test_new_router_defaults() {
+    let r = new_router(TestState { hits: 0, name: "fresh" });
+    assert(len(r.routes) == 0);
+    assert(r.state.name == "fresh");
+    // the defaults a correct server should have: OPTIONS and HEAD
+    // answered automatically until told otherwise
+    r.get("/x", h_ok);
+    assert(r.serve(req("HEAD", "/x")).status == 200);
+    assert(r.serve(req("OPTIONS", "/x")).status == 204);
+}
+
+fn test_new_group_matches_the_method() {
+    let r = new_test_router();
+    let g = new_group(r, "/api");
+    g.get("/things", h_ok);
+    let resp = r.serve(req("GET", "/api/things"));
+    assert(resp.status == 200);
+    assert(resp.body == to_bytes("{\"route\":\"/api/things\"}"));
+}
+
+fn json_post(p: str, body: str) -> http.Request {
+    let h: map[str]str = {};
+    h["content-type"] = "application/json";
+    return http.Request {
+        method: "POST",
+        path: p,
+        version: "HTTP/1.1",
+        headers: h,
+        body: to_bytes(body)
+    };
+}
+
+fn test_dto_decodes_or_answers_decode_failed() {
+    let r = new_test_router();
+    r.post("/greet", h_dto);
+    let good = r.serve(json_post("/greet", "{\"message\":\"hi\"}"));
+    assert(good.status == 200);
+    assert(to_str(good.body) == "got:hi");
+
+    // a missing required field goes through decode_failed, naming it
+    let bad = r.serve(json_post("/greet", "{}"));
+    assert(bad.status == 422);
+    assert(strings.contains(to_str(bad.body), "\"field\":\"message\""));
+}
+
+fn test_query_as_binds_typed_fields_or_answers_decode_failed() {
+    let r = new_test_router();
+    r.get("/search", h_query_as);
+    let good = r.serve(req("GET", "/search?q=slang&page=2&active=true"));
+    assert(good.status == 200);
+    assert(to_str(good.body) == "slang|2|true");
+
+    // page is not a number here, so it fails exactly like a bad body
+    let bad = r.serve(req("GET", "/search?q=slang&page=nope&active=true"));
+    assert(bad.status == 422);
+    assert(strings.contains(to_str(bad.body), "\"field\":\"page\""));
 }

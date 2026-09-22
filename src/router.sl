@@ -16,6 +16,8 @@
 import "http";
 import "internal/path";
 import "strings";
+import "json";
+import "builder";
 
 // The HTTP methods, as a closed set. A service names `zokor.Method.GET`,
 // not "GET": a typo is then a compile error rather than a route that
@@ -53,6 +55,10 @@ pub gc struct Ctx[S] {
     // contribute to it -- which is how services end up re-doing the
     // same lookup in every handler.
     locals: map[str]str,
+    // The router's own registry, carried here so a helper like `dto`
+    // can answer a failure without asking the application's state to
+    // also hold one by convention.
+    errors: Registry,
 }
 
 pub gc struct Route[S] {
@@ -91,14 +97,37 @@ pub gc struct Router[S] {
     auto_head: bool,
 }
 
-// An application builds its router with a struct literal, because a
-// constructor would have to be a generic FUNCTION and slang does not
-// have those yet:
+// An application builds its router from its state alone; everything else
+// starts empty or at the default a correct server should have. This used
+// to be a seven-field struct literal every service wrote out by hand --
+// `new_router` needed a generic function, which slang did not have until
+// generics PR 3.
+pub fn new_router[S](state: S) -> Router[S] {
+    let no_routes: [Route[S]] = [];
+    let no_befores: [fn(Ctx[S]) -> opt[http.Response]] = [];
+    let no_afters: [fn(Ctx[S], http.Response) -> http.Response] = [];
+    return Router[S] {
+        routes: no_routes,
+        befores: no_befores,
+        afters: no_afters,
+        state: state,
+        errors: new_registry(),
+        auto_options: true,
+        auto_head: true
+    };
+}
+
+// The function-call equivalent of `r.group(prefix)`, for a service that
+// wants its setup to read as a list of constructors rather than a mix of
+// functions and methods:
 //
-//     let r = zokor.Router[App] {
-//         routes: [], befores: [], afters: [], state: app,
-//         errors: zokor.new_registry(), auto_options: true, auto_head: true
-//     };
+//     let api = zokor.new_group(r, "/api");
+//
+// Identical to the method; kept as a thin alias so both styles exist and
+// neither is the "real" one.
+pub fn new_group[S](r: Router[S], prefix: str) -> Group[S] {
+    return r.group(prefix);
+}
 
 impl Router[S] {
     // Every method goes through here, including the ones with their own
@@ -337,7 +366,8 @@ impl Router[S] {
                 params: unknown,
                 route: "",
                 request_id: request_id,
-                locals: unknown_locals
+                locals: unknown_locals,
+                errors: self.errors
             };
             return self.finish(uc, respond(self.errors, "not_implemented",
                                            request_id));
@@ -374,7 +404,8 @@ impl Router[S] {
                 params: params,
                 route: r.pattern,
                 request_id: request_id,
-                locals: locals
+                locals: locals,
+                errors: self.errors
             };
             let resp = self.run(c, r);
             if head_of_get && r.method == Method.GET {
@@ -391,7 +422,8 @@ impl Router[S] {
             params: none_params,
             route: "",
             request_id: request_id,
-            locals: no_locals
+            locals: no_locals,
+            errors: self.errors
         };
         if !path_seen {
             return self.finish(c, respond(self.errors, "not_found", request_id));
@@ -746,4 +778,86 @@ impl Ctx[S] {
     pub fn wants_close(self: Ctx[S]) -> bool {
         return http.wants_close(self.req);
     }
+}
+
+// The body decoded into a declared shape, in one call: the wire's
+// camelCase keys become the struct's snake_case fields (slang's
+// `json.decode`, same as writing it out by hand), and a decode failure
+// is already the response to return, rendered through `decode_failed`
+// against this router's own registry --
+//
+//     let r: result[CreateOrg, http.Response] = zokor.dto(c);
+//     guard let body = r else let resp = err_of(r) {
+//         return resp;
+//     }
+//
+// instead of decoding, naming the registry, and rendering the failure
+// separately in every handler that takes a body. A plain function, not
+// a method on `Ctx[S]`: a generic method cannot yet declare a type
+// parameter of its own beyond the struct's (`T` here, next to `Ctx`'s
+// own `S`) -- see "Generic structs" in slang's README.
+pub fn dto[S, T](c: Ctx[S]) -> result[T, http.Response] {
+    let r: result[T, str] = json.decode(snake_keys(c.body_str()));
+    guard let v = r else let e = err_of(r) {
+        return err(decode_failed(c.errors, e, c.request_id));
+    }
+    return ok(v);
+}
+
+// A query value that reads as a number or `true`/`false` is written
+// into the object `query_as` builds bare; anything else is a quoted
+// string. slang has no reflection, so there is no way to ask T what
+// type each field wants and convert to just that -- this is the same
+// trade `dto` doesn't have to make (a body already arrives typed), and
+// it covers the common query shapes (str, int, float, bool fields)
+// without one.
+fn query_json_value(v: str) -> str {
+    if v == "true" || v == "false" {
+        return v;
+    }
+    let ir: result[int, str] = to_int(v);
+    guard let _n = ir else {
+        let fr: result[float, str] = to_float(v);
+        guard let _f = fr else {
+            return quote(v);
+        }
+        return v;
+    }
+    return v;
+}
+
+fn query_json(qs: str) -> str {
+    let sb = builder.new_str();
+    sb.write("{");
+    let first = true;
+    for k, v in path.query_all(qs) {
+        if !first {
+            sb.write(",");
+        }
+        first = false;
+        sb.write(quote(k));
+        sb.write(":");
+        sb.write(query_json_value(v));
+    }
+    sb.write("}");
+    return sb.finish();
+}
+
+// The query string bound into a declared shape, in one call, with the
+// same field-level errors a bad body gets --
+//
+//     let r: result[Search, http.Response] = zokor.query_as(c);
+//     guard let q = r else let resp = err_of(r) {
+//         return resp;
+//     }
+//
+// A missing field is an error the same way it is for `dto` unless T
+// declares it `opt[...]`; there is no fallback value to reach for
+// silently. A plain function for the same reason `dto` is one.
+pub fn query_as[S, T](c: Ctx[S]) -> result[T, http.Response] {
+    let r: result[T, str] = json.decode(snake_keys(query_json(path.query_of(c.req.path))));
+    guard let v = r else let e = err_of(r) {
+        return err(decode_failed(c.errors, e, c.request_id));
+    }
+    return ok(v);
 }
