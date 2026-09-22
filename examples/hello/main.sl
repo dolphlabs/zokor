@@ -30,6 +30,7 @@ fn search(c: zokor.Ctx[App]) -> http.Response {
 }
 
 fn show_org(c: zokor.Ctx[App]) -> http.Response {
+    let _who = c.local("user_id");     // put there by require_token
     if c.param("id") != "7" {
         return zokor.respond_with(c.state.errors, "org.not_found",
                                   "no such organisation '" + c.param("id") + "'",
@@ -126,16 +127,19 @@ fn upload_avatar(c: zokor.Ctx[App]) -> http.Response {
                          ",\"title\":\"" + zokor.value(form, "title") + "\"}");
 }
 
-// Middleware. A `before` may end the request; an `after` sees whatever
+// Middleware. A `before` may end the request, or resolve something and
+// hand it to the handler through the context; an `after` sees whatever
 // response came back, including one a before produced.
+//
+// Note what is NOT here: a list of public paths. This hook is attached
+// to a group, so it only ever runs for the routes inside it.
 fn require_token(c: zokor.Ctx[App]) -> opt[http.Response] {
-    if c.route == "/" || c.route == "/search" || c.route == "/files/*rest" {
-        return none;
-    }
     if c.bearer() != c.state.token {
         return some(zokor.respond(c.state.errors, "unauthorized",
                                   c.request_id));
     }
+    // resolved once, at the edge, instead of in every handler
+    c.set_local("user_id", "u_1");
     return none;
 }
 
@@ -167,14 +171,20 @@ let r = zokor.Router[App] {
     auto_head: true
 };
 
+// public: no authentication
 r.get("/", home);
 r.get("/search", search);
-r.get("/orgs/:id", show_org);
-r.post("/orgs", create_org);
 r.get("/files/*rest", asset);
-r.post("/avatars", upload_avatar);
-r.post("/webhooks/stripe", webhook);
-r.before(require_token);
+
+// everything under /api needs a token, and says so once
+let api = r.group("/api");
+api.before(require_token);
+api.get("/orgs/:id", show_org);
+api.post("/orgs", create_org);
+api.post("/avatars", upload_avatar);
+api.post("/webhooks/stripe", webhook);
+
+// counted for every request, public or not
 r.after(count);
 
 // With a serve loop this would be:  r.listen_and_serve("0.0.0.0", 8080);
@@ -217,7 +227,7 @@ fn multipart_req(token: str) -> http.Request {
     h["content-type"] = "multipart/form-data; boundary=B";
     return http.Request {
         method: "POST",
-        path: "/avatars",
+        path: "/api/avatars",
         version: "HTTP/1.1",
         headers: h,
         body: to_bytes(body)
@@ -235,7 +245,7 @@ fn bad_upload_req(token: str) -> http.Request {
     h["content-type"] = "multipart/form-data; boundary=B";
     return http.Request {
         method: "POST",
-        path: "/avatars",
+        path: "/api/avatars",
         version: "HTTP/1.1",
         headers: h,
         body: to_bytes(body)
@@ -254,29 +264,29 @@ println("");
 
 show("GET    /", r.serve(req("GET", "/", "", "")));
 show("GET    /search?q=slang&page=2", r.serve(req("GET", "/search?q=slang&page=2", "", "")));
-show("GET    /orgs/7", r.serve(req("GET", "/orgs/7", "s3cret", "")));
-show("GET    /orgs/9", r.serve(req("GET", "/orgs/9", "s3cret", "")));
-show("GET    /orgs/7 (no token)", r.serve(req("GET", "/orgs/7", "", "")));
-show("POST   /orgs (empty body)", r.serve(req("POST", "/orgs", "s3cret", "")));
-show("POST   /orgs (bad values)",
-     r.serve(req("POST", "/orgs", "s3cret",
+show("GET    /api/orgs/7", r.serve(req("GET", "/api/orgs/7", "s3cret", "")));
+show("GET    /api/orgs/9", r.serve(req("GET", "/api/orgs/9", "s3cret", "")));
+show("GET    /api/orgs/7 (no token)", r.serve(req("GET", "/api/orgs/7", "", "")));
+show("POST   /api/orgs (empty body)", r.serve(req("POST", "/api/orgs", "s3cret", "")));
+show("POST   /api/orgs (bad values)",
+     r.serve(req("POST", "/api/orgs", "s3cret",
                  "{\"name\":\"\",\"plan\":\"gold\",\"seats\":0}")));
-show("POST   /orgs (wrong type)",
-     r.serve(req("POST", "/orgs", "s3cret",
+show("POST   /api/orgs (wrong type)",
+     r.serve(req("POST", "/api/orgs", "s3cret",
                  "{\"name\":\"acme\",\"plan\":\"pro\",\"seats\":\"many\"}")));
-show("POST   /orgs (missing field)",
-     r.serve(req("POST", "/orgs", "s3cret", "{\"name\":\"acme\"}")));
-show("POST   /orgs",
-     r.serve(req("POST", "/orgs", "s3cret",
+show("POST   /api/orgs (missing field)",
+     r.serve(req("POST", "/api/orgs", "s3cret", "{\"name\":\"acme\"}")));
+show("POST   /api/orgs",
+     r.serve(req("POST", "/api/orgs", "s3cret",
                  "{\"name\":\"acme\",\"plan\":\"pro\",\"seats\":12,\"website\":\"https://acme.test\"}")));
-show("POST   /webhooks/stripe",
-     r.serve(req("POST", "/webhooks/stripe", "s3cret",
+show("POST   /api/webhooks/stripe",
+     r.serve(req("POST", "/api/webhooks/stripe", "s3cret",
                  "{\"type\":\"invoice.paid\",\"data\":{\"customer\":{\"address\":{\"city\":\"Lagos\"}},\"items\":[{\"sku\":\"A1\"},{\"sku\":\"B2\"}]}}")));
 show("POST   /avatars", r.serve(multipart_req("s3cret")));
 show("POST   /avatars (svg)", r.serve(bad_upload_req("s3cret")));
 show("GET    /files/a/b.txt", r.serve(req("GET", "/files/a/b.txt", "", "")));
 show("HEAD   /", r.serve(req("HEAD", "/", "", "")));
-show("DELETE /orgs/7", r.serve(req("DELETE", "/orgs/7", "s3cret", "")));
+show("DELETE /api/orgs/7", r.serve(req("DELETE", "/api/orgs/7", "s3cret", "")));
 show("BREW   /", r.serve(req("BREW", "/", "", "")));
 show("GET    /nope", r.serve(req("GET", "/nope", "s3cret", "")));
 println("");

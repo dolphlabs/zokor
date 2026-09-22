@@ -183,12 +183,14 @@ fn test_parse_body_and_its_failures() {
 
 fn test_ctx_json_body() {
     let empty: map[str]str = {};
+    let no_locals: map[str]str = {};
     let c = Ctx[int] {
         state: 1,
         req: json_req("{\"name\":\"ada\"}", "application/json"),
         params: empty,
         route: "/x",
-        request_id: "r1"
+        request_id: "r1",
+        locals: no_locals
     };
     let r = c.json_body();
     guard let j = r else {

@@ -46,11 +46,22 @@ pub gc struct Ctx[S] {
     // Set by the server for each connection; carried into logs and
     // onto every error response.
     request_id: str,
+    // What middleware hands to the handler. Authentication resolves a
+    // token and puts the user here; a tenant resolver puts the tenant
+    // here. Without it a `before` can only stop a request, never
+    // contribute to it -- which is how services end up re-doing the
+    // same lookup in every handler.
+    locals: map[str]str,
 }
 
 pub gc struct Route[S] {
     method: Method,
     pattern: str,
+    // Middleware for THIS route: whatever its group carried when it was
+    // registered, plus anything added to the route itself. Router-wide
+    // hooks run first, then these.
+    befores: [fn(Ctx[S]) -> opt[http.Response]],
+    afters: [fn(Ctx[S], http.Response) -> http.Response],
     segs: [str],
     // Precomputed so matching never inspects a segment's first byte:
     // "" for a literal, the name for `:id`, and `wild` for a `*rest`
@@ -94,6 +105,17 @@ impl Router[S] {
     // about `:params` and `*rest` live in one place.
     pub fn handle(self: Router[S], method: Method, pattern: str,
                   h: fn(Ctx[S]) -> http.Response) -> int {
+        let no_before: [fn(Ctx[S]) -> opt[http.Response]] = [];
+        let no_after: [fn(Ctx[S], http.Response) -> http.Response] = [];
+        return self.handle_with(method, pattern, h, no_before, no_after);
+    }
+
+    // The one registration path: a pattern is split exactly once, and
+    // the rules about `:params` and `*rest` live here alone.
+    pub fn handle_with(self: Router[S], method: Method, pattern: str,
+                       h: fn(Ctx[S]) -> http.Response,
+                       befores: [fn(Ctx[S]) -> opt[http.Response]],
+                       afters: [fn(Ctx[S], http.Response) -> http.Response]) -> int {
         let segs = path.split(pattern);
         let names: [str] = [];
         let wild = -1;
@@ -111,6 +133,8 @@ impl Router[S] {
         push(self.routes, Route[S] {
             method: method,
             pattern: pattern,
+            befores: befores,
+            afters: afters,
             segs: segs,
             names: names,
             wild: wild,
@@ -158,6 +182,28 @@ impl Router[S] {
             i = i + 1;
         }
         return len(self.routes);
+    }
+
+    // A prefix with its own middleware. Router-wide hooks still run
+    // first, for everything.
+    pub fn group(self: Router[S], prefix: str) -> Group[S] {
+        let bs: [fn(Ctx[S]) -> opt[http.Response]] = [];
+        let as_: [fn(Ctx[S], http.Response) -> http.Response] = [];
+        return Group[S] {
+            router: self,
+            prefix: prefix,
+            befores: bs,
+            afters: as_
+        };
+    }
+
+    // Middleware for one route, which is the other half of the same
+    // need: `r.guarded(Method.DELETE, "/orgs/:id", drop, [require_admin])`.
+    pub fn guarded(self: Router[S], method: Method, pattern: str,
+                   h: fn(Ctx[S]) -> http.Response,
+                   befores: [fn(Ctx[S]) -> opt[http.Response]]) -> int {
+        let no_after: [fn(Ctx[S], http.Response) -> http.Response] = [];
+        return self.handle_with(method, pattern, h, befores, no_after);
     }
 
     pub fn before(self: Router[S], f: fn(Ctx[S]) -> opt[http.Response]) -> int {
@@ -291,12 +337,14 @@ impl Router[S] {
         let parsed = Method.from_str(req.method);
         guard let method = parsed else {
             let unknown: map[str]str = {};
+            let unknown_locals: map[str]str = {};
             let uc = Ctx[S] {
                 state: self.state,
                 req: req,
                 params: unknown,
                 route: "",
-                request_id: request_id
+                request_id: request_id,
+                locals: unknown_locals
             };
             return self.finish(uc, respond(self.errors, "not_implemented",
                                            request_id));
@@ -326,14 +374,16 @@ impl Router[S] {
                 i = i + 1;
                 continue;
             }
+            let locals: map[str]str = {};
             let c = Ctx[S] {
                 state: self.state,
                 req: req,
                 params: params,
                 route: r.pattern,
-                request_id: request_id
+                request_id: request_id,
+                locals: locals
             };
-            let resp = self.run(c, r.handler);
+            let resp = self.run(c, r);
             if head_of_get && r.method == Method.GET {
                 resp.body = to_bytes("");
             }
@@ -341,12 +391,14 @@ impl Router[S] {
         }
 
         let none_params: map[str]str = {};
+        let no_locals: map[str]str = {};
         let c = Ctx[S] {
             state: self.state,
             req: req,
             params: none_params,
             route: "",
-            request_id: request_id
+            request_id: request_id,
+            locals: no_locals
         };
         if !path_seen {
             return self.finish(c, respond(self.errors, "not_found", request_id));
@@ -366,8 +418,11 @@ impl Router[S] {
         return self.finish(c, resp);
     }
 
-    fn run(self: Router[S], c: Ctx[S],
-           h: fn(Ctx[S]) -> http.Response) -> http.Response {
+    // Router-wide `before`s, then the route's own, then the handler.
+    // A `before` that returns a response stops the rest -- but the
+    // `after`s still run, so a logging or header hook cannot be skipped
+    // by a short circuit.
+    fn run(self: Router[S], c: Ctx[S], r: Route[S]) -> http.Response {
         let i = 0;
         while i < len(self.befores) {
             let b = self.befores[i];
@@ -376,9 +431,34 @@ impl Router[S] {
                 i = i + 1;
                 continue;
             }
-            return self.finish(c, resp);
+            return self.finish_route(c, r, resp);
         }
-        return self.finish(c, h(c));
+        let j = 0;
+        while j < len(r.befores) {
+            let rb = r.befores[j];
+            let stop2 = rb(c);
+            guard let resp2 = stop2 else {
+                j = j + 1;
+                continue;
+            }
+            return self.finish_route(c, r, resp2);
+        }
+        let h = r.handler;
+        return self.finish_route(c, r, h(c));
+    }
+
+    // The route's own `after`s run first, then the router-wide ones:
+    // the nearest hook to the handler is the innermost.
+    fn finish_route(self: Router[S], c: Ctx[S], r: Route[S],
+                    resp: http.Response) -> http.Response {
+        let out = resp;
+        let i = 0;
+        while i < len(r.afters) {
+            let a = r.afters[i];
+            out = a(c, out);
+            i = i + 1;
+        }
+        return self.finish(c, out);
     }
 
     fn finish(self: Router[S], c: Ctx[S],
@@ -434,6 +514,127 @@ fn allow_headers(allow: [Method]) -> map[str]str {
     return h;
 }
 
+
+// A prefix and the middleware that goes with it.
+//
+// Without groups, middleware is either global or written into the
+// handler -- which is how a service ends up with `if path == "/health"
+// || path == "/login"` at the top of its authentication hook, a list
+// that is wrong the moment somebody adds a route. A group says it once:
+//
+//     let api = r.group("/api/v1");
+//     api.before(require_token);           // everything below is guarded
+//     api.get("/orgs/:id", show_org);
+//     api.post("/orgs", create_org);
+//
+//     let admin = api.group("/admin");     // groups nest: /api/v1/admin
+//     admin.before(require_admin);
+//     admin.delete("/orgs/:id", drop_org);
+//
+// Middleware applies to the routes registered AFTER it, on that group,
+// which is the rule every other framework uses and the only one that
+// reads top to bottom.
+pub gc struct Group[S] {
+    router: Router[S],
+    prefix: str,
+    befores: [fn(Ctx[S]) -> opt[http.Response]],
+    afters: [fn(Ctx[S], http.Response) -> http.Response],
+}
+
+fn join_prefix(a: str, b: str) -> str {
+    let left = a;
+    let lb = to_bytes(left);
+    if len(lb) > 0 && lb[len(lb) - 1] == 47 {
+        left = to_str(lb[0..len(lb) - 1]);
+    }
+    let right = b;
+    let rb = to_bytes(right);
+    if len(rb) == 0 {
+        return left;
+    }
+    if rb[0] != 47 {
+        right = "/" + right;
+    }
+    return left + right;
+}
+
+impl Group[S] {
+    // A route takes a COPY of the middleware as it stands when it is
+    // registered, so adding another hook later cannot silently change a
+    // route that already exists. (Methods, not functions: a generic
+    // function is not a thing slang has yet.)
+    fn copied_befores(self: Group[S]) -> [fn(Ctx[S]) -> opt[http.Response]] {
+        let out: [fn(Ctx[S]) -> opt[http.Response]] = [];
+        let i = 0;
+        while i < len(self.befores) {
+            push(out, self.befores[i]);
+            i = i + 1;
+        }
+        return out;
+    }
+
+    fn copied_afters(self: Group[S]) -> [fn(Ctx[S], http.Response) -> http.Response] {
+        let out: [fn(Ctx[S], http.Response) -> http.Response] = [];
+        let i = 0;
+        while i < len(self.afters) {
+            push(out, self.afters[i]);
+            i = i + 1;
+        }
+        return out;
+    }
+
+    // A group inside this one: the prefixes join and the middleware
+    // accumulates.
+    pub fn group(self: Group[S], prefix: str) -> Group[S] {
+        return Group[S] {
+            router: self.router,
+            prefix: join_prefix(self.prefix, prefix),
+            befores: self.copied_befores(),
+            afters: self.copied_afters()
+        };
+    }
+
+    pub fn before(self: Group[S], f: fn(Ctx[S]) -> opt[http.Response]) -> int {
+        push(self.befores, f);
+        return len(self.befores);
+    }
+
+    pub fn after(self: Group[S], f: fn(Ctx[S], http.Response) -> http.Response) -> int {
+        push(self.afters, f);
+        return len(self.afters);
+    }
+
+    pub fn handle(self: Group[S], method: Method, pattern: str,
+                  h: fn(Ctx[S]) -> http.Response) -> int {
+        return self.router.handle_with(method,
+                                       join_prefix(self.prefix, pattern), h,
+                                       self.copied_befores(),
+                                       self.copied_afters());
+    }
+
+    pub fn get(self: Group[S], p: str, h: fn(Ctx[S]) -> http.Response) -> int {
+        return self.handle(Method.GET, p, h);
+    }
+    pub fn head(self: Group[S], p: str, h: fn(Ctx[S]) -> http.Response) -> int {
+        return self.handle(Method.HEAD, p, h);
+    }
+    pub fn post(self: Group[S], p: str, h: fn(Ctx[S]) -> http.Response) -> int {
+        return self.handle(Method.POST, p, h);
+    }
+    pub fn put(self: Group[S], p: str, h: fn(Ctx[S]) -> http.Response) -> int {
+        return self.handle(Method.PUT, p, h);
+    }
+    pub fn patch(self: Group[S], p: str, h: fn(Ctx[S]) -> http.Response) -> int {
+        return self.handle(Method.PATCH, p, h);
+    }
+    pub fn delete(self: Group[S], p: str, h: fn(Ctx[S]) -> http.Response) -> int {
+        return self.handle(Method.DELETE, p, h);
+    }
+    pub fn options(self: Group[S], p: str, h: fn(Ctx[S]) -> http.Response) -> int {
+        return self.handle(Method.OPTIONS, p, h);
+    }
+}
+
 impl Ctx[S] {
     pub fn param(self: Ctx[S], name: str) -> str {
         if has(self.params, name) {
@@ -448,6 +649,25 @@ impl Ctx[S] {
 
     pub fn header(self: Ctx[S], name: str) -> str {
         return http.header(self.req, name) ?? "";
+    }
+
+    // What a `before` resolved, read by the handler: the user a token
+    // belongs to, the tenant a subdomain names, the plan a customer is
+    // on. The lookup happens once, at the edge, not in every handler.
+    pub fn set_local(self: Ctx[S], key: str, v: str) -> int {
+        self.locals[key] = v;
+        return len(self.locals);
+    }
+
+    pub fn local(self: Ctx[S], key: str) -> str {
+        if has(self.locals, key) {
+            return self.locals[key];
+        }
+        return "";
+    }
+
+    pub fn has_local(self: Ctx[S], key: str) -> bool {
+        return has(self.locals, key);
     }
 
     pub fn body_str(self: Ctx[S]) -> str {
