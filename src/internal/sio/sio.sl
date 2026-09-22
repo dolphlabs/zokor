@@ -13,6 +13,8 @@
 // sessions, no timers. The protocol numbers are Engine.IO v4 and
 // Socket.IO v5, which is what socket.io-client 3 and 4 speak.
 
+import "builder";
+
 pub enum Eio {
     Open,     // 0: the server's handshake payload
     Close,    // 1
@@ -363,30 +365,58 @@ fn array_of(name: str, args_json: str) -> str {
     return "[\"" + escape(name) + "\"," + inner + "]";
 }
 
+// Escapes a JSON string's contents (without the surrounding quotes,
+// which the caller already writes -- see array_of and connect_error).
+//
+// The clean stretches between escapes are copied as slices, so this is
+// linear: an event name is short, but a connect_error message is
+// developer-supplied text with no length the protocol bounds.
 pub fn escape(s: str) -> str {
     let b = to_bytes(s);
-    let out = "";
+    let n = len(b);
     let i = 0;
-    while i < len(b) {
+    while i < n {
         let c = b[i];
-        if c == 34 {
-            out = out + "\\\"";
-        } else if c == 92 {
-            out = out + "\\\\";
-        } else if c == 10 {
-            out = out + "\\n";
-        } else if c == 13 {
-            out = out + "\\r";
-        } else if c == 9 {
-            out = out + "\\t";
-        } else if c < 32 {
-            out = out + "\\u00" + hex2(c);
-        } else {
-            out = out + to_str(b[i..i + 1]);
+        if c == 34 || c == 92 || c < 32 {
+            break;
         }
         i = i + 1;
     }
-    return out;
+    if i == n {
+        return s;
+    }
+    let out = builder.new_str();
+    let start = 0;
+    i = 0;
+    while i < n {
+        let c = b[i];
+        let esc = "";
+        if c == 34 {
+            esc = "\\\"";
+        } else if c == 92 {
+            esc = "\\\\";
+        } else if c == 10 {
+            esc = "\\n";
+        } else if c == 13 {
+            esc = "\\r";
+        } else if c == 9 {
+            esc = "\\t";
+        } else if c < 32 {
+            esc = "\\u00" + hex2(c);
+        }
+        if len(esc) > 0 {
+            if i > start {
+                out.write(to_str(b[start..i]));
+            }
+            out.write(esc);
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    if n > start {
+        out.write(to_str(b[start..n]));
+    }
+    return out.finish();
 }
 
 fn hex2(c: int) -> str {
