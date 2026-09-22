@@ -27,6 +27,20 @@ fn test_query_get() {
     assert(query_of("/s") == "");
 }
 
+fn test_query_all() {
+    let all = query_all("q=slang&page=2&flag&name=ada%20l");
+    assert(len(all) == 4);
+    assert(all["q"] == "slang");
+    assert(all["page"] == "2");
+    assert(all["flag"] == "");
+    assert(all["name"] == "ada l");
+    assert(len(query_all("")) == 0);
+    // a repeated key keeps its last value
+    let rep = query_all("x=1&x=2");
+    assert(len(rep) == 1);
+    assert(rep["x"] == "2");
+}
+
 fn test_percent_decode() {
     assert(percent_decode("a+b") == "a b");
     assert(percent_decode("a%20b") == "a b");

@@ -2,11 +2,10 @@
 //
 // Read the "the service" section below: that is the whole API. The
 // section after it fabricates requests and prints the responses,
-// because zokor has no accept loop yet (it needs generic functions in
-// slang -- see the README). When `listen_and_serve` lands, that second
-// section is deleted and nothing in the first one changes.
+// because zokor has no accept loop yet (`listen_and_serve` is still on
+// the todo list). When it lands, that second section is deleted and
+// nothing in the first one changes.
 import "http";
-import "json";
 import "../../src" as zokor;
 
 // ---------------------------------------------------------------- //
@@ -17,7 +16,6 @@ gc struct App {
     name: str,
     requests: int,
     token: str,
-    errors: zokor.Registry,
 }
 
 fn home(c: zokor.Ctx[App]) -> http.Response {
@@ -32,16 +30,16 @@ fn search(c: zokor.Ctx[App]) -> http.Response {
 fn show_org(c: zokor.Ctx[App]) -> http.Response {
     let _who = c.local("user_id");     // put there by require_token
     if c.param("id") != "7" {
-        return zokor.respond_with(c.state.errors, "org.not_found",
+        return zokor.respond_with(c.errors, "org.not_found",
                                   "no such organisation '" + c.param("id") + "'",
                                   c.request_id);
     }
     return zokor.ok_json("{\"org\":\"7\"}");
 }
 
-// A DTO: a declared shape. slang's own json.decode fills it, a missing
-// field is an error rather than a silent zero, and `decode_failed`
-// puts the field it names into the standard envelope.
+// A DTO: a declared shape. `zokor.dto` fills it (slang's own
+// json.decode underneath), a missing field is an error rather than a
+// silent zero, and the field it names is already in the envelope.
 gc struct CreateOrg {
     name: str,
     plan: str,
@@ -50,10 +48,11 @@ gc struct CreateOrg {
 }
 
 fn create_org(c: zokor.Ctx[App]) -> http.Response {
-    // the wire is camelCase, the struct is snake_case: no tags needed
-    let r: result[CreateOrg, str] = json.decode(zokor.snake_keys(c.body_str()));
-    guard let dto = r else let e = err_of(r) {
-        return zokor.decode_failed(c.state.errors, e, c.request_id);
+    // the wire is camelCase, the struct is snake_case: no tags needed,
+    // and a decode failure is already the response to return
+    let r: result[CreateOrg, http.Response] = zokor.dto(c);
+    guard let dto = r else let resp = err_of(r) {
+        return resp;
     }
 
     // types are checked by the decoder; VALUES are checked here, and
@@ -69,7 +68,7 @@ fn create_org(c: zokor.Ctx[App]) -> http.Response {
         v.note("plan", "must be one of: free, pro");
     }
     if v.failed() {
-        return zokor.respond_fields(c.state.errors, "validation_failed",
+        return zokor.respond_fields(c.errors, "validation_failed",
                                     v.fields, c.request_id);
     }
 
@@ -87,7 +86,7 @@ fn create_org(c: zokor.Ctx[App]) -> http.Response {
 fn webhook(c: zokor.Ctx[App]) -> http.Response {
     let r = c.json_body();
     guard let body = r else let e = err_of(r) {
-        return zokor.respond_with(c.state.errors, e.code, e.detail,
+        return zokor.respond_with(c.errors, e.code, e.detail,
                                   c.request_id);
     }
     let event = body.get("type").str_or("unknown");
@@ -112,11 +111,11 @@ fn upload_avatar(c: zokor.Ctx[App]) -> http.Response {
         zokor.uploads_allowing(["image/png", "image/jpeg"]), 1048576);
     let r = c.upload(rules);
     guard let form = r else let e = err_of(r) {
-        return zokor.respond_with(c.state.errors, e.code, e.detail,
+        return zokor.respond_with(c.errors, e.code, e.detail,
                                   c.request_id);
     }
     guard let avatar = zokor.file(form, "avatar") else {
-        return zokor.respond_with(c.state.errors, "validation_failed",
+        return zokor.respond_with(c.errors, "validation_failed",
                                   "no file was posted under 'avatar'",
                                   c.request_id);
     }
@@ -135,7 +134,7 @@ fn upload_avatar(c: zokor.Ctx[App]) -> http.Response {
 // to a group, so it only ever runs for the routes inside it.
 fn require_token(c: zokor.Ctx[App]) -> opt[http.Response] {
     if c.bearer() != c.state.token {
-        return some(zokor.respond(c.state.errors, "unauthorized",
+        return some(zokor.respond(c.errors, "unauthorized",
                                   c.request_id));
     }
     // resolved once, at the edge, instead of in every handler
@@ -151,25 +150,17 @@ fn count(c: zokor.Ctx[App], r: http.Response) -> http.Response {
 
 // Configuration is read once, here, and validated before anything runs.
 let cfg = zokor.load_config();          // ".env", then the environment
-let reg = zokor.new_registry();
-zokor.register(reg, "org.not_found", 404, "no such organisation");
 
 let app = App {
     name: zokor.str_or(cfg, "SERVICE_NAME", "hello"),
     requests: 0,
-    token: zokor.str_or(cfg, "API_TOKEN", "s3cret"),
-    errors: reg
+    token: zokor.str_or(cfg, "API_TOKEN", "s3cret")
 };
 
-let r = zokor.Router[App] {
-    routes: [],
-    befores: [],
-    afters: [],
-    state: app,
-    errors: reg,
-    auto_options: true,
-    auto_head: true
-};
+// new_router's own registry, carried onto every Ctx from here on --
+// register the app's own codes on top of the built-ins it already has.
+let r = zokor.new_router(app);
+zokor.register(r.errors, "org.not_found", 404, "no such organisation");
 
 // public: no authentication
 r.get("/", home);
