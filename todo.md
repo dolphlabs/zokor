@@ -27,6 +27,11 @@ library, made and merged there first.
 - [x] Test kit: request builder, response readers; request and session ids
 - [x] slang: generic structs and methods, `dir` pins, exportable enums,
   `crypto.sha1`
+- [x] **[slang] Generic functions** (generics PR 3): `fn first[T](xs: [T]) -> T`,
+  unification, expected-type inference, return-only inference through an
+  annotated `let`. Merged in slang PR #187 (`dev`). Unblocks
+  `new_router(state)`, `c.dto[T]()`, `c.query_as[T]()`, the serve loop's
+  spawned task, and `Group`'s `copied_*` helpers, below.
 
 ## 0. First: correctness and speed of what already exists
 
@@ -52,12 +57,6 @@ body is not one anyone can put in front of the internet.
 
 ## 1. Language prerequisites
 
-- [ ] **[slang] Generic functions** (generics PR 3): `fn first[T](xs: [T]) -> T`,
-  unification, expected-type inference. This unblocks five things below, each
-  currently worked around: `new_router(state)`, `c.dto[CreateOrg]()`, typed
-  query binding, the serve loop's spawned task, and the `copied_*` helpers on
-  `Group`. *Done when:* each workaround is deleted, not left beside its
-  replacement.
 - [ ] `new_router(state)` and `new_group(...)` constructors, replacing the
   six-field struct literal every service writes today.
 - [ ] `c.dto[T]()`: decode a body into `T` and report failure through
