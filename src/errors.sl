@@ -30,6 +30,7 @@
 // One renderer per registry, so every failure in a service still comes
 // out the same way -- which is the point of having a registry at all.
 
+import "builder";
 import "http";
 
 pub gc struct Code {
@@ -245,29 +246,66 @@ pub fn default_render(v: ErrorView) -> http.Response {
 // value someone else chose -- a path, a header, a field name -- so it
 // is escaped rather than trusted.
 pub fn quote(s: str) -> str {
+    let sb = builder.new_str();
+    quote_into(sb, s);
+    return sb.finish();
+}
+
+// The same, appended to a builder, which is what every renderer wants:
+// a response is many quoted strings, and joining them here costs one
+// copy at the end instead of one per string.
+//
+// Linear in the input. The common case -- nothing to escape -- writes
+// the quotes and the string itself as three pieces and copies nothing;
+// otherwise the clean stretches between escapes are written as slices.
+// (This used to append one byte at a time with `+`, which is quadratic:
+// a 128 KB detail string took six seconds.)
+pub fn quote_into(sb: builder.Str, s: str) -> builder.Str {
     let b = to_bytes(s);
-    let out = "\"";
+    let n = len(b);
     let i = 0;
-    while i < len(b) {
+    while i < n {
         let c = b[i];
-        if c == 34 {
-            out = out + "\\\"";
-        } else if c == 92 {
-            out = out + "\\\\";
-        } else if c == 10 {
-            out = out + "\\n";
-        } else if c == 13 {
-            out = out + "\\r";
-        } else if c == 9 {
-            out = out + "\\t";
-        } else if c < 32 {
-            out = out + "\\u00" + hex2(c);
-        } else {
-            out = out + to_str(b[i..i + 1]);
+        if c == 34 || c == 92 || c < 32 {
+            break;
         }
         i = i + 1;
     }
-    return out + "\"";
+    if i == n {
+        return sb.write("\"").write(s).write("\"");
+    }
+    sb.write("\"");
+    let start = 0;
+    i = 0;
+    while i < n {
+        let c = b[i];
+        let esc = "";
+        if c == 34 {
+            esc = "\\\"";
+        } else if c == 92 {
+            esc = "\\\\";
+        } else if c == 10 {
+            esc = "\\n";
+        } else if c == 13 {
+            esc = "\\r";
+        } else if c == 9 {
+            esc = "\\t";
+        } else if c < 32 {
+            esc = "\\u00" + hex2(c);
+        }
+        if len(esc) > 0 {
+            if i > start {
+                sb.write(to_str(b[start..i]));
+            }
+            sb.write(esc);
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    if n > start {
+        sb.write(to_str(b[start..n]));
+    }
+    return sb.write("\"");
 }
 
 fn hex2(c: int) -> str {
