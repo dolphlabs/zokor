@@ -32,6 +32,43 @@ r.get("/orgs/:id", show_org);
 r.post("/orgs", create_org);
 ```
 
+Middleware attaches to a **group**, not to every handler:
+
+```slang
+r.get("/health", health);            // public
+
+let api = r.group("/api/v1");
+api.before(require_token);           // everything below is guarded
+api.get("/orgs/:id", show_org);
+api.post("/orgs", create_org);
+
+let admin = api.group("/admin");     // nests: /api/v1/admin
+admin.before(require_admin);         // and keeps the parent's hooks
+admin.delete("/orgs/:id", drop_org);
+```
+
+Middleware applies to routes registered **after** it, on that group, and
+each route keeps a copy — so adding a hook later cannot silently change
+a route that already exists. One route on its own:
+`r.guarded(Method.DELETE, "/orgs/:id", drop, [require_admin])`.
+
+A `before` can also **resolve** something for the handler, which is the
+point of doing authentication once at the edge:
+
+```slang
+fn require_token(c: zokor.Ctx[App]) -> opt[http.Response] {
+    guard let user = lookup(c.state.db, c.bearer()) else {
+        return some(zokor.respond(c.state.errors, "unauthorized", c.request_id));
+    }
+    c.set_local("user_id", user.id);     // the handler reads c.local("user_id")
+    return none;
+}
+```
+
+`after` hooks run innermost first (the route's, then the router's), and
+they run even when a `before` stopped the request — so a logging hook
+cannot be skipped by a short circuit.
+
 Methods are a closed set: `r.get`, `r.post`, `r.put`, `r.patch`,
 `r.delete`, `r.head`, `r.options`, `r.trace`, `r.connect`, and
 `r.any([zokor.Method.GET, zokor.Method.POST], "/p", h)` for several at
@@ -155,6 +192,29 @@ the field errors — a struct, not a parameter list, so a later addition
 does not break renderers people have already written. One renderer per
 registry: every failure in a service still comes out the same way, which
 is the point of having a registry at all.
+
+## Testing
+
+A request builder and response readers, so a test says what it means
+instead of assembling an `http.Request` by hand:
+
+```slang
+let resp = r.serve(zokor.request(zokor.Method.POST, "/api/orgs")
+    .bearer("token")
+    .json_body("{\"name\":\"acme\"}")
+    .build());
+
+assert(zokor.resp_status(resp) == 201);
+assert(zokor.resp_json(resp).get("id").str_or("") == "org_7");
+assert(zokor.resp_error_code(denied) == "unauthorized");
+assert(zokor.resp_error_fields(invalid)[0] == "seats");
+```
+
+`request`, `get_request`, `.header`, `.bearer`, `.basic`,
+`.content_type`, `.json`, `.json_body`, `.body_str`, `.multipart` (with
+`upload_part`), and on the way back `resp_status`, `resp_text`,
+`resp_header`, `resp_json`, `resp_error_code`, `resp_error_fields`.
+It ships in the package because your service's tests need it too.
 
 ## JSON
 
@@ -377,7 +437,9 @@ src/              the package your service imports
   errors.sl       Registry, Code, ErrorView, the envelope
   config.sl       Config, load_config, require_*
   respond.sl      success responses
+  ids.sl          request and session ids
   json.sl         Json, the checker, DTO helpers
+  testkit.sl      the request builder and response readers
   upload.sl       uploads: rules, Form, Upload, safe filenames
   ws.sl           WebSocket connections and Socket.IO
   internal/
@@ -430,5 +492,12 @@ make test
   what turns the WebSocket state machine into a running server.
 - **Socket.IO over HTTP long-polling**, so a client needs
   `transports: ["websocket"]`; and binary attachment frames.
+- **The edge**, which arrives with the serve loop: CORS, security
+  headers, rate limiting, compression, static files, ETag/304, cookies,
+  panic recovery, and the timeouts and body-size limits that belong to
+  the server rather than to a handler.
+- **Operations**: structured request logging, `/healthz` and `/readyz`,
+  metrics, and trace-header propagation.
+- **Postgres helpers**, migrations and the transaction shape.
 - **`zokor check`**, the layout checker.
 - **Postgres helpers and the testing kit.**

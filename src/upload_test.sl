@@ -249,12 +249,14 @@ gc struct UpState { n: int }
 fn test_ctx_form_and_upload() {
     let st = UpState { n: 0 };
     let empty: map[str]str = {};
+    let no_locals: map[str]str = {};
     let c = Ctx[UpState] {
         state: st,
         req: upload_req("POST", one_png("photo", "p.png"), ct()),
         params: empty,
         route: "/upload",
-        request_id: "r1"
+        request_id: "r1",
+        locals: no_locals
     };
     let r = c.upload(uploads_allowing(["image/png"]));
     guard let f = r else {
@@ -263,12 +265,14 @@ fn test_ctx_form_and_upload() {
     assert(len(f.files) == 1);
 
     // a GET with a body is not an upload
+    let no_locals2: map[str]str = {};
     let c2 = Ctx[UpState] {
         state: st,
         req: upload_req("GET", one_png("photo", "p.png"), ct()),
         params: empty,
         route: "/upload",
-        request_id: "r2"
+        request_id: "r2",
+        locals: no_locals2
     };
     let r2 = c2.upload(default_uploads());
     guard let _f2 = r2 else let e = err_of(r2) {
