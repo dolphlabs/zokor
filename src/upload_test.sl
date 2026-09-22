@@ -256,7 +256,8 @@ fn test_ctx_form_and_upload() {
         params: empty,
         route: "/upload",
         request_id: "r1",
-        locals: no_locals
+        locals: no_locals,
+        errors: new_registry()
     };
     let r = c.upload(uploads_allowing(["image/png"]));
     guard let f = r else {
@@ -272,7 +273,8 @@ fn test_ctx_form_and_upload() {
         params: empty,
         route: "/upload",
         request_id: "r2",
-        locals: no_locals2
+        locals: no_locals2,
+        errors: new_registry()
     };
     let r2 = c2.upload(default_uploads());
     guard let _f2 = r2 else let e = err_of(r2) {

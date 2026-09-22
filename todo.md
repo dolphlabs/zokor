@@ -60,22 +60,47 @@ body is not one anyone can put in front of the internet.
 
 ## 1. Language prerequisites
 
-- [ ] `new_router(state)` and `new_group(...)` constructors, replacing the
-  six-field struct literal every service writes today.
-- [ ] `c.dto[T]()`: decode a body into `T` and report failure through
-  `decode_failed`, in one call.
-- [ ] `c.query_as[T]()`: bind the query string into a struct, with the same
-  field-level errors.
+- [x] `new_router(state)` and `new_group(router, prefix)` constructors,
+  replacing the seven-field `Router[S] { ... }` literal every service
+  wrote by hand. `new_group` is a free-function alias of the existing
+  `router.group(prefix)` method, for services that want constructor-style
+  naming throughout.
+- [x] `zokor.dto[T](c)`: decode a body into `T` and report failure through
+  `decode_failed`, in one call -- `let r: result[T, http.Response] =
+  zokor.dto(c);`. A free function, not a method on `Ctx[S]`: a generic
+  method cannot yet declare a type parameter of its own beyond the
+  struct's. Needed `Ctx[S]` to carry its own `errors: Registry` (from the
+  router, not the app's own state by convention) so the failure response
+  can be built without it.
+- [x] `zokor.query_as[T](c)`: the same for the query string --
+  `internal/path.query_all` plus a value-shape heuristic (`true`/`false`
+  and anything `to_int`/`to_float` accept go in unquoted, everything else
+  quoted) build a JSON object slang's own `json.decode` then fills `T`
+  from, with the same field-level errors as `dto`. Not a full binder --
+  slang has no reflection, so there is no way to ask `T` what type each
+  field wants -- but it covers str/int/float/bool fields, which is most
+  of them.
 
 ## 2. The server edge (blocked on generic functions and the serve loop)
 
 Nothing here can be honest until `listen_and_serve` exists, because they are
 properties of the server, not of a handler.
 
-- [ ] **`listen_and_serve`**: accept loop that only accepts and spawns, one
-  task per connection, keep-alive, HTTP/1.1 pipelining left off. Turns the
-  WebSocket state machine into a running server, and deletes the stand-in
-  requests from both examples.
+- [x] **`listen_and_serve`**: accept loop that only accepts and spawns, one
+  task per connection, keep-alive, HTTP/1.1 pipelining left off. `src/serve.sl`,
+  on slang's `http.read`/`http.write` over a `link`, so framing (and the
+  request-smuggling refusals that come with it) is the stdlib's, not ours.
+  Stops accepting on SIGTERM and drains before returning. `examples/hello`
+  is now a real server with a real client over a real socket -- the
+  stand-in requests are gone -- and `make check` exercises it end to end.
+  Needed two slang fixes: `spawn` of a generic function (PR #188), and
+  `crypto.rand`'s libcrypto deadlock (PR #189).
+  *Still owed:* `examples/chat`'s stand-in requests, which belong to "wire
+  WebSocket and Socket.IO into the loop" below; a request id per request,
+  blocked on the second half of the `crypto.rand` bug (it is still unsafe
+  from a task that parks on socket I/O, so the loop passes ""); and the
+  ~0.5% non-2xx rate on the body-reading path, measured in
+  `docs/benchmarks.md` and the first thing to fix here.
 - [ ] Timeouts: read header, read body, write, idle. Each configurable, each
   with a default that is safe rather than infinite.
 - [ ] Limits: max header bytes, max body bytes (refused at read time with

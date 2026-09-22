@@ -190,7 +190,8 @@ fn test_ctx_json_body() {
         params: empty,
         route: "/x",
         request_id: "r1",
-        locals: no_locals
+        locals: no_locals,
+        errors: new_registry()
     };
     let r = c.json_body();
     guard let j = r else {
