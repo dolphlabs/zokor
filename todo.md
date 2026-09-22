@@ -50,10 +50,13 @@ body is not one anyone can put in front of the internet.
   every small read, and joining fragments with `+`). Every case that was
   seconds is now single- or double-digit milliseconds; results and method
   in `bench/audit/RESULTS.md`. Not audited: slang's own `http` package.
-- [ ] **Benchmarks against Go.** The goal is to edge Go for backends, so it
-  has to be measured: hello-world, JSON echo, and a parameterised route, the
-  same three in Go's `net/http` and Fiber. Numbers go in `docs/`, honestly,
-  including where zokor loses.
+- [x] **Benchmarks against Go.** hello-world, JSON echo, and a parameterised
+  route, the same three in Go's `net/http` and Fiber; `bench/vs-go/`,
+  written up in `docs/benchmarks.md`. Result, honestly: zokor is
+  currently 3-5x behind Go net/http, because there is no accept loop yet
+  (`listen_and_serve`, below) -- not a routing or JSON problem, the same
+  gap shows on a bare `GET /`. Re-run once `listen_and_serve` lands; the
+  goal of edging Go stands.
 
 ## 1. Language prerequisites
 
