@@ -1,6 +1,12 @@
-# zokor
+<p align="center">
+  <img src="assets/zokor.png" alt="zokor" width="240">
+</p>
 
-A backend framework for [slang](https://github.com/dolphlabs/slang).
+<h1 align="center">zokor</h1>
+
+<p align="center">
+  A backend framework for <a href="https://github.com/dolphlabs/slang">slang</a>.
+</p>
 
 zokor exists for one reason: a service should spend its code on what it
 does, not on the plumbing every service rewrites — routing, configuration,
@@ -450,8 +456,10 @@ src/              the package your service imports
     ws/           RFC 6455 frames and the handshake
     sio/          Engine.IO and Socket.IO packets
 examples/
-  hello/          routes, config, errors, uploads
+  hello/          routes, config, errors, DTOs, uploads
   chat/           WebSocket and socket.io
+assets/           the logo
+todo.md           what is next, checkable
 docs/
 ```
 
@@ -486,18 +494,21 @@ make test
 
 ## Not yet
 
-- **The serve loop.** `listen_and_serve` has to spawn a task carrying
-  `Router[S]`, which needs generic **functions**; slang has generic
-  structs and methods today. It is the next thing to land, and it is
-  what turns the WebSocket state machine into a running server.
+The full list, ordered and checkable, is [todo.md](todo.md). In short:
+
+- **The serve loop.** `listen_and_serve` needs generic **functions**
+  in slang, which has generic structs and methods today. It is what
+  turns the WebSocket state machine into a running server, and it
+  carries the timeouts, body limits, graceful shutdown and panic
+  recovery that belong to the server rather than to a handler.
+- **Middleware**, none of it blocked: CORS, security headers, rate
+  limiting, cookies, JWT and basic auth, ETag/304, compression, static
+  files, request logging, health endpoints.
+- **Enterprise**: Postgres helpers with transactions, migrations,
+  metrics, tracing, background jobs, pagination, OpenAPI, and
+  `zokor check`, the layout checker.
 - **Socket.IO over HTTP long-polling**, so a client needs
   `transports: ["websocket"]`; and binary attachment frames.
-- **The edge**, which arrives with the serve loop: CORS, security
-  headers, rate limiting, compression, static files, ETag/304, cookies,
-  panic recovery, and the timeouts and body-size limits that belong to
-  the server rather than to a handler.
-- **Operations**: structured request logging, `/healthz` and `/readyz`,
-  metrics, and trace-header propagation.
-- **Postgres helpers**, migrations and the transaction shape.
-- **`zokor check`**, the layout checker.
-- **Postgres helpers and the testing kit.**
+- **Speed, measured.** Several parsers here build output by repeated
+  concatenation, which is quadratic in slang today; that audit and the
+  benchmarks against Go come first in the todo.
