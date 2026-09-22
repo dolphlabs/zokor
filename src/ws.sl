@@ -24,6 +24,7 @@
 // Ping/pong and the closing handshake are answered by the connection,
 // because they are protocol, not application.
 
+import "builder";
 import "http";
 import "internal/ws";
 import "internal/sio";
@@ -73,10 +74,19 @@ pub gc struct Message {
 
 pub gc struct Conn {
     rules: WsRules,
-    // Bytes received but not yet a whole frame.
-    buffer: bytes,
-    // A message being assembled from fragments.
-    partial: bytes,
+    // Bytes received that are not yet a whole frame, and how many
+    // bytes the frame being waited for needs in all. While `have` is
+    // below `need` a read costs one copy of that read and nothing else:
+    // no assembly, no decode, no re-copying what arrived before.
+    // (Every read used to copy everything received so far, which is
+    // quadratic in the size of a frame arriving in small reads.)
+    inbox: builder.Bytes,
+    have: int,
+    need: int,
+    // A message being assembled from fragments. A builder, not `+`:
+    // joining n fragments by concatenation copies the growing message n
+    // times, and the number of fragments is the client's to choose.
+    partial: builder.Bytes,
     partial_op: ws.Op,
     fragmenting: bool,
     // Bytes the protocol owes the peer: pong answers, the close echo.
@@ -89,8 +99,10 @@ pub gc struct Conn {
 pub fn new_conn(rules: WsRules) -> Conn {
     return Conn {
         rules: rules,
-        buffer: b"",
-        partial: b"",
+        inbox: builder.new_bytes(),
+        have: 0,
+        need: 2,
+        partial: builder.new_bytes(),
         partial_op: ws.Op.Text,
         fragmenting: false,
         outbox: b"",
@@ -138,19 +150,33 @@ pub fn upgrade(req: http.Request, rules: WsRules) -> result[http.Response, str] 
 // connection that has been desynchronised cannot be recovered by
 // carrying on.
 pub fn receive(c: Conn, chunk: bytes) -> result[[Message], str] {
-    if len(chunk) > 0 {
-        c.buffer = c.buffer + chunk;
-    }
     let out: [Message] = [];
+    let total = c.have + len(chunk);
+    // Not enough for the next frame yet: keep it, and do nothing else.
+    if total < c.need {
+        if len(chunk) > 0 {
+            c.inbox.write(chunk);
+            c.have = total;
+        }
+        return ok(out);
+    }
+    // Enough to try. With nothing kept from before, decode straight
+    // from what arrived; otherwise assemble what was kept, once.
+    let buf = chunk;
+    if c.have > 0 {
+        c.inbox.write(chunk);
+        buf = c.inbox.take();
+    }
+    c.have = 0;
+    c.need = 2;
     let at = 0;
     while true {
-        let dr = ws.decode(c.buffer, at, c.rules.max_frame_bytes, true);
+        let dr = ws.decode(buf, at, c.rules.max_frame_bytes, true);
         guard let d = dr else let e = err_of(dr) {
-            compact(c, at);
             return err(e);
         }
         if d.kind == ws.Decoded.Incomplete {
-            compact(c, at);
+            keep(c, buf, at, d.need);
             return ok(out);
         }
         let f = d.frame;
@@ -159,7 +185,6 @@ pub fn receive(c: Conn, chunk: bytes) -> result[[Message], str] {
         if ws.is_control(f.op) {
             let mr = control(c, f);
             guard let m = mr else let e = err_of(mr) {
-                compact(c, at);
                 return err(e);
             }
             push(out, m);
@@ -169,30 +194,25 @@ pub fn receive(c: Conn, chunk: bytes) -> result[[Message], str] {
         // A data frame: either a whole message, or part of one.
         if f.op == ws.Op.Continuation {
             if !c.fragmenting {
-                compact(c, at);
                 return err("a continuation frame with nothing to continue");
             }
         } else {
             if c.fragmenting {
-                compact(c, at);
                 return err("a new message started before the last one finished");
             }
             c.partial_op = f.op;
-            c.partial = b"";
+            c.partial.reset();
         }
-        if len(c.partial) + len(f.payload) > c.rules.max_message_bytes {
-            compact(c, at);
+        if c.partial.size() + len(f.payload) > c.rules.max_message_bytes {
             return err("message exceeds the " +
                        to_str(c.rules.max_message_bytes) + "-byte limit");
         }
-        c.partial = c.partial + f.payload;
+        c.partial.write(f.payload);
         c.fragmenting = !f.fin;
         if f.fin {
-            let body = c.partial;
-            c.partial = b"";
+            let body = c.partial.take();
             if c.partial_op == ws.Op.Text {
                 if !ws.valid_utf8(body) {
-                    compact(c, at);
                     return err("a text message must be valid UTF-8");
                 }
                 push(out, Message {
@@ -214,6 +234,22 @@ pub fn receive(c: Conn, chunk: bytes) -> result[[Message], str] {
         }
     }
     return ok(out);
+}
+
+// What is left over after the last whole frame, kept for the next read,
+// together with how many bytes that partial frame needs in all.
+fn keep(c: Conn, buf: bytes, at: int, need: int) -> int {
+    let n = len(buf);
+    if at >= n {
+        c.have = 0;
+        c.need = 2;
+        return 0;
+    }
+    c.inbox.reset();
+    c.inbox.write(buf[at..n]);
+    c.have = n - at;
+    c.need = need;
+    return 0;
 }
 
 fn control(c: Conn, f: ws.Frame) -> result[Message, str] {
@@ -253,18 +289,6 @@ fn control(c: Conn, f: ws.Frame) -> result[Message, str] {
         code: body.code,
         reason: body.reason
     });
-}
-
-fn compact(c: Conn, at: int) {
-    if at <= 0 {
-        return;
-    }
-    let n = len(c.buffer);
-    if at >= n {
-        c.buffer = b"";
-        return;
-    }
-    c.buffer = c.buffer[at..n];
 }
 
 // Bytes the connection owes the peer (pongs, the close echo), taken

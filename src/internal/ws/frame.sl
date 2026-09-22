@@ -40,6 +40,11 @@ pub enum Decoded {
 pub gc struct DecodeResult {
     kind: Decoded,
     frame: Frame,
+    // For Incomplete: how many bytes, counted from where decoding
+    // started, the frame needs before it can be decoded. A caller
+    // buffering a large frame in small reads uses it to wait, instead
+    // of trying again -- and re-copying what it has -- after every read.
+    need: int,
 }
 
 fn op_of(code: int) -> result[Op, str] {
@@ -79,7 +84,7 @@ pub fn decode(buf: bytes, from: int, max_payload: int,
     let n = len(buf);
     let avail = n - from;
     if avail < 2 {
-        return ok(incomplete());
+        return ok(incomplete(2));
     }
     let b0 = buf[from];
     let b1 = buf[from + 1];
@@ -105,7 +110,7 @@ pub fn decode(buf: bytes, from: int, max_payload: int,
     let plen = short_len;
     if short_len == 126 {
         if avail < 4 {
-            return ok(incomplete());
+            return ok(incomplete(4));
         }
         plen = (buf[from + 2] << 8) | buf[from + 3];
         hdr = 4;
@@ -115,7 +120,7 @@ pub fn decode(buf: bytes, from: int, max_payload: int,
         }
     } else if short_len == 127 {
         if avail < 10 {
-            return ok(incomplete());
+            return ok(incomplete(10));
         }
         if (buf[from + 2] & 128) != 0 {
             return err("payload length has its high bit set");
@@ -151,7 +156,7 @@ pub fn decode(buf: bytes, from: int, max_payload: int,
     }
     let total = hdr + mask_len + plen;
     if avail < total {
-        return ok(incomplete());
+        return ok(incomplete(total));
     }
     let data_at = from + hdr + mask_len;
     let payload: bytes = b"";
@@ -176,14 +181,16 @@ pub fn decode(buf: bytes, from: int, max_payload: int,
     }
     return ok(DecodeResult {
         kind: Decoded.Frame,
-        frame: Frame { fin: fin, op: op, payload: payload, size: total }
+        frame: Frame { fin: fin, op: op, payload: payload, size: total },
+        need: 0
     });
 }
 
-fn incomplete() -> DecodeResult {
+fn incomplete(need: int) -> DecodeResult {
     return DecodeResult {
         kind: Decoded.Incomplete,
-        frame: Frame { fin: false, op: Op.Text, payload: b"", size: 0 }
+        frame: Frame { fin: false, op: Op.Text, payload: b"", size: 0 },
+        need: need
     };
 }
 
