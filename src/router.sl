@@ -15,6 +15,7 @@
 
 import "http";
 import "internal/path";
+import "strings";
 
 // The HTTP methods, as a closed set. A service names `zokor.Method.GET`,
 // not "GET": a typo is then a compile error rather than a route that
@@ -246,16 +247,8 @@ impl Router[S] {
         let i = 0;
         while i < len(r.segs) {
             if i == r.wild {
-                let rest = "";
-                let j = i;
-                while j < len(segs) {
-                    if j > i {
-                        rest = rest + "/";
-                    }
-                    rest = rest + segs[j];
-                    j = j + 1;
-                }
-                params[r.names[i]] = rest;
+                // one join instead of one concatenation per segment
+                params[r.names[i]] = strings.join(segs[i..len(segs)], "/");
                 return true;
             }
             if len(r.names[i]) > 0 {

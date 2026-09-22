@@ -33,22 +33,18 @@ library, made and merged there first.
 These come before new features, because a framework that is slow on a large
 body is not one anyone can put in front of the internet.
 
-- [ ] **[slang] A growable byte and string builder.** Concatenation is
-  quadratic: building 80 KB one byte at a time takes **2 seconds** (10 KB is
-  21 ms, 40 KB is 326 ms). slang has no builder, so every parser here that
-  appends per byte has this cost. `bytes.Builder` / `strings.Builder` with an
-  amortised append and a `finish()`, or make `+=` on a local grow in place.
-  *Done when:* the same loop is linear, measured.
-- [ ] **Performance audit of everything on a request path.** *Suspected, not
-  yet measured*, in this order of concern: `json.parse_string` and `render`
-  (per-byte and per-item concatenation, so a 1 MB string field is a
-  denial of service), `multipart` header and value copying, `percent_decode`,
-  `unquote`, `Router.match_segs` wildcard join, `receive` re-copying its
-  buffer on every read. Fix by slicing spans between escapes instead of
-  copying bytes, and by the builder above. *Done when:* a benchmark for each
-  (router match, JSON parse and render of 1 KB / 100 KB / 1 MB, multipart
-  parse of 10 MB, WebSocket frames per second) is checked in and none of
-  them scales worse than linearly.
+- [x] **[slang] A growable byte and string builder.** `import "builder"`:
+  `Str` and `Bytes`, plus `strings.join_bytes` for a `[bytes]` already in
+  hand. Merged in slang PR #185. What was 2 seconds for 80 KB is now
+  linear; see slang's `bench/builder/`.
+- [x] **Performance audit of everything on a request path.** Fixed:
+  `errors.quote`, `json.parse_string`/`render`, `json.parse_object`/`rekey`
+  (duplicate-key detection was O(k^2) per object), `internal/path.percent_decode`,
+  `internal/multipart`'s copy, `internal/sio.escape`, `router.match_segs`'s
+  wildcard join, and `ws.Conn.receive` (was re-copying its whole buffer on
+  every small read, and joining fragments with `+`). Every case that was
+  seconds is now single- or double-digit milliseconds; results and method
+  in `bench/audit/RESULTS.md`. Not audited: slang's own `http` package.
 - [ ] **Benchmarks against Go.** The goal is to edge Go for backends, so it
   has to be measured: hello-world, JSON echo, and a parameterised route, the
   same three in Go's `net/http` and Fiber. Numbers go in `docs/`, honestly,

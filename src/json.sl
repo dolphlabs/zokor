@@ -873,7 +873,18 @@ fn rekey(j: Json, to_snake: bool) -> Json {
     if j.kind != JsonKind.Object {
         return j;
     }
+    // Renaming two distinct original keys to the same new spelling is
+    // rare (two case variants of one logical field) but not impossible,
+    // so duplicates still collapse to "last wins" -- just not through
+    // `set`'s linear search, which turns rebuilding a k-key object into
+    // k^2 work. Past a handful of keys the same seen-index `parse_object`
+    // uses answers "have we placed this key already?" in O(1).
+    //
+    // (Before this, rewriting the keys of an 8,000-key object took
+    // 800ms; a linear rebuild is the only reason it should take longer
+    // than parsing the object in the first place.)
     let out = jobj();
+    let seen: opt[map[str]int] = none;
     let i = 0;
     while i < len(j.keys) {
         let k = j.keys[i];
@@ -881,7 +892,20 @@ fn rekey(j: Json, to_snake: bool) -> Json {
         if to_snake {
             nk = to_snake_case(k);
         }
-        out.set(nk, rekey(j.values[i], to_snake));
+        let v = rekey(j.values[i], to_snake);
+        if len(out.keys) < 12 {
+            out.set(nk, v);
+        } else {
+            let index = seen ?? index_of_keys(out);
+            seen = some(index);
+            if has(index, nk) {
+                out.values[index[nk]] = v;
+            } else {
+                index[nk] = len(out.keys);
+                push(out.keys, nk);
+                push(out.values, v);
+            }
+        }
         i = i + 1;
     }
     return out;
