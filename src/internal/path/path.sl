@@ -95,6 +95,42 @@ pub fn query_get(qs: str, name: str) -> str {
     return "";
 }
 
+// Every key and value from a query string, percent-decoded. A repeated
+// key keeps its LAST value, the same rule browsers use for a form's own
+// repeated fields. A key with no `=` gets "", same as `query_get`.
+pub fn query_all(qs: str) -> map[str]str {
+    let out: map[str]str = {};
+    let b = to_bytes(qs);
+    let n = len(b);
+    let start = 0;
+    let i = 0;
+    while i <= n {
+        if i == n || b[i] == 38 {
+            if i > start {
+                let eq = start;
+                let found = -1;
+                while eq < i {
+                    if b[eq] == 61 {
+                        found = eq;
+                        eq = i;
+                    } else {
+                        eq = eq + 1;
+                    }
+                }
+                if found < 0 {
+                    out[to_str(b[start..i])] = "";
+                } else {
+                    out[to_str(b[start..found])] =
+                        percent_decode(to_str(b[found + 1..i]));
+                }
+            }
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
 fn hex_val(c: int) -> int {
     if c >= 48 && c <= 57 {
         return c - 48;
