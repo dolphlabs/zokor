@@ -22,6 +22,7 @@
 //   * turning any of the above into the same error envelope everything
 //     else uses, with the offending FIELD named.
 
+import "builder";
 import "http";
 
 pub enum JsonKind {
@@ -316,47 +317,15 @@ impl Json {
 
     // The JSON text of this value. Keys keep the order they were set
     // in, which makes a response diffable and a test readable.
+    //
+    // One builder for the whole document, so the cost is linear in its
+    // size. (Each level used to return its own string to be joined by
+    // its parent, which copies every byte once per level of nesting and
+    // once per sibling: 128 KB of integers took ten seconds.)
     pub fn render(self: Json) -> str {
-        if self.kind == JsonKind.Null {
-            return "null";
-        }
-        if self.kind == JsonKind.Bool {
-            if self.bool_val {
-                return "true";
-            }
-            return "false";
-        }
-        if self.kind == JsonKind.Number {
-            if len(self.raw) == 0 {
-                return "0";
-            }
-            return self.raw;
-        }
-        if self.kind == JsonKind.String {
-            return quote(self.text);
-        }
-        if self.kind == JsonKind.Array {
-            let out = "[";
-            let i = 0;
-            while i < len(self.items) {
-                if i > 0 {
-                    out = out + ",";
-                }
-                out = out + self.items[i].render();
-                i = i + 1;
-            }
-            return out + "]";
-        }
-        let out = "{";
-        let i = 0;
-        while i < len(self.keys) {
-            if i > 0 {
-                out = out + ",";
-            }
-            out = out + quote(self.keys[i]) + ":" + self.values[i].render();
-            i = i + 1;
-        }
-        return out + "}";
+        let sb = builder.new_str();
+        write_json(self, sb);
+        return sb.finish();
     }
 }
 
@@ -365,6 +334,51 @@ fn int_of_float(raw: str, fallback: int) -> int {
         return fallback;
     }
     return f as int;
+}
+
+fn write_json(j: Json, sb: builder.Str) -> int {
+    if j.kind == JsonKind.Null {
+        sb.write("null");
+    } else if j.kind == JsonKind.Bool {
+        if j.bool_val {
+            sb.write("true");
+        } else {
+            sb.write("false");
+        }
+    } else if j.kind == JsonKind.Number {
+        if len(j.raw) == 0 {
+            sb.write("0");
+        } else {
+            sb.write(j.raw);
+        }
+    } else if j.kind == JsonKind.String {
+        quote_into(sb, j.text);
+    } else if j.kind == JsonKind.Array {
+        sb.write("[");
+        let i = 0;
+        while i < len(j.items) {
+            if i > 0 {
+                sb.write(",");
+            }
+            write_json(j.items[i], sb);
+            i = i + 1;
+        }
+        sb.write("]");
+    } else {
+        sb.write("{");
+        let i = 0;
+        while i < len(j.keys) {
+            if i > 0 {
+                sb.write(",");
+            }
+            quote_into(sb, j.keys[i]);
+            sb.write(":");
+            write_json(j.values[i], sb);
+            i = i + 1;
+        }
+        sb.write("}");
+    }
+    return 0;
 }
 
 // ---------------------------------------------------------------- //
@@ -473,8 +487,21 @@ fn parse_literal(c: Cursor, word: str, v: Json) -> Json {
     return v;
 }
 
+fn index_of_keys(o: Json) -> map[str]int {
+    let m: map[str]int = {};
+    let k = 0;
+    while k < len(o.keys) {
+        m[o.keys[k]] = k;
+        k = k + 1;
+    }
+    return m;
+}
+
 fn parse_object(c: Cursor) -> Json {
     let o = jobj();
+    // Built only for a large object: an empty map costs more than the
+    // whole of a typical five-key object.
+    let seen: opt[map[str]int] = none;
     c.i = c.i + 1;
     c.depth = c.depth + 1;
     skip_ws(c);
@@ -502,7 +529,24 @@ fn parse_object(c: Cursor) -> Json {
         if len(c.fail) > 0 {
             return jnull();
         }
-        o.set(key, v);
+        // `set` searches the keys, which is linear per key and so
+        // quadratic for a large object. Past a handful of keys a map of
+        // key -> position answers "seen this one?" in constant time; a
+        // duplicate replaces the earlier value and keeps its place, as
+        // `set` does.
+        if len(o.keys) < 12 {
+            o.set(key, v);
+        } else {
+            let index = seen ?? index_of_keys(o);
+            seen = some(index);
+            if has(index, key) {
+                o.values[index[key]] = v;
+            } else {
+                index[key] = len(o.keys);
+                push(o.keys, key);
+                push(o.values, v);
+            }
+        }
         skip_ws(c);
         if c.i >= len(c.b) {
             return fail_at(c, "unterminated object");
@@ -556,15 +600,50 @@ fn parse_array(c: Cursor) -> Json {
     return a;
 }
 
+// A string is scanned for its end, and copied ONCE.
+//
+// With no escape in it -- nearly every string -- that is a single slice.
+// With escapes, the clean stretches between them are written to a
+// builder as slices and each escape as the bytes it stands for. (This
+// used to append one byte at a time with `+`, which is quadratic: a
+// 128 KB string took six seconds to parse.)
 fn parse_string(c: Cursor) -> str {
     c.i = c.i + 1;
-    let out: bytes = b"";
     let n = len(c.b);
+    let start = c.i;
+    let i = start;
+    while i < n {
+        let ch = c.b[i];
+        if ch == 34 {
+            c.i = i + 1;
+            return to_str(c.b[start..i]);
+        }
+        if ch == 92 {
+            break;
+        }
+        if ch < 32 {
+            c.i = i;
+            fail_at(c, "a control character must be escaped in a string");
+            return "";
+        }
+        i = i + 1;
+    }
+    if i >= n {
+        c.i = n;
+        fail_at(c, "unterminated string");
+        return "";
+    }
+    // there is at least one escape: assemble
+    let out = builder.new_bytes();
+    if i > start {
+        out.write(c.b[start..i]);
+    }
+    c.i = i;
     while c.i < n {
         let ch = c.b[c.i];
         if ch == 34 {
             c.i = c.i + 1;
-            return to_str(out);
+            return to_str(out.finish());
         }
         if ch == 92 {
             c.i = c.i + 1;
@@ -573,31 +652,24 @@ fn parse_string(c: Cursor) -> str {
                 return "";
             }
             let e = c.b[c.i];
-            let one: bytes = b".";
             if e == 110 {
-                one[0] = 10;
-                out = out + one;
+                out.write_byte(10);
             } else if e == 116 {
-                one[0] = 9;
-                out = out + one;
+                out.write_byte(9);
             } else if e == 114 {
-                one[0] = 13;
-                out = out + one;
+                out.write_byte(13);
             } else if e == 98 {
-                one[0] = 8;
-                out = out + one;
+                out.write_byte(8);
             } else if e == 102 {
-                one[0] = 12;
-                out = out + one;
+                out.write_byte(12);
             } else if e == 34 || e == 92 || e == 47 {
-                one[0] = e;
-                out = out + one;
+                out.write_byte(e);
             } else if e == 117 {
                 let cp = parse_hex4(c);
                 if len(c.fail) > 0 {
                     return "";
                 }
-                out = out + utf8_of(cp);
+                out.write(utf8_of(cp));
                 continue;
             } else {
                 fail_at(c, "unknown escape");
@@ -610,8 +682,16 @@ fn parse_string(c: Cursor) -> str {
             fail_at(c, "a control character must be escaped in a string");
             return "";
         }
-        out = out + c.b[c.i..c.i + 1];
-        c.i = c.i + 1;
+        // a clean stretch: find where it ends and copy it whole
+        let from = c.i;
+        while c.i < n {
+            let cc = c.b[c.i];
+            if cc == 34 || cc == 92 || cc < 32 {
+                break;
+            }
+            c.i = c.i + 1;
+        }
+        out.write(c.b[from..c.i]);
     }
     fail_at(c, "unterminated string");
     return "";
