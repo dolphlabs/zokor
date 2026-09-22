@@ -7,17 +7,75 @@ headline number for why, and what closes the gap.
 
 ## The result, in one line
 
-Against the same three endpoints, zokor currently serves **roughly 3x fewer
-requests/second than Go's stdlib `net/http`** on the two GET routes, and
-**6.6x fewer** on the JSON POST -- which also fails about half a percent of
-its requests, an open bug described below. Fiber is further ahead again.
+zokor serves **~17.8k req/s** where Go's `net/http` serves **~53.5k** on this
+machine. Almost none of that gap is zokor, and none of it is the language:
+it is slang's own `http` package, which costs two thirds of the throughput
+of the socket layer it sits on.
 
-This now measures zokor's own `listen_and_serve`, not a stand-in: the
-hand-rolled accept loop this benchmark used to carry is gone. What is left
-of the gap is the server edge's first cut against two servers that
-represent years of tuning -- no timeouts, no limits, no buffer reuse
-between connections, one 16 KB read buffer and one 16 KB arena allocated
-per connection. Those are the next todo items, in that order.
+## Where the gap actually is
+
+Same machine, same tool, matched 200-byte bodies, keep-alive, `-c 50`:
+
+| server | req/s |
+|---|---:|
+| slang, raw socket, no HTTP parsing | **59,392** |
+| Go `net/http`, full parsing | 53,559 |
+| slang `http.read` / `http.write` | 20,051 |
+| zokor (`listen_and_serve` + router + dispatch) | ~17,800 |
+
+Read it top to bottom:
+
+- **slang's socket layer beats Go's whole HTTP server** -- 59.4k against
+  53.6k, doing the same I/O for the same bytes. The scheduler, the green
+  threads and the language are not what is costing anything here.
+- **slang's `http` package costs 66% of that** -- 59.4k down to 20.1k, a 3x
+  drop for parsing a request and serialising a response. Go's entire HTTP
+  stack costs it so little that `net/http` still lands above slang's *raw*
+  socket floor.
+- **zokor costs about 11% on top** -- 20.1k to 17.8k for routing, `Ctx[S]`,
+  the hooks and the handler. That is the framework's own overhead and it is
+  proportionate.
+
+So the number to fix is the third row, and it is in slang, not here.
+
+### What `http.read` spends it on
+
+Per request, on the hot path:
+
+- `parse_headers` allocates a fresh `map[str]str`, then for **each header**
+  allocates a bytes slice for the name, a `str` from it, a lowercased copy
+  of that, and the same pair again for the value -- roughly five allocations
+  per header, all collected. Go interns the common header names and never
+  allocates for them.
+- `http.read` calls `copy_wire(buf, filled)`, copying the entire buffered
+  request into fresh `bytes` before parsing touches it. Go parses in place
+  out of its own buffer.
+- Every `Request` and `Response` is a fresh `gc struct`. `net/http` pools
+  both.
+
+None of that is exotic to fix, and the ceiling above it is already proven:
+59.4k on the same box, in the same language, over the same sockets.
+
+## A note on slang's own `bench/http-static`
+
+slang's suite reports **slang 39,857 vs go 38,439** req/s and reads as
+"slang edges Go on HTTP". That number does not survive contact with this
+one, for two reasons, and both are in the harness rather than the language:
+
+- **slang's entry does no HTTP.** `bench/http/main.sl` does one `recv`, then
+  writes a hardcoded response and returns. Go's entry in the same table is
+  full `net/http`, parsing every request. The fair counterpart,
+  `bench/http/go_raw/main.go`, is written -- same shape, raw socket,
+  goroutine per connection -- and appears in no results table.
+- **It never tests keep-alive.** Both entries send `Connection: close`, so
+  every request pays a fresh TCP connection and the measurement is bounded
+  by connection churn, where nothing can distinguish itself. Measured here
+  that way, everything converges: slang raw 13,757, Go raw 14,910, Go
+  `net/http` 14,133. The differences only appear once a connection is
+  reused, which is how every real server runs.
+
+The language claim looks sound -- the raw row above is the evidence for it.
+The HTTP claim is measuring connection setup.
 
 ## What was measured
 
@@ -106,22 +164,6 @@ in front of the internet, whatever its throughput says.
 
 Until it is fixed, read the POST row as a bug report rather than a
 measurement.
-
-## Why, specifically
-
-- **Nothing is reused between connections.** Each one allocates its own
-  16 KB read wire and 16 KB response arena, and frees them when it ends.
-  `fasthttp` (Fiber) is well known for pooling exactly these; `net/http`
-  pools too. This is the single biggest lever still untouched.
-- **No timeouts, no limits, no tuning.** Every deadline in the loop is
-  `until_never()`, and the read buffer is one fixed size. Both are their
-  own todo items, and both exist to make the server correct under abuse
-  rather than fast -- but the shape they impose is where tuning lands.
-- **`GET /` sets the floor.** It does no routing work worth the name and
-  no encoding, and still runs at 17.8k against net/http's 51k. So the gap
-  is in the connection lifecycle, not in the router, the JSON encoder, or
-  `Ctx[S]` dispatch -- the same conclusion the previous, hand-rolled
-  version of this benchmark reached, now measured against the real thing.
 
 ## What building this found
 
