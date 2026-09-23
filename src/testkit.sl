@@ -106,14 +106,18 @@ impl TestRequest {
         return self.content_type("multipart/form-data; boundary=" + boundary);
     }
 
+    // Not fallible: a header that fails http.request()'s validation (CR
+    // or LF in a name or value, a colon in a name) here is a bug in the
+    // test that built it -- the sort of mistake that should fail loudly
+    // at the point it was made, not something every caller of build()
+    // should have to guard against on a fixture's behalf.
     pub fn build(self: TestRequest) -> http.Request {
-        return http.Request {
-            method: to_str(self.method),
-            path: self.path,
-            version: "HTTP/1.1",
-            headers: self.headers,
-            body: self.body
-        };
+        let rr = http.request(to_str(self.method), self.path, "HTTP/1.1",
+                              self.headers, self.body);
+        guard let r = rr else let e = err_of(rr) {
+            panic("TestRequest.build: " + e);
+        }
+        return r;
     }
 }
 

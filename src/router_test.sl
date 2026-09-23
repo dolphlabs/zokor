@@ -84,25 +84,21 @@ fn new_test_router() -> Router[TestState] {
 
 fn req(method: str, p: str) -> http.Request {
     let h: map[str]str = {};
-    return http.Request {
-        method: method,
-        path: p,
-        version: "HTTP/1.1",
-        headers: h,
-        body: to_bytes("")
-    };
+    let rr = http.request(method, p, "HTTP/1.1", h, to_bytes(""));
+    guard let r = rr else {
+        panic("req: bad test request");
+    }
+    return r;
 }
 
 fn req_auth(method: str, p: str, token: str) -> http.Request {
     let h: map[str]str = {};
     h["authorization"] = "Bearer " + token;
-    return http.Request {
-        method: method,
-        path: p,
-        version: "HTTP/1.1",
-        headers: h,
-        body: to_bytes("")
-    };
+    let rr = http.request(method, p, "HTTP/1.1", h, to_bytes(""));
+    guard let r = rr else {
+        panic("req_auth: bad test request");
+    }
+    return r;
 }
 
 fn test_every_http_method_routes() {
@@ -282,13 +278,11 @@ fn test_new_group_matches_the_method() {
 fn json_post(p: str, body: str) -> http.Request {
     let h: map[str]str = {};
     h["content-type"] = "application/json";
-    return http.Request {
-        method: "POST",
-        path: p,
-        version: "HTTP/1.1",
-        headers: h,
-        body: to_bytes(body)
-    };
+    let rr = http.request("POST", p, "HTTP/1.1", h, to_bytes(body));
+    guard let r = rr else {
+        panic("json_post: bad test request");
+    }
+    return r;
 }
 
 fn test_dto_decodes_or_answers_decode_failed() {
