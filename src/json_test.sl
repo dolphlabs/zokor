@@ -140,13 +140,11 @@ fn json_req(body: str, ct: str) -> http.Request {
     if len(ct) > 0 {
         h["content-type"] = ct;
     }
-    return http.Request {
-        method: "POST",
-        path: "/x",
-        version: "HTTP/1.1",
-        headers: h,
-        body: to_bytes(body)
-    };
+    let rr = http.request("POST", "/x", "HTTP/1.1", h, to_bytes(body));
+    guard let req = rr else {
+        panic("json_req: bad test request");
+    }
+    return req;
 }
 
 fn test_parse_body_and_its_failures() {

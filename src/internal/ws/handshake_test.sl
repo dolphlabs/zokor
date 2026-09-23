@@ -1,13 +1,11 @@
 import "http";
 
 fn hs_req(headers: map[str]str) -> http.Request {
-    return http.Request {
-        method: "GET",
-        path: "/ws",
-        version: "HTTP/1.1",
-        headers: headers,
-        body: b""
-    };
+    let rr = http.request("GET", "/ws", "HTTP/1.1", headers, b"");
+    guard let r = rr else {
+        panic("hs_req: bad test request");
+    }
+    return r;
 }
 
 fn good_headers() -> map[str]str {
@@ -80,13 +78,11 @@ fn test_refusals() {
     h4["sec-websocket-key"] = "tooshort==";
     assert(refusal(h4) == "the Sec-WebSocket-Key header is not 16 base64 bytes");
 
-    let r = read(http.Request {
-        method: "POST",
-        path: "/ws",
-        version: "HTTP/1.1",
-        headers: good_headers(),
-        body: b""
-    });
+    let pr = http.request("POST", "/ws", "HTTP/1.1", good_headers(), b"");
+    guard let preq = pr else {
+        panic("post handshake test: bad test request");
+    }
+    let r = read(preq);
     guard let _x = r else let e = err_of(r) {
         assert(e == "a WebSocket handshake must be a GET");
         return;

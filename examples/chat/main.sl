@@ -265,13 +265,10 @@ h["connection"] = "Upgrade";
 h["sec-websocket-version"] = "13";
 h["sec-websocket-key"] = "dGhlIHNhbXBsZSBub25jZQ==";
 h["sec-websocket-protocol"] = "chat";
-let handshake = http.Request {
-    method: "GET",
-    path: "/ws",
-    version: "HTTP/1.1",
-    headers: h,
-    body: b""
-};
+let hr = http.request("GET", "/ws", "HTTP/1.1", h, b"");
+guard let handshake = hr else {
+    panic("bad handshake request");
+}
 let resp = r.serve(handshake);
 println("handshake -> " + to_str(resp.status) + " " + resp.status_text);
 println("  sec-websocket-accept: " + resp.headers["sec-websocket-accept"]);
@@ -280,13 +277,10 @@ println("");
 
 // a request that is not an upgrade gets a normal error, same route
 let plain: map[str]str = {};
-let not_ws = http.Request {
-    method: "GET",
-    path: "/ws",
-    version: "HTTP/1.1",
-    headers: plain,
-    body: b""
-};
+let nwr = http.request("GET", "/ws", "HTTP/1.1", plain, b"");
+guard let not_ws = nwr else {
+    panic("bad plain request");
+}
 let bad = r.serve(not_ws);
 println("plain GET /ws -> " + to_str(bad.status) + " " + to_str(bad.body));
 println("");

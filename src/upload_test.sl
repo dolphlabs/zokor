@@ -235,13 +235,11 @@ fn test_extension_and_media_helpers() {
 fn upload_req(method: str, body: bytes, content_type: str) -> http.Request {
     let h: map[str]str = {};
     h["content-type"] = content_type;
-    return http.Request {
-        method: method,
-        path: "/upload",
-        version: "HTTP/1.1",
-        headers: h,
-        body: body
-    };
+    let rr = http.request(method, "/upload", "HTTP/1.1", h, body);
+    guard let req = rr else {
+        panic("upload_req: bad test request");
+    }
+    return req;
 }
 
 gc struct UpState { n: int }
