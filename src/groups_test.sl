@@ -54,8 +54,7 @@ fn mark_global(c: Ctx[GState], r: http.Response) -> http.Response {
 
 fn mark_route(c: Ctx[GState], r: http.Response) -> http.Response {
     push(c.state.trail, "route-after");
-    r.headers["x-route-after"] = "yes";
-    return r;
+    return with_header(r, "x-route-after", "yes");
 }
 
 fn test_group_prefixes_join() {
@@ -148,7 +147,7 @@ fn test_after_hooks_run_innermost_first() {
     api.after(mark_route);
     api.get("/x", ok_route);
     let resp = r.serve(get_request("/api/x").build());
-    assert(resp.headers["x-route-after"] == "yes");
+    assert(resp_header(resp, "x-route-after") == "yes");
     assert(len(r.state.trail) == 2);
     assert(r.state.trail[0] == "route-after");
     assert(r.state.trail[1] == "global-after");
@@ -163,7 +162,7 @@ fn test_after_hooks_run_even_when_a_before_stops_the_request() {
     api.get("/me", whoami);
     let resp = r.serve(get_request("/api/me").build());
     assert(resp_status(resp) == 401);
-    assert(resp.headers["x-route-after"] == "yes");
+    assert(resp_header(resp, "x-route-after") == "yes");
     assert(len(r.state.trail) == 2);
 }
 

@@ -2,15 +2,53 @@
 
 The todo item this answers: "the goal is to edge Go for backends, so it has
 to be measured... numbers go in docs, honestly, including where zokor
-loses." This is that measurement, today, and zokor loses it. Read past the
-headline number for why, and what closes the gap.
+loses." This is that measurement, today, and zokor still loses it -- but
+by half what it used to. Read past the headline number for why, and what
+closes the rest of the gap.
 
-## The result, in one line
+## The result, in one line (wrk, 2026-09-24)
 
-zokor serves **~17.8k req/s** where Go's `net/http` serves **~53.5k** on this
-machine. Almost none of that gap is zokor, and none of it is the language:
-it is slang's own `http` package, which costs two thirds of the throughput
-of the socket layer it sits on.
+On this machine (MacBook Pro, i5-8279U, 8 logical / 4 physical cores,
+`wrk -t4 -c50 -d15s`, keep-alive, 3 rounds, medians):
+
+| Endpoint | zokor (`perf/http-volume`) | Go `net/http` | Go Fiber |
+|---|---|---:|---:|
+| `GET /` | **~35.4k** req/s | ~101k req/s | ~117k req/s |
+| `GET /users/:id` | **~21.5k** req/s | ~96k req/s | ~112k req/s |
+
+Those two cells are STALE -- they were measured with the frame path
+doing the framing work twice (a `parse_frame` rescan inside
+`read_frame`, plus a `to_bytes` per route in the matchers). A same-app
+A/B under `wrk` (dev app + dev slang vs. dev app + volume slang,
+`wrk -t4 -c50 -d15s`, 3 rounds) shows what that cost:
+
+| Endpoint | dev (baseline) | volume, double-framing (before fix) | volume, single pass (after fix) |
+|---|---|---:|---:|
+| `GET /` | ~51-53k | ~30-39k (**slower than dev**) | ~48-50k (parity) |
+| `GET /users/:id` | ~32-34k | ~25-29k (**slower than dev**) | ~34k (parity+) |
+
+So the "dropped even" reading was real and the docs above were wrong
+to present the 35k/21k cells as a win: the volume branch, as benched,
+was slower than `dev` on the same app. The fix (single framing pass,
+inline hot method/path compares, slang `4fd5eb7`) restores parity on
+`/` and a touch better on `/users/:id`. The table at the top of this
+section still needs a full re-run -- it mixes the stale volume binary
+against Go, which is not a comparison. Until that re-run lands, read
+the A/B above, not the headline cells.
+
+RSS mid-run (30s soak, same load): zokor ~4.5-5.4 MB, Fiber ~6.9 MB,
+`net/http` ~14-15 MB. zokor is the lightest server in the matrix by a
+clear margin -- the GC pressure the volume work removed shows up here
+first. (RSS was measured on the pre-fix binary; the fix only removes
+work, but re-confirm it with the re-run.)
+
+The previous `ab` numbers (zokor ~17.8k vs `net/http` ~53.5k, Sept 22)
+are superseded by the wrk matrix above: `wrk` with 4 threads drives
+roughly twice the load `ab`'s single thread could, and every server
+moved up -- the ratios moved with them. What has NOT changed is the
+shape: `/users/:id` costs zokor ~40% against `/`, while both Go
+servers lose ~5%. That delta is the per-request work still left, and
+it is itemised below.
 
 ## Where the gap actually is
 
@@ -37,6 +75,36 @@ Read it top to bottom:
   proportionate.
 
 So the number to fix is the third row, and it is in slang, not here.
+
+## What `perf/http-volume` changed (and what it is worth)
+
+The branch this bench ran on (`perf/http-volume` in both repos) cut
+per-request allocation volume ~21% in bytes on the alloc probe (3.74 MB
+down to 2.97 MB over 2000 requests) via:
+
+- pre-shaped `http.Response` (no header map on the hot path),
+- `parse_frame` / `read_frame` frame dispatch (route on wire offsets,
+  one head copy, Request built once for the route that runs),
+- `strings.bytes_zero` single-alloc sized serialize,
+- `serve_frame` exact/`:id` fast paths (no segs list, no params map
+  unless the route needs one).
+
+Against the old `ab` baseline that is roughly a **2x throughput win**
+on `GET /` (17.5k under `ab` then, ~35k under `wrk` now -- different
+tools, so read the ratio inside each tool, not across them). The
+remaining ~3x gap to `net/http` (and ~5x on `/users/:id`) is accounted
+for, in order, by:
+
+1. **JSON `+` chains and `to_bytes(body)`** -- `user_json` renders via
+   string concatenation and the response copies str to bytes. Untouched
+   by this branch; the next 5-8 allocs/request.
+2. **`Ctx[S]` maps per request** -- `params` and `locals` maps are built
+   even when the route binds nothing. The frame path skips `params`
+   only for exact routes; `locals` is always allocated.
+3. **Per-request `Request`/`Response` structs** -- fresh GC structs where
+   Go pools both. Cheap next to the maps, but still per-request.
+4. **Header scans that still copy** -- `find_field`/`value_at` allocate
+   per lookup; the close decision and content-type reads each cost one.
 
 ### What `http.read` spends it on
 
@@ -122,7 +190,39 @@ bodies for the same requests -- checked by hand before any load was applied.
 - `bench/vs-go/run.sh` builds and runs all of this; `results_raw.txt` next
   to it is the unedited `ab` output the table below is drawn from.
 
-## Results
+## Methodology (wrk matrix, Sept 24)
+
+- **Load generator: `wrk 4.2.0`** (`wrk -t4 -c50 -d15s`), replacing the
+  `ab` the old matrix used. `wrk`'s 4 threads drive roughly twice the
+  load `ab`'s single thread could -- every server moved up, so compare
+  ratios inside one tool, never absolutes across tools. Raw output:
+  `/tmp/wrk_matrix.txt` (kept with the run; `results_raw.txt` next to
+  `run.sh` is the old `ab` output, retained for history).
+- **One machine, client and server sharing 8 logical / 4 physical cores**
+  (macOS, x86_64 i5-8279U), one server running at a time so the three never
+  compete with each other for those cores.
+- **Duration-based**: each cell is 15 seconds at concurrency 50,
+  keep-alive throughout, 3 rounds; the table reports medians. The
+  `/users/42` cell reuses the `/` connection pattern; `POST /echo` was
+  not re-run in this matrix (its row below stands until the volume
+  branch re-measures it -- the DTO/`+`-chain path is exactly what the
+  next branch changes, so measuring it now would date instantly).
+- RSS is `ps -o rss` sampled 5/15/25s into a 30s soak at the same load.
+
+## Results (wrk, medians of 3)
+
+| Endpoint | zokor | Go net/http | Go Fiber |
+|---|---|---:|---:|
+| `GET /` | 35,414 | 100,861 | 117,148 |
+| `GET /users/:id` | 21,405 | 96,462 | 112,738 |
+
+Full rounds in `/tmp/wrk_matrix.txt`. Every run had zero socket errors
+except one zokor `/users/42` round (23 timeouts, still 21.4k req/s --
+same timeout shape the old `ab` matrix showed at higher concurrency,
+worth a note, not a verdict: `wrk` timeouts under GC pauses are the
+prime suspect, and the RSS soak is the evidence for where to look).
+
+## Previous results (ab, Sept 22 -- superseded, kept for history)
 
 Requests/second (mean), and the p50/p95/p99 latency `ab` reported, in ms:
 

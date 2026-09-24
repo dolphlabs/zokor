@@ -208,38 +208,40 @@ fn render(r: Registry, code: str, message: str, request_id: str,
 
 // zokor's own shape, and the one a service gets until it says otherwise.
 pub fn default_render(v: ErrorView) -> http.Response {
-    let body = "{\"error\":{\"code\":" + quote(v.code) +
-               ",\"message\":" + quote(v.message) +
-               ",\"status\":" + to_str(v.status);
+    let bb = builder.new_bytes();
+    bb.write_str("{\"error\":{\"code\":\"");
+    bb.write(http.escape_json_bytes(to_bytes(v.code)));
+    bb.write_str("\",\"message\":\"");
+    bb.write(http.escape_json_bytes(to_bytes(v.message)));
+    bb.write_str("\",\"status\":");
+    bb.write_str(to_str(v.status));
     if len(v.request_id) > 0 {
-        body = body + ",\"request_id\":" + quote(v.request_id);
+        bb.write_str(",\"request_id\":\"");
+        bb.write(http.escape_json_bytes(to_bytes(v.request_id)));
+        bb.write_str("\"");
     }
     if len(v.fields) > 0 {
-        body = body + ",\"fields\":[";
+        bb.write_str(",\"fields\":[");
         let i = 0;
         while i < len(v.fields) {
             if i > 0 {
-                body = body + ",";
+                bb.write_str(",");
             }
-            body = body + "{\"field\":" + quote(v.fields[i].field) +
-                   ",\"reason\":" + quote(v.fields[i].reason) + "}";
+            bb.write_str("{\"field\":\"");
+            bb.write(http.escape_json_bytes(to_bytes(v.fields[i].field)));
+            bb.write_str("\",\"reason\":\"");
+            bb.write(http.escape_json_bytes(to_bytes(v.fields[i].reason)));
+            bb.write_str("\"}");
             i = i + 1;
         }
-        body = body + "]";
+        bb.write_str("]");
     }
-    body = body + "}}";
-
-    let headers: map[str]str = {};
-    headers["content-type"] = "application/json; charset=utf-8";
+    bb.write_str("}}");
+    let r = http.text_response_bytes(v.status, status_text(v.status), "application/json; charset=utf-8", bb.finish());
     if len(v.request_id) > 0 {
-        headers["x-request-id"] = v.request_id;
+        r = http.with_header(r, "x-request-id", v.request_id);
     }
-    return http.Response {
-        status: v.status,
-        status_text: status_text(v.status),
-        headers: headers,
-        body: to_bytes(body)
-    };
+    return r;
 }
 
 // A JSON string, escaped. Everything that reaches here can contain a

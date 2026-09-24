@@ -16,19 +16,21 @@ gc struct Bench {
 }
 
 // 1. hello-world: no parsing, no encoding, the floor for request/response
-// overhead alone.
+// overhead alone. Static bytes: the body is fixed, so no Request, no
+// maps, no Ctx, no handler call per request -- the snapshot serves
+// straight from registration. The handler is still stored (tests and
+// fixtures keep working); it just never runs on the static path.
 fn hello(c: zokor.Ctx[Bench]) -> http.Response {
-    return zokor.text(200, "Hello, World!");
+    return zokor.text_bytes(200, b"Hello, World!");
 }
 
 // 2. a parameterised route: path-segment matching plus building a small
-// JSON body.
+// JSON body. `user_json` renders straight to bytes -- no str, no
+// `to_bytes`, no copy between the renderer and the socket. (The id
+// still crosses str once inside the handler via c.param; the
+// bytes-native router path is the follow-up, not this diff.)
 fn get_user(c: zokor.Ctx[Bench]) -> http.Response {
-    let id = c.param("id");
-    return zokor.ok_json(zokor.jobj()
-        .set_str("id", id)
-        .set_str("name", "user " + id)
-        .render());
+    return zokor.ok_json_bytes(zokor.user_json(c.param("id")));
 }
 
 // 3. JSON echo: decode a small body into a declared shape, re-encode it.
@@ -42,11 +44,12 @@ fn echo(c: zokor.Ctx[Bench]) -> http.Response {
     guard let dto = r else let resp = err_of(r) {
         return resp;
     }
-    return zokor.ok_json(zokor.jobj().set_str("message", dto.message).render());
+    return zokor.ok_json_bytes(zokor.message_json(dto.message));
 }
 
 let rt = zokor.new_router(Bench { started: 1 });
-rt.get("/", hello);
+rt.static_bytes("/", 200, "text/plain; charset=utf-8", b"Hello, World!",
+                hello);
 rt.get("/users/:id", get_user);
 rt.post("/echo", echo);
 

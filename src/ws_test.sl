@@ -68,13 +68,11 @@ fn upgrade_req(key: str, protocols: str) -> http.Request {
     if len(protocols) > 0 {
         h["sec-websocket-protocol"] = protocols;
     }
-    return http.Request {
-        method: "GET",
-        path: "/ws",
-        version: "HTTP/1.1",
-        headers: h,
-        body: b""
-    };
+    let rr = http.request("GET", "/ws", "HTTP/1.1", h, b"");
+    guard let r = rr else {
+        panic("upgrade_req: bad test request");
+    }
+    return r;
 }
 
 fn test_upgrade() {
@@ -85,16 +83,13 @@ fn test_upgrade() {
         panic("expected a 101");
     }
     assert(resp.status == 101);
-    assert(resp.headers["sec-websocket-accept"] == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+    assert(resp_header(resp, "sec-websocket-accept") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
 
     let plain: map[str]str = {};
-    let not_ws = http.Request {
-        method: "GET",
-        path: "/",
-        version: "HTTP/1.1",
-        headers: plain,
-        body: b""
-    };
+    let nwr = http.request("GET", "/", "HTTP/1.1", plain, b"");
+    guard let not_ws = nwr else {
+        panic("not_ws: bad test request");
+    }
     assert(!is_upgrade(not_ws));
 }
 
@@ -104,7 +99,7 @@ fn test_upgrade_picks_a_subprotocol() {
     guard let resp = r else {
         panic("expected a 101");
     }
-    assert(resp.headers["sec-websocket-protocol"] == "chat");
+    assert(resp_header(resp, "sec-websocket-protocol") == "chat");
 }
 
 fn test_text_and_binary_messages() {

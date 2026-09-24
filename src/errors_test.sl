@@ -32,8 +32,8 @@ fn test_envelope_shape() {
     let r = respond(reg, "not_found", "req-1");
     assert(r.status == 404);
     assert(r.status_text == "Not Found");
-    assert(r.headers["content-type"] == "application/json; charset=utf-8");
-    assert(r.headers["x-request-id"] == "req-1");
+    assert(resp_header(r, "content-type") == "application/json; charset=utf-8");
+    assert(resp_header(r, "x-request-id") == "req-1");
     assert(body_of(r) ==
         "{\"error\":{\"code\":\"not_found\",\"message\":\"no such resource\",\"status\":404,\"request_id\":\"req-1\"}}");
 }
@@ -41,7 +41,7 @@ fn test_envelope_shape() {
 fn test_envelope_without_request_id() {
     let reg = new_registry();
     let r = respond(reg, "forbidden", "");
-    assert(!has(r.headers, "x-request-id"));
+    assert(resp_header(r, "x-request-id") == "");
     assert(body_of(r) ==
         "{\"error\":{\"code\":\"forbidden\",\"message\":\"not allowed\",\"status\":403}}");
 }
@@ -124,14 +124,7 @@ fn rfc7807(v: ErrorView) -> http.Response {
     let body = "{\"type\":\"about:blank\",\"title\":" + quote(v.code) +
                ",\"detail\":" + quote(v.message) +
                ",\"status\":" + to_str(v.status) + "}";
-    let h: map[str]str = {};
-    h["content-type"] = "application/problem+json";
-    return http.Response {
-        status: v.status,
-        status_text: status_text(v.status),
-        headers: h,
-        body: to_bytes(body)
-    };
+    return http.text_response(v.status, status_text(v.status), "application/problem+json", body);
 }
 
 fn test_default_shape_is_replaceable() {
@@ -139,7 +132,7 @@ fn test_default_shape_is_replaceable() {
     set_renderer(reg, rfc7807);
     let r = respond(reg, "not_found", "req-1");
     assert(r.status == 404);
-    assert(r.headers["content-type"] == "application/problem+json");
+    assert(resp_header(r, "content-type") == "application/problem+json");
     assert(body_of(r) ==
         "{\"type\":\"about:blank\",\"title\":\"not_found\",\"detail\":\"no such resource\",\"status\":404}");
 }
@@ -160,7 +153,7 @@ fn test_a_custom_renderer_still_sees_codes_and_fields() {
 fn test_registry_starts_on_the_default_renderer() {
     let reg = new_registry();
     let r = respond(reg, "internal", "");
-    assert(r.headers["content-type"] == "application/json; charset=utf-8");
+    assert(resp_header(r, "content-type") == "application/json; charset=utf-8");
     assert(body_of(r) ==
         "{\"error\":{\"code\":\"internal\",\"message\":\"something went wrong on our side\",\"status\":500}}");
 }

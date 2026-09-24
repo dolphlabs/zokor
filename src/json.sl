@@ -101,6 +101,66 @@ pub fn jarr() -> Json {
     return empty(JsonKind.Array);
 }
 
+// The two shapes the throughput bench serves, rendered straight to
+// bytes: no Json struct, no keys/values lists, no str in between --
+// one builder, one finish, one response. Handlers with a fixed shape
+// should do the same rather than building a Json to render once; the
+// Json builder stays for shapes that are actually dynamic.
+//
+// user_json_bytes: the id as BYTES (already sliced out of the path)
+// -- skips the to_bytes the str form pays. The bench's :id path
+// uses this; the str form stays for callers that hold a str.
+pub fn user_json(id: str) -> bytes {
+    return user_json_bytes(to_bytes(id));
+}
+
+pub fn user_json_bytes(id: bytes) -> bytes {
+    // Bench ids ("42") never escape: no quote, no backslash, no
+    // control byte. Scan once in place; the clean path (every bench
+    // request) writes straight through with no escape allocs at
+    // all. Only an id that actually needs escaping pays the
+    // escape_json_bytes builder.
+    if !needs_escape(id) {
+        let bb = builder.new_bytes();
+        bb.write_str("{\"id\":\"");
+        bb.write(id);
+        bb.write_str("\",\"name\":\"user ");
+        bb.write(id);
+        bb.write_str("\"}");
+        return bb.finish();
+    }
+    let bb = builder.new_bytes();
+    bb.write_str("{\"id\":\"");
+    bb.write(http.escape_json_bytes(id));
+    bb.write_str("\",\"name\":\"user ");
+    bb.write(http.escape_json_bytes(id));
+    bb.write_str("\"}");
+    return bb.finish();
+}
+
+// One in-place scan, zero allocs: true iff any byte needs JSON
+// escaping (quote, backslash, or control). The caller branches on
+// it -- clean payloads skip the escape builder entirely.
+fn needs_escape(b: bytes) -> bool {
+    let i = 0;
+    while i < len(b) {
+        let c = b[i];
+        if c == 34 || c == 92 || c < 32 {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+pub fn message_json(message: str) -> bytes {
+    let bb = builder.new_bytes();
+    bb.write_str("{\"message\":\"");
+    bb.write(http.escape_json_bytes(to_bytes(message)));
+    bb.write_str("\"}");
+    return bb.finish();
+}
+
 // Reading and building are METHODS, so lookups chain and nothing
 // collides with the rest of the package:
 //
@@ -327,6 +387,17 @@ impl Json {
         write_json(self, sb);
         return sb.finish();
     }
+
+    // Renders straight into a Bytes builder: no two-element parts
+    // list, no join, no str in between. The str version above stays
+    // for callers that pass JSON around as text; the hot path (a
+    // handler that builds one object and returns it) uses this and
+    // hands the bytes straight to http.text_response_bytes.
+    pub fn render_bytes(self: Json) -> bytes {
+        let sb = builder.new_bytes();
+        write_json_bytes(self, sb);
+        return sb.finish();
+    }
 }
 
 fn int_of_float(raw: str, fallback: int) -> int {
@@ -379,6 +450,93 @@ fn write_json(j: Json, sb: builder.Str) -> int {
         sb.write("}");
     }
     return 0;
+}
+
+fn write_json_bytes(j: Json, sb: builder.Bytes) -> int {
+    if j.kind == JsonKind.Null {
+        sb.write_str("null");
+        return 0;
+    }
+    if j.kind == JsonKind.Bool {
+        if j.bool_val {
+            sb.write_str("true");
+        } else {
+            sb.write_str("false");
+        }
+        return 0;
+    }
+    if j.kind == JsonKind.Number {
+        sb.write_str(j.raw);
+        return 0;
+    }
+    if j.kind == JsonKind.String {
+        quote_bytes_into(sb, j.text);
+        return 0;
+    }
+    if j.kind == JsonKind.Array {
+        sb.write_str("[");
+        let i = 0;
+        while i < len(j.items) {
+            if i > 0 {
+                sb.write_str(",");
+            }
+            write_json_bytes(j.items[i], sb);
+            i = i + 1;
+        }
+        sb.write_str("]");
+        return 0;
+    }
+    sb.write_str("{");
+    let k = 0;
+    while k < len(j.keys) {
+        if k > 0 {
+            sb.write_str(",");
+        }
+        quote_bytes_into(sb, j.keys[k]);
+        sb.write_str(":");
+        write_json_bytes(j.values[k], sb);
+        k = k + 1;
+    }
+    sb.write_str("}");
+    return 0;
+}
+
+fn quote_bytes_into(sb: builder.Bytes, s: str) -> builder.Bytes {
+    sb.write_str("\"");
+    let b = to_bytes(s);
+    let n = len(b);
+    let start = 0;
+    let i = 0;
+    while i < n {
+        let c = b[i];
+        let esc = "";
+        if c == 34 {
+            esc = "\\\"";
+        } else if c == 92 {
+            esc = "\\\\";
+        } else if c == 10 {
+            esc = "\\n";
+        } else if c == 13 {
+            esc = "\\r";
+        } else if c == 9 {
+            esc = "\\t";
+        } else if c < 32 {
+            esc = "\\u00" + hex2(c);
+        }
+        if len(esc) > 0 {
+            if i > start {
+                sb.write(b[start..i]);
+            }
+            sb.write_str(esc);
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    if n > start {
+        sb.write(b[start..n]);
+    }
+    sb.write_str("\"");
+    return sb;
 }
 
 // ---------------------------------------------------------------- //
