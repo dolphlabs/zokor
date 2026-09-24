@@ -262,8 +262,14 @@ impl Router[S] {
 
     // Does this route's pattern match these segments? Binds parameters
     // into `params` only on a match, so a near miss costs no map.
-    fn match_segs(self: Router[S], r: Route[S], segs: [str],
-                  params: map[str]str) -> bool {
+    //
+    // Two entry points because the 405/OPTIONS path (`allowed`) only
+    // needs to know WHETHER a route matches, while dispatch needs the
+    // bindings: `match_only` skips the params map entirely (no alloc,
+    // no join) and `match_segs` binds on success. One shape check, not
+    // two -- `match_only` is the shape check, `match_segs` is the shape
+    // check plus the bindings.
+    fn match_only(self: Router[S], r: Route[S], segs: [str]) -> bool {
         if r.wild >= 0 {
             if len(segs) < r.wild {
                 return false;
@@ -276,16 +282,30 @@ impl Router[S] {
         let i = 0;
         while i < len(r.segs) {
             if i == r.wild {
+                return true;
+            }
+            if len(r.names[i]) == 0 && r.segs[i] != segs[i] {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    fn match_segs(self: Router[S], r: Route[S], segs: [str],
+                  params: map[str]str) -> bool {
+        if !self.match_only(r, segs) {
+            return false;
+        }
+        let i = 0;
+        while i < len(r.segs) {
+            if i == r.wild {
                 // one join instead of one concatenation per segment
                 params[r.names[i]] = strings.join(segs[i..len(segs)], "/");
                 return true;
             }
             if len(r.names[i]) > 0 {
                 params[r.names[i]] = segs[i];
-            } else {
-                if r.segs[i] != segs[i] {
-                    return false;
-                }
             }
             i = i + 1;
         }
@@ -293,14 +313,15 @@ impl Router[S] {
     }
 
     // The methods registered for a path, for `Allow` on a 405 and for
-    // an automatic OPTIONS.
+    // an automatic OPTIONS. Match-only: no params map per route, which
+    // used to cost one map (plus the wild join) per route per 405 --
+    // pure overhead on a path that answers without bindings.
     pub fn allowed(self: Router[S], p: str) -> [Method] {
         let segs = path.split(path.strip_query(p));
         let out: [Method] = [];
         let i = 0;
         while i < len(self.routes) {
-            let probe: map[str]str = {};
-            if self.match_segs(self.routes[i], segs, probe) {
+            if self.match_only(self.routes[i], segs) {
                 let m = self.routes[i].method;
                 let seen = false;
                 let j = 0;
@@ -383,8 +404,12 @@ impl Router[S] {
         let i = 0;
         while i < len(self.routes) {
             let r = self.routes[i];
-            let params: map[str]str = {};
-            if !self.match_segs(r, segs, params) {
+            // Shape first, bindings after: a near miss costs no map, and
+            // a path hit with the wrong method costs no map either --
+            // the params map is built only when this route will actually
+            // run. On a two-route bench router that saves one map per
+            // request; on a fifty-route service it saves fifty.
+            if !self.match_only(r, segs) {
                 i = i + 1;
                 continue;
             }
@@ -397,6 +422,8 @@ impl Router[S] {
                 i = i + 1;
                 continue;
             }
+            let params: map[str]str = {};
+            self.match_segs(r, segs, params);
             let locals: map[str]str = {};
             let c = Ctx[S] {
                 state: self.state,
