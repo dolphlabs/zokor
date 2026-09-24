@@ -140,13 +140,11 @@ fn json_req(body: str, ct: str) -> http.Request {
     if len(ct) > 0 {
         h["content-type"] = ct;
     }
-    return http.Request {
-        method: "POST",
-        path: "/x",
-        version: "HTTP/1.1",
-        headers: h,
-        body: to_bytes(body)
-    };
+    let rr = http.request("POST", "/x", "HTTP/1.1", h, to_bytes(body));
+    guard let req = rr else {
+        panic("json_req: bad test request");
+    }
+    return req;
 }
 
 fn test_parse_body_and_its_failures() {
@@ -182,15 +180,13 @@ fn test_parse_body_and_its_failures() {
 }
 
 fn test_ctx_json_body() {
-    let empty: map[str]str = {};
-    let no_locals: map[str]str = {};
     let c = Ctx[int] {
         state: 1,
         req: json_req("{\"name\":\"ada\"}", "application/json"),
-        params: empty,
+        params: none,
         route: "/x",
         request_id: "r1",
-        locals: no_locals,
+        locals: none,
         errors: new_registry()
     };
     let r = c.json_body();
@@ -265,6 +261,38 @@ fn test_checker_types_and_nesting() {
     assert(v.fields[1].reason == "must be an array");
     assert(v.fields[2].field == "address.city");
     assert(v.fields[2].reason == "must not be empty");
+}
+
+fn test_render_bytes_matches_render() {
+    let j = jobj().set_str("id", "42").set_str("name", "user 42");
+    assert(to_str(j.render_bytes()) == j.render());
+    let n = jobj().set_int("a", 1).set_bool("b", true).set("c", jnull());
+    assert(to_str(n.render_bytes()) == n.render());
+    let q = jobj().set_str("msg", "quote \" backslash \\ newline \n tab \t");
+    assert(to_str(q.render_bytes()) == q.render());
+    let arr = jarr().add_str("x").add_int(7);
+    assert(to_str(arr.render_bytes()) == arr.render());
+}
+
+fn test_ok_json_bytes_matches_ok_json() {
+    let body = jobj().set_str("id", "42").render_bytes();
+    let a = ok_json_bytes(body);
+    let b = ok_json(to_str(body));
+    assert(a.status == b.status);
+    assert(a.content_type == b.content_type);
+    assert(a.body == b.body);
+    assert(http.serialize(a) == http.serialize(b));
+}
+
+fn test_fixed_shape_helpers_match_the_json_builder() {
+    let id = "42";
+    assert(to_str(user_json(id)) == jobj().set_str("id", id).set_str("name", "user " + id).render());
+    assert(to_str(user_json_bytes(to_bytes(id))) == jobj().set_str("id", id).set_str("name", "user " + id).render());
+    assert(to_str(message_json("hi")) == jobj().set_str("message", "hi").render());
+    let tricky = "q\" b\\ n\n t\t";
+    assert(to_str(user_json(tricky)) == jobj().set_str("id", tricky).set_str("name", "user " + tricky).render());
+    assert(to_str(user_json_bytes(to_bytes(tricky))) == jobj().set_str("id", tricky).set_str("name", "user " + tricky).render());
+    assert(to_str(message_json(tricky)) == jobj().set_str("message", tricky).render());
 }
 
 fn test_checker_renders_into_the_standard_envelope() {

@@ -40,8 +40,12 @@ pub gc struct Ctx[S] {
     state: S,
     req: http.Request,
     // Path parameters by the name in the pattern: `/orgs/:id` binds
-    // "id". Empty for a pattern without any.
-    params: map[str]str,
+    // "id". opt: none when the route binds nothing AND no middleware
+    // ran -- the common GET case -- so the serve path allocates no
+    // map at all. some(map) once a binding is inserted or a before
+    // hook runs. Accessors below treat none as empty; set_local
+    // materialises on first write. See lazy_params/lazy_locals.
+    params: opt[map[str]str],
     // The PATTERN that matched, not the path: `/orgs/7` and `/orgs/9`
     // report as one route, so metrics and logs stay one series per
     // route instead of one per id.
@@ -53,8 +57,9 @@ pub gc struct Ctx[S] {
     // token and puts the user here; a tenant resolver puts the tenant
     // here. Without it a `before` can only stop a request, never
     // contribute to it -- which is how services end up re-doing the
-    // same lookup in every handler.
-    locals: map[str]str,
+    // same lookup in every handler. opt for the same reason as
+    // params: none until the first set_local.
+    locals: opt[map[str]str],
     // The router's own registry, carried here so a helper like `dto`
     // can answer a failure without asking the application's state to
     // also hold one by convention.
@@ -75,7 +80,29 @@ pub gc struct Route[S] {
     // tail, which matches the rest of the path.
     names: [str],
     wild: int,
+    // Frame-matching fast path: how this route matches raw request
+    // bytes with NO segs list. 0 = general (match_segs), 1 = exact
+    // path (path_is), 2 = single trailing :id (path_param with
+    // prefix below). Computed once at registration; serve_frame
+    // uses it so the hot routes never split the path at all.
+    fkind: int,
+    fpath: str,
     handler: fn(Ctx[S]) -> http.Response,
+    // Static fast path: when set, the route is a fixed body at a fixed
+    // content type whose handler never reads the request -- `GET /`
+    // returning "Hello, World!" is the shape. serve_frame answers
+    // WITHOUT building a Request, without params/locals maps, without
+    // a Ctx, without calling the handler: the handler ran ONCE here,
+    // at registration, and its status/content_type/body are stored.
+    // Empty body + empty content_type = not static. A static route
+    // with middleware still runs the middleware (which needs a Ctx),
+    // so static only applies when befores/afters are all empty --
+    // checked at registration, not per request.
+    has_static: bool,
+    static_status: i32,
+    static_ctype: str,
+    static_body: bytes,
+    static_rendered: bytes,
 }
 
 // A `before` runs ahead of the handler and may end the request by
@@ -141,7 +168,9 @@ impl Router[S] {
     }
 
     // The one registration path: a pattern is split exactly once, and
-    // the rules about `:params` and `*rest` live here alone.
+    // the rules about `:params` and `*rest` live here alone. The
+    // frame fast-path shape is computed alongside: an exact path or
+    // a single trailing :id never needs the segs list at serve time.
     pub fn handle_with(self: Router[S], method: Method, pattern: str,
                        h: fn(Ctx[S]) -> http.Response,
                        befores: [fn(Ctx[S]) -> opt[http.Response]],
@@ -160,6 +189,46 @@ impl Router[S] {
             }
             i = i + 1;
         }
+        let fk = 0;
+        let fp = "";
+        if wild < 0 {
+            let nparams = 0;
+            let pidx = -1;
+            let k = 0;
+            while k < len(names) {
+                if len(names[k]) > 0 {
+                    nparams = nparams + 1;
+                    pidx = k;
+                }
+                k = k + 1;
+            }
+            if nparams == 0 {
+                fk = 1;
+                fp = pattern;
+            } else if nparams == 1 && pidx == len(segs) - 1 {
+                fk = 2;
+                let pre = "/";
+                let q = 0;
+                while q < pidx {
+                    if q > 0 {
+                        pre = pre + "/";
+                    }
+                    pre = pre + segs[q];
+                    q = q + 1;
+                }
+                fp = pre + "/";
+            }
+        }
+        // Static snapshot is opt-IN via `static` below, never
+        // inferred: calling the handler here to probe it would run
+        // user code at registration (a state counter, a clock read)
+        // and corrupt service state or snapshot nondeterminism.
+        // Plain `handle` routes stay dynamic, however static their
+        // output looks; `static` stores caller-provided bytes.
+        let hs = false;
+        let ss: i32 = 0;
+        let sc = "";
+        let sb: bytes = b"";
         push(self.routes, Route[S] {
             method: method,
             pattern: pattern,
@@ -168,13 +237,85 @@ impl Router[S] {
             segs: segs,
             names: names,
             wild: wild,
-            handler: h
+            fkind: fk,
+            fpath: fp,
+            handler: h,
+            has_static: hs,
+            static_status: ss,
+            static_ctype: sc,
+            static_body: sb,
+            static_rendered: b""
         });
         return len(self.routes);
     }
 
     // The full set of HTTP methods, so no service has to fall back to
     // `handle` with a string for anything standard.
+    //
+    // A STATIC route: an exact GET whose body is fixed bytes at a
+    // fixed content type. The caller provides the bytes AND the
+    // handler: the handler is stored (so serve/serve_frame/serve_id
+    // keep working for tests and fixtures) but serve_static never
+    // CALLS it -- the static path answers from the snapshot with no
+    // Request, maps, Ctx, or handler call. write_static emits the
+    // fixed layout in one pass. The contract is on the caller: the
+    // bytes must equal what the handler would return for every
+    // request -- no request/state/time dependence. `GET /`
+    // returning "Hello, World!" is the shape; a state counter or
+    // `c.param` is not -- those stay on `get`.
+    pub fn static_bytes(self: Router[S], p: str, status: i32,
+                        content_type: str, body: bytes,
+                        h: fn(Ctx[S]) -> http.Response) -> int {
+        let segs = path.split(p);
+        let names: [str] = [];
+        let wild = -1;
+        let i = 0;
+        while i < len(segs) {
+            let w = path.wildcard_name(segs[i]);
+            if len(w) > 0 {
+                wild = i;
+                push(names, w);
+            } else {
+                push(names, path.param_name(segs[i]));
+            }
+            i = i + 1;
+        }
+        // Exact paths only: a param or wildcard body is dynamic by
+        // definition. Non-exact patterns fall back to a dynamic
+        // route is WRONG -- the bytes would be served for every
+        // match. So: refuse (return -1), don't downgrade.
+        if wild >= 0 {
+            return -1;
+        }
+        let k = 0;
+        while k < len(names) {
+            if len(names[k]) > 0 {
+                return -1;
+            }
+            k = k + 1;
+        }
+        let no_befores: [fn(Ctx[S]) -> opt[http.Response]] = [];
+        let no_afters: [fn(Ctx[S], http.Response) -> http.Response] = [];
+        push(self.routes, Route[S] {
+            method: Method.GET,
+            pattern: p,
+            befores: no_befores,
+            afters: no_afters,
+            segs: segs,
+            names: names,
+            wild: wild,
+            fkind: 1,
+            fpath: p,
+            handler: h,
+            has_static: true,
+            static_status: status,
+            static_ctype: content_type,
+            static_body: body,
+            static_rendered: http.static_render(status, content_type,
+                                                body)
+        });
+        return len(self.routes);
+    }
     pub fn get(self: Router[S], p: str, h: fn(Ctx[S]) -> http.Response) -> int {
         return self.handle(Method.GET, p, h);
     }
@@ -262,8 +403,14 @@ impl Router[S] {
 
     // Does this route's pattern match these segments? Binds parameters
     // into `params` only on a match, so a near miss costs no map.
-    fn match_segs(self: Router[S], r: Route[S], segs: [str],
-                  params: map[str]str) -> bool {
+    //
+    // Two entry points because the 405/OPTIONS path (`allowed`) only
+    // needs to know WHETHER a route matches, while dispatch needs the
+    // bindings: `match_only` skips the params map entirely (no alloc,
+    // no join) and `match_segs` binds on success. One shape check, not
+    // two -- `match_only` is the shape check, `match_segs` is the shape
+    // check plus the bindings.
+    fn match_only(self: Router[S], r: Route[S], segs: [str]) -> bool {
         if r.wild >= 0 {
             if len(segs) < r.wild {
                 return false;
@@ -276,16 +423,30 @@ impl Router[S] {
         let i = 0;
         while i < len(r.segs) {
             if i == r.wild {
+                return true;
+            }
+            if len(r.names[i]) == 0 && r.segs[i] != segs[i] {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    fn match_segs(self: Router[S], r: Route[S], segs: [str],
+                  params: map[str]str) -> bool {
+        if !self.match_only(r, segs) {
+            return false;
+        }
+        let i = 0;
+        while i < len(r.segs) {
+            if i == r.wild {
                 // one join instead of one concatenation per segment
                 params[r.names[i]] = strings.join(segs[i..len(segs)], "/");
                 return true;
             }
             if len(r.names[i]) > 0 {
                 params[r.names[i]] = segs[i];
-            } else {
-                if r.segs[i] != segs[i] {
-                    return false;
-                }
             }
             i = i + 1;
         }
@@ -293,14 +454,15 @@ impl Router[S] {
     }
 
     // The methods registered for a path, for `Allow` on a 405 and for
-    // an automatic OPTIONS.
+    // an automatic OPTIONS. Match-only: no params map per route, which
+    // used to cost one map (plus the wild join) per route per 405 --
+    // pure overhead on a path that answers without bindings.
     pub fn allowed(self: Router[S], p: str) -> [Method] {
         let segs = path.split(path.strip_query(p));
         let out: [Method] = [];
         let i = 0;
         while i < len(self.routes) {
-            let probe: map[str]str = {};
-            if self.match_segs(self.routes[i], segs, probe) {
+            if self.match_only(self.routes[i], segs) {
                 let m = self.routes[i].method;
                 let seen = false;
                 let j = 0;
@@ -350,6 +512,176 @@ impl Router[S] {
         return self.serve_id(req, "");
     }
 
+    // Frame dispatch: route on the ALREADY-PARSED method/path strs,
+    // with no raw bytes, no offsets, no segs list, no params map
+    // unless the matched route needs one. The WireFrame carries
+    // method/path/headers/body straight out of the wire scan, so
+    // the Request is one struct pack (wire_request) shared by every
+    // path below -- never rebuilt per route. Middleware/befores/
+    // afters and error shapes are identical -- only the matching is
+    // cheaper.
+    //
+    // serve() stays for callers that already hold a Request (tests,
+    // middleware fixtures); serve_conn uses this.
+    //
+    // Static dispatch rides alongside, not inside, the frame loop:
+    // an exact GET route with has_static answers WITHOUT a Request,
+    // maps, Ctx, or handler call -- status/ctype/body come from the
+    // registration snapshot (see handle_with). The result is a
+    // StaticBody, not a Response: no struct, no extra list, nothing
+    // for write to shape-check. `err` means "not static": the
+    // error VALUE is the dynamic response serve_conn should send
+    // (built by serve_frame with request_id ""), so the serve loop
+    // never frames twice -- one call, either a static body or the
+    // response to write.
+    pub fn serve_static(self: Router[S], f: http.WireFrame) -> result[http.StaticBody, http.Response] {
+        // Static routes are exact GETs, so the check is str compares
+        // on the already-parsed method/path -- no raw bytes, no
+        // offsets, no from_str chain. Anything that is not exactly
+        // ("GET", <static-path>) falls to the dynamic path, which
+        // parses properly (501s, 405s, 404s all live there).
+        if f.method == "GET" {
+            let i = 0;
+            while i < len(self.routes) {
+                let r = self.routes[i];
+                if r.fkind == 1 && r.has_static {
+                    if f.path == r.fpath {
+                        return ok(http.StaticBody {
+                            status: r.static_status,
+                            content_type: r.static_ctype,
+                            body: r.static_body,
+                            keep_alive: r.static_rendered
+                        });
+                    }
+                }
+                i = i + 1;
+            }
+        }
+        return err(self.serve_frame(f, ""));
+    }
+
+    // serve() stays for callers that already hold a Request (tests,
+    // middleware fixtures); serve_conn uses this via serve_static.
+    pub fn serve_frame(self: Router[S], f: http.WireFrame,
+                       request_id: str) -> http.Response {
+        // Method without from_str: the frame path already holds the
+        // method str, and only the enum comparison matters below.
+        // Compare inline (GET/POST/HEAD cover the bench + almost all
+        // real traffic); anything else resolves via from_str once.
+        // Unknown verbs still 501 through the same path as before.
+        let mget = f.method == "GET";
+        let mpost = f.method == "POST";
+        let mhead = f.method == "HEAD";
+        let method = Method.GET;
+        if mpost {
+            method = Method.POST;
+        } else if mhead {
+            method = Method.HEAD;
+        } else if !mget {
+            let parsed = Method.from_str(f.method);
+            guard let m = parsed else {
+                return self.serve_id(http.wire_request(f), request_id);
+            }
+            method = m;
+        }
+        let head_of_get = self.auto_head && method == Method.HEAD;
+        let req = http.wire_request(f);
+        // Query strings never route: strip once, compare the rest.
+        // strip_query returns the SAME str when there is no "?" --
+        // one scan, no allocation on the common path.
+        let p = path.strip_query(req.path);
+        let path_seen = false;
+        let i = 0;
+        while i < len(self.routes) {
+            let r = self.routes[i];
+            if r.fkind == 1 {
+                if p != r.fpath {
+                    i = i + 1;
+                    continue;
+                }
+                path_seen = true;
+                let m = r.method == method;
+                if !m && head_of_get && r.method == Method.GET {
+                    m = true;
+                }
+                if !m {
+                    i = i + 1;
+                    continue;
+                }
+                // No maps: exact routes bind nothing, and locals
+                // starts none -- set_local materialises on first
+                // write. A map here cost 5 allocs (header + 4
+                // buffers); none costs one opt wrapper... which is
+                // itself an alloc. So: NO wrapper either. Ctx
+                // params/locals are opt, and none needs no
+                // allocation at all -- it is the null case of the
+                // opt, not a value. Zero allocs for both maps.
+                let c = Ctx[S] {
+                    state: self.state,
+                    req: req,
+                    params: none,
+                    route: r.pattern,
+                    request_id: request_id,
+                    locals: none,
+                    errors: self.errors
+                };
+                let resp = self.run(c, r);
+                if head_of_get && r.method == Method.GET {
+                    resp.body = to_bytes("");
+                }
+                return resp;
+            }
+            if r.fkind == 2 {
+                // Single trailing :id: prefix compare on the str,
+                // then slice the id -- one allocation (the id),
+                // no segs list, no to_bytes of the prefix. strs
+                // cannot slice, so the id comes out of bytes.
+                if !strings.has_prefix(p, r.fpath) {
+                    i = i + 1;
+                    continue;
+                }
+                if len(p) <= len(r.fpath) {
+                    i = i + 1;
+                    continue;
+                }
+                path_seen = true;
+                let m = r.method == method;
+                if !m && head_of_get && r.method == Method.GET {
+                    m = true;
+                }
+                if !m {
+                    i = i + 1;
+                    continue;
+                }
+                let pb = to_bytes(p);
+                let id = to_str(pb[len(r.fpath)..len(pb)]);
+                // One map, not two: params holds the single binding
+                // (the route matched, so the cost is earned); locals
+                // stays none until set_local materialises it.
+                let pmap: map[str]str = {};
+                pmap[r.names[len(r.names) - 1]] = id;
+                let c = Ctx[S] {
+                    state: self.state,
+                    req: req,
+                    params: some(pmap),
+                    route: r.pattern,
+                    request_id: request_id,
+                    locals: none,
+                    errors: self.errors
+                };
+                let resp = self.run(c, r);
+                if head_of_get && r.method == Method.GET {
+                    resp.body = to_bytes("");
+                }
+                return resp;
+            }
+            i = i + 1;
+        }
+        // General routes (wildcards, multi-param) or no frame hit:
+        // the Request is already built -- use the classic path.
+        return self.serve_id(req, request_id);
+    }
+
     pub fn serve_id(self: Router[S], req: http.Request,
                     request_id: str) -> http.Response {
         let p = path.strip_query(req.path);
@@ -358,15 +690,13 @@ impl Router[S] {
         // path may well exist. 501 is what it is.
         let parsed = Method.from_str(req.method);
         guard let method = parsed else {
-            let unknown: map[str]str = {};
-            let unknown_locals: map[str]str = {};
             let uc = Ctx[S] {
                 state: self.state,
                 req: req,
-                params: unknown,
+                params: none,
                 route: "",
                 request_id: request_id,
-                locals: unknown_locals,
+                locals: none,
                 errors: self.errors
             };
             return self.finish(uc, respond(self.errors, "not_implemented",
@@ -383,8 +713,12 @@ impl Router[S] {
         let i = 0;
         while i < len(self.routes) {
             let r = self.routes[i];
-            let params: map[str]str = {};
-            if !self.match_segs(r, segs, params) {
+            // Shape first, bindings after: a near miss costs no map, and
+            // a path hit with the wrong method costs no map either --
+            // the params map is built only when this route will actually
+            // run. On a two-route bench router that saves one map per
+            // request; on a fifty-route service it saves fifty.
+            if !self.match_only(r, segs) {
                 i = i + 1;
                 continue;
             }
@@ -397,14 +731,23 @@ impl Router[S] {
                 i = i + 1;
                 continue;
             }
-            let locals: map[str]str = {};
+            let pmap: map[str]str = {};
+            self.match_segs(r, segs, pmap);
+            // some() iff the route bound something: exact routes
+            // bind nothing, so no map AND no wrapper -- none is the
+            // null case, zero allocs. A bound route pays one map +
+            // one wrapper, earned.
+            let popt: opt[map[str]str] = none;
+            if len(pmap) > 0 {
+                popt = some(pmap);
+            }
             let c = Ctx[S] {
                 state: self.state,
                 req: req,
-                params: params,
+                params: popt,
                 route: r.pattern,
                 request_id: request_id,
-                locals: locals,
+                locals: none,
                 errors: self.errors
             };
             let resp = self.run(c, r);
@@ -414,15 +757,13 @@ impl Router[S] {
             return resp;
         }
 
-        let none_params: map[str]str = {};
-        let no_locals: map[str]str = {};
         let c = Ctx[S] {
             state: self.state,
             req: req,
-            params: none_params,
+            params: none,
             route: "",
             request_id: request_id,
-            locals: no_locals,
+            locals: none,
             errors: self.errors
         };
         if !path_seen {
@@ -430,16 +771,19 @@ impl Router[S] {
         }
         let allow = self.allowed(p);
         if self.auto_options && method == Method.OPTIONS {
+            let none_extra: [str] = allow_extra(allow);
             let ok_resp = http.Response {
                 status: 204,
                 status_text: "No Content",
-                headers: allow_headers(allow),
+                content_type: "",
+                location: "",
+                extra: none_extra,
                 body: to_bytes("")
             };
             return self.finish(c, ok_resp);
         }
         let resp = respond(self.errors, "method_not_allowed", request_id);
-        resp.headers["allow"] = join_methods(allow);
+        resp = http.with_header(resp, "allow", join_methods(allow));
         return self.finish(c, resp);
     }
 
@@ -489,8 +833,8 @@ impl Router[S] {
     fn finish(self: Router[S], c: Ctx[S],
               resp: http.Response) -> http.Response {
         let out = resp;
-        if len(c.request_id) > 0 && !has(out.headers, "x-request-id") {
-            out.headers["x-request-id"] = c.request_id;
+        if len(c.request_id) > 0 && !http.has_resp_header(out, "x-request-id") {
+            out = http.with_header(out, "x-request-id", c.request_id);
         }
         let i = 0;
         while i < len(self.afters) {
@@ -519,6 +863,42 @@ impl Router[S] {
     }
 }
 
+// The empty Ctx contract, documented where it is enforced: never
+// called by registration (probing user code at registration runs
+// state counters and clocks -- the bug static_bytes exists to
+// avoid). static_bytes takes caller-provided bytes AND the handler;
+// only the bytes serve statically.
+fn static_probe[S](state: S, errors: Registry) -> Ctx[S] {
+    return Ctx[S] {
+        state: state,
+        req: http.Request {
+            method: "",
+            path: "",
+            version: "HTTP/1.1",
+            raw_headers: b"",
+            body: b""
+        },
+        params: none,
+        route: "",
+        request_id: "",
+        locals: none,
+        errors: errors
+    };
+}
+
+// `Method.from_str` without the allocation: the frame path already
+// holds the method bytes, and from_str builds on to_str + a string
+// chain. Static dispatch only serves GET (only GET routes snapshot),
+// so this answers Some(GET) for "GET" and None for everything else
+// with zero allocs -- unknown verbs and non-GETs fall through to
+// the dynamic path, which parses properly.
+fn static_method(mname: str) -> opt[Method] {
+    if mname == "GET" {
+        return some(Method.GET);
+    }
+    return none;
+}
+
 pub fn join_methods(ms: [Method]) -> str {
     let out = "";
     let i = 0;
@@ -532,11 +912,10 @@ pub fn join_methods(ms: [Method]) -> str {
     return out;
 }
 
-fn allow_headers(allow: [Method]) -> map[str]str {
-    let h: map[str]str = {};
-    h["allow"] = join_methods(allow);
-    h["content-length"] = "0";
-    return h;
+fn allow_extra(allow: [Method]) -> [str] {
+    let out: [str] = [];
+    push(out, "allow: " + join_methods(allow));
+    return out;
 }
 
 
@@ -662,8 +1041,11 @@ impl Group[S] {
 
 impl Ctx[S] {
     pub fn param(self: Ctx[S], name: str) -> str {
-        if has(self.params, name) {
-            return self.params[name];
+        guard let m = self.params else {
+            return "";
+        }
+        if has(m, name) {
+            return m[name];
         }
         return "";
     }
@@ -679,20 +1061,34 @@ impl Ctx[S] {
     // What a `before` resolved, read by the handler: the user a token
     // belongs to, the tenant a subdomain names, the plan a customer is
     // on. The lookup happens once, at the edge, not in every handler.
+    // Materialises locals on first write: none -> some({key: v}).
     pub fn set_local(self: Ctx[S], key: str, v: str) -> int {
-        self.locals[key] = v;
-        return len(self.locals);
+        guard let m = self.locals else {
+            let nm: map[str]str = {};
+            nm[key] = v;
+            self.locals = some(nm);
+            return 1;
+        }
+        m[key] = v;
+        self.locals = some(m);
+        return len(m);
     }
 
     pub fn local(self: Ctx[S], key: str) -> str {
-        if has(self.locals, key) {
-            return self.locals[key];
+        guard let m = self.locals else {
+            return "";
+        }
+        if has(m, key) {
+            return m[key];
         }
         return "";
     }
 
     pub fn has_local(self: Ctx[S], key: str) -> bool {
-        return has(self.locals, key);
+        guard let m = self.locals else {
+            return false;
+        }
+        return has(m, key);
     }
 
     pub fn body_str(self: Ctx[S]) -> str {

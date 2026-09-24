@@ -1,13 +1,11 @@
 import "http";
 
 fn hs_req(headers: map[str]str) -> http.Request {
-    return http.Request {
-        method: "GET",
-        path: "/ws",
-        version: "HTTP/1.1",
-        headers: headers,
-        body: b""
-    };
+    let rr = http.request("GET", "/ws", "HTTP/1.1", headers, b"");
+    guard let r = rr else {
+        panic("hs_req: bad test request");
+    }
+    return r;
 }
 
 fn good_headers() -> map[str]str {
@@ -80,13 +78,11 @@ fn test_refusals() {
     h4["sec-websocket-key"] = "tooshort==";
     assert(refusal(h4) == "the Sec-WebSocket-Key header is not 16 base64 bytes");
 
-    let r = read(http.Request {
-        method: "POST",
-        path: "/ws",
-        version: "HTTP/1.1",
-        headers: good_headers(),
-        body: b""
-    });
+    let pr = http.request("POST", "/ws", "HTTP/1.1", good_headers(), b"");
+    guard let preq = pr else {
+        panic("post handshake test: bad test request");
+    }
+    let r = read(preq);
     guard let _x = r else let e = err_of(r) {
         assert(e == "a WebSocket handshake must be a GET");
         return;
@@ -94,18 +90,25 @@ fn test_refusals() {
     panic("a POST handshake was accepted");
 }
 
+fn resp_str(r: http.Response, name: str) -> str {
+    guard let v = http.resp_header(r, name) else {
+        return "";
+    }
+    return v;
+}
+
 fn test_response_shape() {
     let resp = response("dGhlIHNhbXBsZSBub25jZQ==", "");
     assert(resp.status == 101);
     assert(resp.status_text == "Switching Protocols");
-    assert(resp.headers["upgrade"] == "websocket");
-    assert(resp.headers["connection"] == "Upgrade");
-    assert(resp.headers["sec-websocket-accept"] == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
-    assert(!has(resp.headers, "sec-websocket-protocol"));
+    assert(resp_str(resp, "upgrade") == "websocket");
+    assert(resp_str(resp, "connection") == "Upgrade");
+    assert(resp_str(resp, "sec-websocket-accept") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+    assert(resp_str(resp, "sec-websocket-protocol") == "");
     assert(len(resp.body) == 0);
 
     let with_proto = response("dGhlIHNhbXBsZSBub25jZQ==", "chat");
-    assert(with_proto.headers["sec-websocket-protocol"] == "chat");
+    assert(resp_str(with_proto, "sec-websocket-protocol") == "chat");
 }
 
 fn test_subprotocol_choice_follows_the_client() {
