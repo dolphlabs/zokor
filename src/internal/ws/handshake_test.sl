@@ -90,18 +90,25 @@ fn test_refusals() {
     panic("a POST handshake was accepted");
 }
 
+fn resp_str(r: http.Response, name: str) -> str {
+    guard let v = http.resp_header(r, name) else {
+        return "";
+    }
+    return v;
+}
+
 fn test_response_shape() {
     let resp = response("dGhlIHNhbXBsZSBub25jZQ==", "");
     assert(resp.status == 101);
     assert(resp.status_text == "Switching Protocols");
-    assert(resp.headers["upgrade"] == "websocket");
-    assert(resp.headers["connection"] == "Upgrade");
-    assert(resp.headers["sec-websocket-accept"] == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
-    assert(!has(resp.headers, "sec-websocket-protocol"));
+    assert(resp_str(resp, "upgrade") == "websocket");
+    assert(resp_str(resp, "connection") == "Upgrade");
+    assert(resp_str(resp, "sec-websocket-accept") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+    assert(resp_str(resp, "sec-websocket-protocol") == "");
     assert(len(resp.body) == 0);
 
     let with_proto = response("dGhlIHNhbXBsZSBub25jZQ==", "chat");
-    assert(with_proto.headers["sec-websocket-protocol"] == "chat");
+    assert(resp_str(with_proto, "sec-websocket-protocol") == "chat");
 }
 
 fn test_subprotocol_choice_follows_the_client() {

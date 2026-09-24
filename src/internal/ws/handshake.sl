@@ -71,19 +71,14 @@ pub fn accept_key(key: str) -> str {
 // the server picked, or "" to pick none -- it must be one the client
 // offered, which `choose` checks.
 pub fn response(key: str, protocol: str) -> http.Response {
-    let h: map[str]str = {};
-    h["upgrade"] = "websocket";
-    h["connection"] = "Upgrade";
-    h["sec-websocket-accept"] = accept_key(key);
+    let r = http.text_response(101, "Switching Protocols", "", "");
+    r = http.with_header(r, "upgrade", "websocket");
+    r = http.with_header(r, "connection", "Upgrade");
+    r = http.with_header(r, "sec-websocket-accept", accept_key(key));
     if len(protocol) > 0 {
-        h["sec-websocket-protocol"] = protocol;
+        r = http.with_header(r, "sec-websocket-protocol", protocol);
     }
-    return http.Response {
-        status: 101,
-        status_text: "Switching Protocols",
-        headers: h,
-        body: b""
-    };
+    return r;
 }
 
 // The first subprotocol the server supports, in the CLIENT's order of

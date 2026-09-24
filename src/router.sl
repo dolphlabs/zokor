@@ -430,16 +430,19 @@ impl Router[S] {
         }
         let allow = self.allowed(p);
         if self.auto_options && method == Method.OPTIONS {
+            let none_extra: [str] = allow_extra(allow);
             let ok_resp = http.Response {
                 status: 204,
                 status_text: "No Content",
-                headers: allow_headers(allow),
+                content_type: "",
+                location: "",
+                extra: none_extra,
                 body: to_bytes("")
             };
             return self.finish(c, ok_resp);
         }
         let resp = respond(self.errors, "method_not_allowed", request_id);
-        resp.headers["allow"] = join_methods(allow);
+        resp = http.with_header(resp, "allow", join_methods(allow));
         return self.finish(c, resp);
     }
 
@@ -489,8 +492,8 @@ impl Router[S] {
     fn finish(self: Router[S], c: Ctx[S],
               resp: http.Response) -> http.Response {
         let out = resp;
-        if len(c.request_id) > 0 && !has(out.headers, "x-request-id") {
-            out.headers["x-request-id"] = c.request_id;
+        if len(c.request_id) > 0 && !http.has_resp_header(out, "x-request-id") {
+            out = http.with_header(out, "x-request-id", c.request_id);
         }
         let i = 0;
         while i < len(self.afters) {
@@ -532,11 +535,10 @@ pub fn join_methods(ms: [Method]) -> str {
     return out;
 }
 
-fn allow_headers(allow: [Method]) -> map[str]str {
-    let h: map[str]str = {};
-    h["allow"] = join_methods(allow);
-    h["content-length"] = "0";
-    return h;
+fn allow_extra(allow: [Method]) -> [str] {
+    let out: [str] = [];
+    push(out, "allow: " + join_methods(allow));
+    return out;
 }
 
 
