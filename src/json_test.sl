@@ -287,9 +287,11 @@ fn test_ok_json_bytes_matches_ok_json() {
 fn test_fixed_shape_helpers_match_the_json_builder() {
     let id = "42";
     assert(to_str(user_json(id)) == jobj().set_str("id", id).set_str("name", "user " + id).render());
+    assert(to_str(user_json_bytes(to_bytes(id))) == jobj().set_str("id", id).set_str("name", "user " + id).render());
     assert(to_str(message_json("hi")) == jobj().set_str("message", "hi").render());
     let tricky = "q\" b\\ n\n t\t";
     assert(to_str(user_json(tricky)) == jobj().set_str("id", tricky).set_str("name", "user " + tricky).render());
+    assert(to_str(user_json_bytes(to_bytes(tricky))) == jobj().set_str("id", tricky).set_str("name", "user " + tricky).render());
     assert(to_str(message_json(tricky)) == jobj().set_str("message", tricky).render());
 }
 
