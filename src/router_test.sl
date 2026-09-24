@@ -10,6 +10,10 @@ fn h_ok(c: Ctx[TestState]) -> http.Response {
     return ok_json("{\"route\":\"" + c.route + "\"}");
 }
 
+fn h_static_hello(c: Ctx[TestState]) -> http.Response {
+    return text_bytes(200, b"Hello, World!");
+}
+
 fn h_param(c: Ctx[TestState]) -> http.Response {
     return ok_json("{\"id\":\"" + c.param("id") + "\"}");
 }
@@ -361,4 +365,76 @@ fn test_frame_exact_matches_without_segs() {
     // unknown verb is a 501, same as serve_id
     let brew = frame_req("BREW", "/");
     assert(r.serve_frame(brew.head, brew, "").status == 501);
+}
+
+fn test_static_bytes_serves_without_a_handler_call() {
+    let r = new_test_router();
+    let n = r.static_bytes("/", 200, "text/plain; charset=utf-8",
+                            b"Hello, World!", h_static_hello);
+    assert(n == 1);
+    let f = frame_req("GET", "/");
+    let sr = r.serve_static(f.head, f);
+    guard let b = sr else {
+        println("FAIL static should hit");
+        exit(1);
+    }
+    assert(b.status == 200);
+    assert(b.content_type == "text/plain; charset=utf-8");
+    assert(b.body == b"Hello, World!");
+    // the prebuilt rendering is byte-identical to the dynamic emit
+    assert(b.keep_alive == http.serialize(http.text_response_bytes(
+        200, "OK", "text/plain; charset=utf-8", b"Hello, World!")));
+    // a dynamic route alongside still works through the same entry
+    r.get("/users/:id", h_param);
+    let one = frame_req("GET", "/users/42");
+    let dr = r.serve_static(one.head, one);
+    guard let _static_hit = dr else let dyn_resp = err_of(dr) {
+        assert(to_str(dyn_resp.body) == "{\"id\":\"42\"}");
+        // wrong method on a static path is NOT served statically: it
+        // falls through to the dynamic 405, not to stale bytes
+        let del = frame_req("DELETE", "/");
+        let mr = r.serve_static(del.head, del);
+        guard let _mhit = mr else let mresp = err_of(mr) {
+            assert(mresp.status == 405);
+            // unknown path misses static and 404s dynamically
+            let nf = frame_req("GET", "/nothing");
+            let nr = r.serve_static(nf.head, nf);
+            guard let _nhit = nr else let nresp = err_of(nr) {
+                assert(nresp.status == 404);
+                return;
+            }
+            println("FAIL static must not answer unknown paths");
+            exit(1);
+        }
+        println("FAIL static must not answer DELETE");
+        exit(1);
+    }
+    println("FAIL dynamic should miss static");
+    exit(1);
+}
+
+fn test_static_bytes_refuses_params_and_wildcards() {
+    let r = new_test_router();
+    assert(r.static_bytes("/users/:id", 200, "text/plain", b"x",
+                           h_param) == -1);
+    assert(r.static_bytes("/files/*rest", 200, "text/plain", b"x",
+                           h_rest) == -1);
+    assert(len(r.routes_list()) == 0);
+}
+
+fn test_plain_get_is_never_static() {
+    // The regression this guards: `get` must not snapshot, even for
+    // a handler that ignores its Ctx -- state counters and clocks
+    // made auto-detection unsound. Only `static_bytes` snapshots.
+    let r = new_test_router();
+    r.get("/", h_static_hello);
+    assert(!r.routes[0].has_static);
+    let f = frame_req("GET", "/");
+    let sr = r.serve_static(f.head, f);
+    guard let _hit = sr else let dyn_resp = err_of(sr) {
+        assert(to_str(dyn_resp.body) == "Hello, World!");
+        return;
+    }
+    println("FAIL plain get must stay dynamic");
+    exit(1);
 }

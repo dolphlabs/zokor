@@ -16,7 +16,10 @@ gc struct Bench {
 }
 
 // 1. hello-world: no parsing, no encoding, the floor for request/response
-// overhead alone. The body is bytes so the str->bytes copy never happens.
+// overhead alone. Static bytes: the body is fixed, so no Request, no
+// maps, no Ctx, no handler call per request -- the snapshot serves
+// straight from registration. The handler is still stored (tests and
+// fixtures keep working); it just never runs on the static path.
 fn hello(c: zokor.Ctx[Bench]) -> http.Response {
     return zokor.text_bytes(200, b"Hello, World!");
 }
@@ -43,7 +46,8 @@ fn echo(c: zokor.Ctx[Bench]) -> http.Response {
 }
 
 let rt = zokor.new_router(Bench { started: 1 });
-rt.get("/", hello);
+rt.static_bytes("/", 200, "text/plain; charset=utf-8", b"Hello, World!",
+                hello);
 rt.get("/users/:id", get_user);
 rt.post("/echo", echo);
 

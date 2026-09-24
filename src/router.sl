@@ -83,6 +83,21 @@ pub gc struct Route[S] {
     fkind: int,
     fpath: str,
     handler: fn(Ctx[S]) -> http.Response,
+    // Static fast path: when set, the route is a fixed body at a fixed
+    // content type whose handler never reads the request -- `GET /`
+    // returning "Hello, World!" is the shape. serve_frame answers
+    // WITHOUT building a Request, without params/locals maps, without
+    // a Ctx, without calling the handler: the handler ran ONCE here,
+    // at registration, and its status/content_type/body are stored.
+    // Empty body + empty content_type = not static. A static route
+    // with middleware still runs the middleware (which needs a Ctx),
+    // so static only applies when befores/afters are all empty --
+    // checked at registration, not per request.
+    has_static: bool,
+    static_status: i32,
+    static_ctype: str,
+    static_body: bytes,
+    static_rendered: bytes,
 }
 
 // A `before` runs ahead of the handler and may end the request by
@@ -199,6 +214,16 @@ impl Router[S] {
                 fp = pre + "/";
             }
         }
+        // Static snapshot is opt-IN via `static` below, never
+        // inferred: calling the handler here to probe it would run
+        // user code at registration (a state counter, a clock read)
+        // and corrupt service state or snapshot nondeterminism.
+        // Plain `handle` routes stay dynamic, however static their
+        // output looks; `static` stores caller-provided bytes.
+        let hs = false;
+        let ss: i32 = 0;
+        let sc = "";
+        let sb: bytes = b"";
         push(self.routes, Route[S] {
             method: method,
             pattern: pattern,
@@ -209,13 +234,83 @@ impl Router[S] {
             wild: wild,
             fkind: fk,
             fpath: fp,
-            handler: h
+            handler: h,
+            has_static: hs,
+            static_status: ss,
+            static_ctype: sc,
+            static_body: sb,
+            static_rendered: b""
         });
         return len(self.routes);
     }
 
     // The full set of HTTP methods, so no service has to fall back to
     // `handle` with a string for anything standard.
+    //
+    // A STATIC route: an exact GET whose body is fixed bytes at a
+    // fixed content type. The caller provides the bytes AND the
+    // handler: the handler is stored (so serve/serve_frame/serve_id
+    // keep working for tests and fixtures) but serve_static never
+    // CALLS it -- the static path answers from the snapshot with no
+    // Request, maps, Ctx, or handler call. write_static emits the
+    // fixed layout in one pass. The contract is on the caller: the
+    // bytes must equal what the handler would return for every
+    // request -- no request/state/time dependence. `GET /`
+    // returning "Hello, World!" is the shape; a state counter or
+    // `c.param` is not -- those stay on `get`.
+    pub fn static_bytes(self: Router[S], p: str, status: i32,
+                        content_type: str, body: bytes,
+                        h: fn(Ctx[S]) -> http.Response) -> int {
+        let segs = path.split(p);
+        let names: [str] = [];
+        let wild = -1;
+        let i = 0;
+        while i < len(segs) {
+            let w = path.wildcard_name(segs[i]);
+            if len(w) > 0 {
+                wild = i;
+                push(names, w);
+            } else {
+                push(names, path.param_name(segs[i]));
+            }
+            i = i + 1;
+        }
+        // Exact paths only: a param or wildcard body is dynamic by
+        // definition. Non-exact patterns fall back to a dynamic
+        // route is WRONG -- the bytes would be served for every
+        // match. So: refuse (return -1), don't downgrade.
+        if wild >= 0 {
+            return -1;
+        }
+        let k = 0;
+        while k < len(names) {
+            if len(names[k]) > 0 {
+                return -1;
+            }
+            k = k + 1;
+        }
+        let no_befores: [fn(Ctx[S]) -> opt[http.Response]] = [];
+        let no_afters: [fn(Ctx[S], http.Response) -> http.Response] = [];
+        push(self.routes, Route[S] {
+            method: Method.GET,
+            pattern: p,
+            befores: no_befores,
+            afters: no_afters,
+            segs: segs,
+            names: names,
+            wild: wild,
+            fkind: 1,
+            fpath: p,
+            handler: h,
+            has_static: true,
+            static_status: status,
+            static_ctype: content_type,
+            static_body: body,
+            static_rendered: http.static_render(status, content_type,
+                                                body)
+        });
+        return len(self.routes);
+    }
     pub fn get(self: Router[S], p: str, h: fn(Ctx[S]) -> http.Response) -> int {
         return self.handle(Method.GET, p, h);
     }
@@ -424,6 +519,47 @@ impl Router[S] {
     //
     // serve() stays for callers that already hold a Request (tests,
     // middleware fixtures); serve_conn uses this.
+    //
+    // Static dispatch rides alongside, not inside, the frame loop:
+    // an exact GET route with has_static answers WITHOUT a Request,
+    // maps, Ctx, or handler call -- status/ctype/body come from the
+    // registration snapshot (see handle_with). The result is a
+    // StaticBody, not a Response: no struct, no extra list, nothing
+    // for write to shape-check. `err` means "not static": the
+    // error VALUE is the dynamic response serve_conn should send
+    // (built by serve_frame with request_id ""), so the serve loop
+    // never frames twice -- one call, either a static body or the
+    // response to write.
+    pub fn serve_static(self: Router[S], raw: bytes,
+                        f: http.WireFrame) -> result[http.StaticBody, http.Response] {
+        // Static routes are exact GETs, so the check is inline byte
+        // compares -- no frame_method_at str, no static_method opt,
+        // no from_str chain. Anything that is not exactly
+        // "GET <static-path>" falls to the dynamic path, which
+        // parses properly (501s, 405s, 404s all live there).
+        if f.line_end >= 5 && raw[0] == 71 && raw[1] == 69 &&
+           raw[2] == 84 && raw[3] == 32 {
+            let i = 0;
+            while i < len(self.routes) {
+                let r = self.routes[i];
+                if r.fkind == 1 && r.has_static {
+                    if http.path_is_at(raw, f.line_end, r.fpath) {
+                        return ok(http.StaticBody {
+                            status: r.static_status,
+                            content_type: r.static_ctype,
+                            body: r.static_body,
+                            keep_alive: r.static_rendered
+                        });
+                    }
+                }
+                i = i + 1;
+            }
+        }
+        return err(self.serve_frame(raw, f, ""));
+    }
+
+    // serve() stays for callers that already hold a Request (tests,
+    // middleware fixtures); serve_conn uses this via serve_static.
     pub fn serve_frame(self: Router[S], raw: bytes, f: http.WireFrame,
                        request_id: str) -> http.Response {
         let mname = http.frame_method_at(raw, f.line_end);
@@ -701,6 +837,44 @@ impl Router[S] {
                        fields: [FieldError]) -> http.Response {
         return respond_fields(self.errors, code, fields, c.request_id);
     }
+}
+
+// The empty Ctx contract, documented where it is enforced: never
+// called by registration (probing user code at registration runs
+// state counters and clocks -- the bug static_bytes exists to
+// avoid). static_bytes takes caller-provided bytes AND the handler;
+// only the bytes serve statically.
+fn static_probe[S](state: S, errors: Registry) -> Ctx[S] {
+    let no_params: map[str]str = {};
+    let no_locals: map[str]str = {};
+    return Ctx[S] {
+        state: state,
+        req: http.Request {
+            method: "",
+            path: "",
+            version: "HTTP/1.1",
+            raw_headers: b"",
+            body: b""
+        },
+        params: no_params,
+        route: "",
+        request_id: "",
+        locals: no_locals,
+        errors: errors
+    };
+}
+
+// `Method.from_str` without the allocation: the frame path already
+// holds the method bytes, and from_str builds on to_str + a string
+// chain. Static dispatch only serves GET (only GET routes snapshot),
+// so this answers Some(GET) for "GET" and None for everything else
+// with zero allocs -- unknown verbs and non-GETs fall through to
+// the dynamic path, which parses properly.
+fn static_method(mname: str) -> opt[Method] {
+    if mname == "GET" {
+        return some(Method.GET);
+    }
+    return none;
 }
 
 pub fn join_methods(ms: [Method]) -> str {
