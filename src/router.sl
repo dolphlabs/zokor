@@ -40,8 +40,12 @@ pub gc struct Ctx[S] {
     state: S,
     req: http.Request,
     // Path parameters by the name in the pattern: `/orgs/:id` binds
-    // "id". Empty for a pattern without any.
-    params: map[str]str,
+    // "id". opt: none when the route binds nothing AND no middleware
+    // ran -- the common GET case -- so the serve path allocates no
+    // map at all. some(map) once a binding is inserted or a before
+    // hook runs. Accessors below treat none as empty; set_local
+    // materialises on first write. See lazy_params/lazy_locals.
+    params: opt[map[str]str],
     // The PATTERN that matched, not the path: `/orgs/7` and `/orgs/9`
     // report as one route, so metrics and logs stay one series per
     // route instead of one per id.
@@ -53,8 +57,9 @@ pub gc struct Ctx[S] {
     // token and puts the user here; a tenant resolver puts the tenant
     // here. Without it a `before` can only stop a request, never
     // contribute to it -- which is how services end up re-doing the
-    // same lookup in every handler.
-    locals: map[str]str,
+    // same lookup in every handler. opt for the same reason as
+    // params: none until the first set_local.
+    locals: opt[map[str]str],
     // The router's own registry, carried here so a helper like `dto`
     // can answer a failure without asking the application's state to
     // also hold one by convention.
@@ -603,15 +608,21 @@ impl Router[S] {
                     i = i + 1;
                     continue;
                 }
-                let params: map[str]str = {};
-                let locals: map[str]str = {};
+                // No maps: exact routes bind nothing, and locals
+                // starts none -- set_local materialises on first
+                // write. A map here cost 5 allocs (header + 4
+                // buffers); none costs one opt wrapper... which is
+                // itself an alloc. So: NO wrapper either. Ctx
+                // params/locals are opt, and none needs no
+                // allocation at all -- it is the null case of the
+                // opt, not a value. Zero allocs for both maps.
                 let c = Ctx[S] {
                     state: self.state,
                     req: req,
-                    params: params,
+                    params: none,
                     route: r.pattern,
                     request_id: request_id,
-                    locals: locals,
+                    locals: none,
                     errors: self.errors
                 };
                 let resp = self.run(c, r);
@@ -644,16 +655,18 @@ impl Router[S] {
                 }
                 let pb = to_bytes(p);
                 let id = to_str(pb[len(r.fpath)..len(pb)]);
-                let params: map[str]str = {};
-                params[r.names[len(r.names) - 1]] = id;
-                let locals: map[str]str = {};
+                // One map, not two: params holds the single binding
+                // (the route matched, so the cost is earned); locals
+                // stays none until set_local materialises it.
+                let pmap: map[str]str = {};
+                pmap[r.names[len(r.names) - 1]] = id;
                 let c = Ctx[S] {
                     state: self.state,
                     req: req,
-                    params: params,
+                    params: some(pmap),
                     route: r.pattern,
                     request_id: request_id,
-                    locals: locals,
+                    locals: none,
                     errors: self.errors
                 };
                 let resp = self.run(c, r);
@@ -677,15 +690,13 @@ impl Router[S] {
         // path may well exist. 501 is what it is.
         let parsed = Method.from_str(req.method);
         guard let method = parsed else {
-            let unknown: map[str]str = {};
-            let unknown_locals: map[str]str = {};
             let uc = Ctx[S] {
                 state: self.state,
                 req: req,
-                params: unknown,
+                params: none,
                 route: "",
                 request_id: request_id,
-                locals: unknown_locals,
+                locals: none,
                 errors: self.errors
             };
             return self.finish(uc, respond(self.errors, "not_implemented",
@@ -720,16 +731,23 @@ impl Router[S] {
                 i = i + 1;
                 continue;
             }
-            let params: map[str]str = {};
-            self.match_segs(r, segs, params);
-            let locals: map[str]str = {};
+            let pmap: map[str]str = {};
+            self.match_segs(r, segs, pmap);
+            // some() iff the route bound something: exact routes
+            // bind nothing, so no map AND no wrapper -- none is the
+            // null case, zero allocs. A bound route pays one map +
+            // one wrapper, earned.
+            let popt: opt[map[str]str] = none;
+            if len(pmap) > 0 {
+                popt = some(pmap);
+            }
             let c = Ctx[S] {
                 state: self.state,
                 req: req,
-                params: params,
+                params: popt,
                 route: r.pattern,
                 request_id: request_id,
-                locals: locals,
+                locals: none,
                 errors: self.errors
             };
             let resp = self.run(c, r);
@@ -739,15 +757,13 @@ impl Router[S] {
             return resp;
         }
 
-        let none_params: map[str]str = {};
-        let no_locals: map[str]str = {};
         let c = Ctx[S] {
             state: self.state,
             req: req,
-            params: none_params,
+            params: none,
             route: "",
             request_id: request_id,
-            locals: no_locals,
+            locals: none,
             errors: self.errors
         };
         if !path_seen {
@@ -853,8 +869,6 @@ impl Router[S] {
 // avoid). static_bytes takes caller-provided bytes AND the handler;
 // only the bytes serve statically.
 fn static_probe[S](state: S, errors: Registry) -> Ctx[S] {
-    let no_params: map[str]str = {};
-    let no_locals: map[str]str = {};
     return Ctx[S] {
         state: state,
         req: http.Request {
@@ -864,10 +878,10 @@ fn static_probe[S](state: S, errors: Registry) -> Ctx[S] {
             raw_headers: b"",
             body: b""
         },
-        params: no_params,
+        params: none,
         route: "",
         request_id: "",
-        locals: no_locals,
+        locals: none,
         errors: errors
     };
 }
@@ -1027,8 +1041,11 @@ impl Group[S] {
 
 impl Ctx[S] {
     pub fn param(self: Ctx[S], name: str) -> str {
-        if has(self.params, name) {
-            return self.params[name];
+        guard let m = self.params else {
+            return "";
+        }
+        if has(m, name) {
+            return m[name];
         }
         return "";
     }
@@ -1044,20 +1061,34 @@ impl Ctx[S] {
     // What a `before` resolved, read by the handler: the user a token
     // belongs to, the tenant a subdomain names, the plan a customer is
     // on. The lookup happens once, at the edge, not in every handler.
+    // Materialises locals on first write: none -> some({key: v}).
     pub fn set_local(self: Ctx[S], key: str, v: str) -> int {
-        self.locals[key] = v;
-        return len(self.locals);
+        guard let m = self.locals else {
+            let nm: map[str]str = {};
+            nm[key] = v;
+            self.locals = some(nm);
+            return 1;
+        }
+        m[key] = v;
+        self.locals = some(m);
+        return len(m);
     }
 
     pub fn local(self: Ctx[S], key: str) -> str {
-        if has(self.locals, key) {
-            return self.locals[key];
+        guard let m = self.locals else {
+            return "";
+        }
+        if has(m, key) {
+            return m[key];
         }
         return "";
     }
 
     pub fn has_local(self: Ctx[S], key: str) -> bool {
-        return has(self.locals, key);
+        guard let m = self.locals else {
+            return false;
+        }
+        return has(m, key);
     }
 
     pub fn body_str(self: Ctx[S]) -> str {
