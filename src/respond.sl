@@ -34,20 +34,19 @@ pub fn ok_json_bytes(body: bytes) -> http.Response {
 }
 
 pub fn created(body: str, location: str) -> http.Response {
-    let r = json_response(201, body);
+    let rc = json_response(201, body);
     if len(location) > 0 {
-        r.location = location;
+        rc.location = location;
     }
-    return r;
+    return rc;
 }
 
-// `created` with a BYTES body: same shape, no `to_bytes` copy.
 pub fn created_bytes(body: bytes, location: str) -> http.Response {
-    let r = json_response_bytes(201, body);
+    let rb = json_response_bytes(201, body);
     if len(location) > 0 {
-        r.location = location;
+        rb.location = location;
     }
-    return r;
+    return rb;
 }
 
 pub fn accepted(body: str) -> http.Response {

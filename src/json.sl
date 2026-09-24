@@ -101,6 +101,29 @@ pub fn jarr() -> Json {
     return empty(JsonKind.Array);
 }
 
+// The two shapes the throughput bench serves, rendered straight to
+// bytes: no Json struct, no keys/values lists, no str in between --
+// one builder, one finish, one response. Handlers with a fixed shape
+// should do the same rather than building a Json to render once; the
+// Json builder stays for shapes that are actually dynamic.
+pub fn user_json(id: str) -> bytes {
+    let bb = builder.new_bytes();
+    bb.write_str("{\"id\":\"");
+    bb.write(http.escape_json_bytes(to_bytes(id)));
+    bb.write_str("\",\"name\":\"user ");
+    bb.write(http.escape_json_bytes(to_bytes(id)));
+    bb.write_str("\"}");
+    return bb.finish();
+}
+
+pub fn message_json(message: str) -> bytes {
+    let bb = builder.new_bytes();
+    bb.write_str("{\"message\":\"");
+    bb.write(http.escape_json_bytes(to_bytes(message)));
+    bb.write_str("\"}");
+    return bb.finish();
+}
+
 // Reading and building are METHODS, so lookups chain and nothing
 // collides with the rest of the package:
 //
