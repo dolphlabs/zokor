@@ -16,10 +16,31 @@ On this machine (MacBook Pro, i5-8279U, 8 logical / 4 physical cores,
 | `GET /` | **~35.4k** req/s | ~101k req/s | ~117k req/s |
 | `GET /users/:id` | **~21.5k** req/s | ~96k req/s | ~112k req/s |
 
+Those two cells are STALE -- they were measured with the frame path
+doing the framing work twice (a `parse_frame` rescan inside
+`read_frame`, plus a `to_bytes` per route in the matchers). A same-app
+A/B under `wrk` (dev app + dev slang vs. dev app + volume slang,
+`wrk -t4 -c50 -d15s`, 3 rounds) shows what that cost:
+
+| Endpoint | dev (baseline) | volume, double-framing (before fix) | volume, single pass (after fix) |
+|---|---|---:|---:|
+| `GET /` | ~51-53k | ~30-39k (**slower than dev**) | ~48-50k (parity) |
+| `GET /users/:id` | ~32-34k | ~25-29k (**slower than dev**) | ~34k (parity+) |
+
+So the "dropped even" reading was real and the docs above were wrong
+to present the 35k/21k cells as a win: the volume branch, as benched,
+was slower than `dev` on the same app. The fix (single framing pass,
+inline hot method/path compares, slang `4fd5eb7`) restores parity on
+`/` and a touch better on `/users/:id`. The table at the top of this
+section still needs a full re-run -- it mixes the stale volume binary
+against Go, which is not a comparison. Until that re-run lands, read
+the A/B above, not the headline cells.
+
 RSS mid-run (30s soak, same load): zokor ~4.5-5.4 MB, Fiber ~6.9 MB,
 `net/http` ~14-15 MB. zokor is the lightest server in the matrix by a
 clear margin -- the GC pressure the volume work removed shows up here
-first.
+first. (RSS was measured on the pre-fix binary; the fix only removes
+work, but re-confirm it with the re-run.)
 
 The previous `ab` numbers (zokor ~17.8k vs `net/http` ~53.5k, Sept 22)
 are superseded by the wrk matrix above: `wrk` with 4 threads drives
