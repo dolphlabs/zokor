@@ -74,8 +74,7 @@ fn block_secret(c: Ctx[TestState]) -> opt[http.Response] {
 }
 
 fn stamp(c: Ctx[TestState], r: http.Response) -> http.Response {
-    r.headers["x-route"] = c.route;
-    return r;
+    return with_header(r, "x-route", c.route);
 }
 
 fn new_test_router() -> Router[TestState] {
@@ -172,12 +171,10 @@ fn test_405_carries_allow_and_404_does_not() {
     r.post("/thing", h_ok);
     let resp = r.serve(req("DELETE", "/thing"));
     assert(resp.status == 405);
-    assert(has(resp.headers, "allow"));
-    let allow = resp.headers["allow"];
-    assert(allow == "GET, POST, HEAD, OPTIONS");
+    assert(resp_header(resp, "allow") == "GET, POST, HEAD, OPTIONS");
     let nf = r.serve(req("GET", "/nothing"));
     assert(nf.status == 404);
-    assert(!has(nf.headers, "allow"));
+    assert(resp_header(nf, "allow") == "");
 }
 
 fn test_head_is_served_by_get_without_a_body() {
@@ -186,7 +183,7 @@ fn test_head_is_served_by_get_without_a_body() {
     let resp = r.serve(req("HEAD", "/page"));
     assert(resp.status == 200);
     assert(len(resp.body) == 0);
-    assert(has(resp.headers, "content-type"));
+    assert(resp_header(resp, "content-type") == "application/json; charset=utf-8");
 }
 
 fn test_options_is_answered_automatically() {
@@ -195,7 +192,7 @@ fn test_options_is_answered_automatically() {
     r.delete("/thing", h_ok);
     let resp = r.serve(req("OPTIONS", "/thing"));
     assert(resp.status == 204);
-    assert(resp.headers["allow"] == "GET, DELETE, HEAD, OPTIONS");
+    assert(resp_header(resp, "allow") == "GET, DELETE, HEAD, OPTIONS");
 }
 
 fn test_explicit_options_route_wins() {
@@ -214,12 +211,12 @@ fn test_before_can_stop_and_after_always_runs() {
     r.after(stamp);
     let blocked = r.serve(req("GET", "/secret"));
     assert(blocked.status == 401);
-    assert(blocked.headers["x-route"] == "/secret");
+    assert(resp_header(blocked, "x-route") == "/secret");
     let allowed = r.serve(req_auth("GET", "/secret", "letmein"));
     assert(allowed.status == 200);
     let open_r = r.serve(req("GET", "/open"));
     assert(open_r.status == 200);
-    assert(open_r.headers["x-route"] == "/open");
+    assert(resp_header(open_r, "x-route") == "/open");
 }
 
 fn test_state_reaches_handlers_and_persists() {
@@ -234,10 +231,10 @@ fn test_request_id_is_echoed() {
     let r = new_test_router();
     r.get("/x", h_ok);
     let resp = r.serve_id(req("GET", "/x"), "req-42");
-    assert(resp.headers["x-request-id"] == "req-42");
+    assert(resp_header(resp, "x-request-id") == "req-42");
     let missing = r.serve_id(req("GET", "/none"), "req-43");
     assert(missing.status == 404);
-    assert(missing.headers["x-request-id"] == "req-43");
+    assert(resp_header(missing, "x-request-id") == "req-43");
 }
 
 fn test_created_sets_location() {
@@ -245,7 +242,7 @@ fn test_created_sets_location() {
     r.post("/things", h_created);
     let resp = r.serve(req("POST", "/things"));
     assert(resp.status == 201);
-    assert(resp.headers["location"] == "/things/new");
+    assert(resp_header(resp, "location") == "/things/new");
 }
 
 fn test_trailing_slashes_are_the_same_route() {

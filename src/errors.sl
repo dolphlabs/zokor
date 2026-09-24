@@ -229,17 +229,11 @@ pub fn default_render(v: ErrorView) -> http.Response {
     }
     body = body + "}}";
 
-    let headers: map[str]str = {};
-    headers["content-type"] = "application/json; charset=utf-8";
+    let r = http.text_response(v.status, status_text(v.status), "application/json; charset=utf-8", body);
     if len(v.request_id) > 0 {
-        headers["x-request-id"] = v.request_id;
+        r = http.with_header(r, "x-request-id", v.request_id);
     }
-    return http.Response {
-        status: v.status,
-        status_text: status_text(v.status),
-        headers: headers,
-        body: to_bytes(body)
-    };
+    return r;
 }
 
 // A JSON string, escaped. Everything that reaches here can contain a
