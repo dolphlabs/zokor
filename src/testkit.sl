@@ -148,11 +148,10 @@ pub fn resp_text(r: http.Response) -> str {
 }
 
 pub fn resp_header(r: http.Response, name: str) -> str {
-    let k = lower_name(name);
-    if has(r.headers, k) {
-        return r.headers[k];
+    guard let v = http.resp_header(r, name) else {
+        return "";
     }
-    return "";
+    return v;
 }
 
 // The body as JSON, or Null when it is not JSON at all -- so an
