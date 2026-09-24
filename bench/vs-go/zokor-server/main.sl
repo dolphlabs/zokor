@@ -26,7 +26,9 @@ fn hello(c: zokor.Ctx[Bench]) -> http.Response {
 
 // 2. a parameterised route: path-segment matching plus building a small
 // JSON body. `user_json` renders straight to bytes -- no str, no
-// `to_bytes`, no copy between the renderer and the socket.
+// `to_bytes`, no copy between the renderer and the socket. (The id
+// still crosses str once inside the handler via c.param; the
+// bytes-native router path is the follow-up, not this diff.)
 fn get_user(c: zokor.Ctx[Bench]) -> http.Response {
     return zokor.ok_json_bytes(zokor.user_json(c.param("id")));
 }

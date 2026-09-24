@@ -507,15 +507,14 @@ impl Router[S] {
         return self.serve_id(req, "");
     }
 
-    // Frame dispatch: route DIRECTLY on raw request bytes, with no
-    // Request str, no segs list, no params map unless the matched
-    // route needs one. `raw` is read_frame's head copy; `f` is its
-    // frame (a WireFrame -- same offsets, plus head/end/close).
-    // Exact routes compare in place; single-:id routes extract one
-    // str; general routes fall back to serve_id (which builds the
-    // Request exactly once, for the route that runs).
-    // Middleware/befores/afters and error shapes are identical --
-    // only the matching is cheaper.
+    // Frame dispatch: route on the ALREADY-PARSED method/path strs,
+    // with no raw bytes, no offsets, no segs list, no params map
+    // unless the matched route needs one. The WireFrame carries
+    // method/path/headers/body straight out of the wire scan, so
+    // the Request is one struct pack (wire_request) shared by every
+    // path below -- never rebuilt per route. Middleware/befores/
+    // afters and error shapes are identical -- only the matching is
+    // cheaper.
     //
     // serve() stays for callers that already hold a Request (tests,
     // middleware fixtures); serve_conn uses this.
@@ -530,20 +529,18 @@ impl Router[S] {
     // (built by serve_frame with request_id ""), so the serve loop
     // never frames twice -- one call, either a static body or the
     // response to write.
-    pub fn serve_static(self: Router[S], raw: bytes,
-                        f: http.WireFrame) -> result[http.StaticBody, http.Response] {
-        // Static routes are exact GETs, so the check is inline byte
-        // compares -- no frame_method_at str, no static_method opt,
-        // no from_str chain. Anything that is not exactly
-        // "GET <static-path>" falls to the dynamic path, which
+    pub fn serve_static(self: Router[S], f: http.WireFrame) -> result[http.StaticBody, http.Response] {
+        // Static routes are exact GETs, so the check is str compares
+        // on the already-parsed method/path -- no raw bytes, no
+        // offsets, no from_str chain. Anything that is not exactly
+        // ("GET", <static-path>) falls to the dynamic path, which
         // parses properly (501s, 405s, 404s all live there).
-        if f.line_end >= 5 && raw[0] == 71 && raw[1] == 69 &&
-           raw[2] == 84 && raw[3] == 32 {
+        if f.method == "GET" {
             let i = 0;
             while i < len(self.routes) {
                 let r = self.routes[i];
                 if r.fkind == 1 && r.has_static {
-                    if http.path_is_at(raw, f.line_end, r.fpath) {
+                    if f.path == r.fpath {
                         return ok(http.StaticBody {
                             status: r.static_status,
                             content_type: r.static_ctype,
@@ -555,32 +552,45 @@ impl Router[S] {
                 i = i + 1;
             }
         }
-        return err(self.serve_frame(raw, f, ""));
+        return err(self.serve_frame(f, ""));
     }
 
     // serve() stays for callers that already hold a Request (tests,
     // middleware fixtures); serve_conn uses this via serve_static.
-    pub fn serve_frame(self: Router[S], raw: bytes, f: http.WireFrame,
+    pub fn serve_frame(self: Router[S], f: http.WireFrame,
                        request_id: str) -> http.Response {
-        let mname = http.frame_method_at(raw, f.line_end);
-        let parsed = Method.from_str(mname);
-        guard let method = parsed else {
-            let rr = http.frame_request_at(raw, f.line_end, f.head_end,
-                                           http.wire_frame_body(raw, f));
-            return self.serve_id(rr, request_id);
+        // Method without from_str: the frame path already holds the
+        // method str, and only the enum comparison matters below.
+        // Compare inline (GET/POST/HEAD cover the bench + almost all
+        // real traffic); anything else resolves via from_str once.
+        // Unknown verbs still 501 through the same path as before.
+        let mget = f.method == "GET";
+        let mpost = f.method == "POST";
+        let mhead = f.method == "HEAD";
+        let method = Method.GET;
+        if mpost {
+            method = Method.POST;
+        } else if mhead {
+            method = Method.HEAD;
+        } else if !mget {
+            let parsed = Method.from_str(f.method);
+            guard let m = parsed else {
+                return self.serve_id(http.wire_request(f), request_id);
+            }
+            method = m;
         }
         let head_of_get = self.auto_head && method == Method.HEAD;
+        let req = http.wire_request(f);
+        // Query strings never route: strip once, compare the rest.
+        // strip_query returns the SAME str when there is no "?" --
+        // one scan, no allocation on the common path.
+        let p = path.strip_query(req.path);
         let path_seen = false;
         let i = 0;
         while i < len(self.routes) {
             let r = self.routes[i];
             if r.fkind == 1 {
-                if !http.path_is_at(raw, f.line_end, r.fpath) {
-                    i = i + 1;
-                    continue;
-                }
-                if !http.method_is_at(raw, f.line_end, mname) {
-                    path_seen = true;
+                if p != r.fpath {
                     i = i + 1;
                     continue;
                 }
@@ -593,8 +603,6 @@ impl Router[S] {
                     i = i + 1;
                     continue;
                 }
-                let req = http.frame_request_at(raw, f.line_end, f.head_end,
-                                                http.wire_frame_body(raw, f));
                 let params: map[str]str = {};
                 let locals: map[str]str = {};
                 let c = Ctx[S] {
@@ -613,13 +621,15 @@ impl Router[S] {
                 return resp;
             }
             if r.fkind == 2 {
-                let id = http.path_param_at(raw, f.line_end, r.fpath);
-                if len(id) == 0 {
+                // Single trailing :id: prefix compare on the str,
+                // then slice the id -- one allocation (the id),
+                // no segs list, no to_bytes of the prefix. strs
+                // cannot slice, so the id comes out of bytes.
+                if !strings.has_prefix(p, r.fpath) {
                     i = i + 1;
                     continue;
                 }
-                if !http.method_is_at(raw, f.line_end, mname) {
-                    path_seen = true;
+                if len(p) <= len(r.fpath) {
                     i = i + 1;
                     continue;
                 }
@@ -632,8 +642,8 @@ impl Router[S] {
                     i = i + 1;
                     continue;
                 }
-                let req = http.frame_request_at(raw, f.line_end, f.head_end,
-                                                http.wire_frame_body(raw, f));
+                let pb = to_bytes(p);
+                let id = to_str(pb[len(r.fpath)..len(pb)]);
                 let params: map[str]str = {};
                 params[r.names[len(r.names) - 1]] = id;
                 let locals: map[str]str = {};
@@ -655,9 +665,7 @@ impl Router[S] {
             i = i + 1;
         }
         // General routes (wildcards, multi-param) or no frame hit:
-        // build the Request once and use the classic path.
-        let req = http.frame_request_at(raw, f.line_end, f.head_end,
-                                        http.wire_frame_body(raw, f));
+        // the Request is already built -- use the classic path.
         return self.serve_id(req, request_id);
     }
 

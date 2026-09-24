@@ -106,12 +106,20 @@ pub fn jarr() -> Json {
 // one builder, one finish, one response. Handlers with a fixed shape
 // should do the same rather than building a Json to render once; the
 // Json builder stays for shapes that are actually dynamic.
+//
+// user_json_bytes: the id as BYTES (already sliced out of the path)
+// -- skips the to_bytes the str form pays. The bench's :id path
+// uses this; the str form stays for callers that hold a str.
 pub fn user_json(id: str) -> bytes {
+    return user_json_bytes(to_bytes(id));
+}
+
+pub fn user_json_bytes(id: bytes) -> bytes {
     let bb = builder.new_bytes();
     bb.write_str("{\"id\":\"");
-    bb.write(http.escape_json_bytes(to_bytes(id)));
+    bb.write(http.escape_json_bytes(id));
     bb.write_str("\",\"name\":\"user ");
-    bb.write(http.escape_json_bytes(to_bytes(id)));
+    bb.write(http.escape_json_bytes(id));
     bb.write_str("\"}");
     return bb.finish();
 }
