@@ -75,6 +75,13 @@ pub gc struct Route[S] {
     // tail, which matches the rest of the path.
     names: [str],
     wild: int,
+    // Frame-matching fast path: how this route matches raw request
+    // bytes with NO segs list. 0 = general (match_segs), 1 = exact
+    // path (path_is), 2 = single trailing :id (path_param with
+    // prefix below). Computed once at registration; serve_frame
+    // uses it so the hot routes never split the path at all.
+    fkind: int,
+    fpath: str,
     handler: fn(Ctx[S]) -> http.Response,
 }
 
@@ -141,7 +148,9 @@ impl Router[S] {
     }
 
     // The one registration path: a pattern is split exactly once, and
-    // the rules about `:params` and `*rest` live here alone.
+    // the rules about `:params` and `*rest` live here alone. The
+    // frame fast-path shape is computed alongside: an exact path or
+    // a single trailing :id never needs the segs list at serve time.
     pub fn handle_with(self: Router[S], method: Method, pattern: str,
                        h: fn(Ctx[S]) -> http.Response,
                        befores: [fn(Ctx[S]) -> opt[http.Response]],
@@ -160,6 +169,36 @@ impl Router[S] {
             }
             i = i + 1;
         }
+        let fk = 0;
+        let fp = "";
+        if wild < 0 {
+            let nparams = 0;
+            let pidx = -1;
+            let k = 0;
+            while k < len(names) {
+                if len(names[k]) > 0 {
+                    nparams = nparams + 1;
+                    pidx = k;
+                }
+                k = k + 1;
+            }
+            if nparams == 0 {
+                fk = 1;
+                fp = pattern;
+            } else if nparams == 1 && pidx == len(segs) - 1 {
+                fk = 2;
+                let pre = "/";
+                let q = 0;
+                while q < pidx {
+                    if q > 0 {
+                        pre = pre + "/";
+                    }
+                    pre = pre + segs[q];
+                    q = q + 1;
+                }
+                fp = pre + "/";
+            }
+        }
         push(self.routes, Route[S] {
             method: method,
             pattern: pattern,
@@ -168,6 +207,8 @@ impl Router[S] {
             segs: segs,
             names: names,
             wild: wild,
+            fkind: fk,
+            fpath: fp,
             handler: h
         });
         return len(self.routes);
@@ -369,6 +410,119 @@ impl Router[S] {
     // cannot be skipped by a short circuit.
     pub fn serve(self: Router[S], req: http.Request) -> http.Response {
         return self.serve_id(req, "");
+    }
+
+    // Frame dispatch: route DIRECTLY on raw request bytes, with no
+    // Request str, no segs list, no params map unless the matched
+    // route needs one. `raw` is read_frame's head copy; `f` is its
+    // frame (a WireFrame -- same offsets, plus head/end/close).
+    // Exact routes compare in place; single-:id routes extract one
+    // str; general routes fall back to serve_id (which builds the
+    // Request exactly once, for the route that runs).
+    // Middleware/befores/afters and error shapes are identical --
+    // only the matching is cheaper.
+    //
+    // serve() stays for callers that already hold a Request (tests,
+    // middleware fixtures); serve_conn uses this.
+    pub fn serve_frame(self: Router[S], raw: bytes, f: http.WireFrame,
+                       request_id: str) -> http.Response {
+        let mname = http.frame_method_at(raw, f.line_end);
+        let parsed = Method.from_str(mname);
+        guard let method = parsed else {
+            let rr = http.frame_request_at(raw, f.line_end, f.head_end,
+                                           http.wire_frame_body(raw, f));
+            return self.serve_id(rr, request_id);
+        }
+        let head_of_get = self.auto_head && method == Method.HEAD;
+        let path_seen = false;
+        let i = 0;
+        while i < len(self.routes) {
+            let r = self.routes[i];
+            if r.fkind == 1 {
+                if !http.path_is_at(raw, f.line_end, r.fpath) {
+                    i = i + 1;
+                    continue;
+                }
+                if !http.method_is_at(raw, f.line_end, mname) {
+                    path_seen = true;
+                    i = i + 1;
+                    continue;
+                }
+                path_seen = true;
+                let m = r.method == method;
+                if !m && head_of_get && r.method == Method.GET {
+                    m = true;
+                }
+                if !m {
+                    i = i + 1;
+                    continue;
+                }
+                let req = http.frame_request_at(raw, f.line_end, f.head_end,
+                                                http.wire_frame_body(raw, f));
+                let params: map[str]str = {};
+                let locals: map[str]str = {};
+                let c = Ctx[S] {
+                    state: self.state,
+                    req: req,
+                    params: params,
+                    route: r.pattern,
+                    request_id: request_id,
+                    locals: locals,
+                    errors: self.errors
+                };
+                let resp = self.run(c, r);
+                if head_of_get && r.method == Method.GET {
+                    resp.body = to_bytes("");
+                }
+                return resp;
+            }
+            if r.fkind == 2 {
+                let id = http.path_param_at(raw, f.line_end, r.fpath);
+                if len(id) == 0 {
+                    i = i + 1;
+                    continue;
+                }
+                if !http.method_is_at(raw, f.line_end, mname) {
+                    path_seen = true;
+                    i = i + 1;
+                    continue;
+                }
+                path_seen = true;
+                let m = r.method == method;
+                if !m && head_of_get && r.method == Method.GET {
+                    m = true;
+                }
+                if !m {
+                    i = i + 1;
+                    continue;
+                }
+                let req = http.frame_request_at(raw, f.line_end, f.head_end,
+                                                http.wire_frame_body(raw, f));
+                let params: map[str]str = {};
+                params[r.names[len(r.names) - 1]] = id;
+                let locals: map[str]str = {};
+                let c = Ctx[S] {
+                    state: self.state,
+                    req: req,
+                    params: params,
+                    route: r.pattern,
+                    request_id: request_id,
+                    locals: locals,
+                    errors: self.errors
+                };
+                let resp = self.run(c, r);
+                if head_of_get && r.method == Method.GET {
+                    resp.body = to_bytes("");
+                }
+                return resp;
+            }
+            i = i + 1;
+        }
+        // General routes (wildcards, multi-param) or no frame hit:
+        // build the Request once and use the classic path.
+        let req = http.frame_request_at(raw, f.line_end, f.head_end,
+                                        http.wire_frame_body(raw, f));
+        return self.serve_id(req, request_id);
     }
 
     pub fn serve_id(self: Router[S], req: http.Request,
