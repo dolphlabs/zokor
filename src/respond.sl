@@ -2,24 +2,35 @@
 //
 // The mirror of errors.sl: handlers name a shape rather than building
 // one, so every 200 in a service carries the same headers and every 201
-// carries a Location. Bodies are already-encoded JSON strings -- zokor
-// does not choose an encoder for you; `json.encode` from the standard
-// library, or your own builder, produces the string.
-//
-// Every constructor below delegates to http's own shaped constructors,
-// so a response arrives at http.write already shaped: no map, no
-// per-header insert, and the fast emit path never touches `extra`.
+// carries a Location. Bodies are bytes on the wire: every constructor
+// below takes the already-encoded payload as bytes and hands it to
+// http's shaped bytes constructors, so a response arrives at http.write
+// already shaped: no map, no per-header insert, no str->bytes copy,
+// and the fast emit path never touches `extra`.
 
 import "http";
 
 pub fn json_response(status: i32, body: str) -> http.Response {
-    return http.text_response(status, status_text(status), "application/json; charset=utf-8", body);
+    return json_response_bytes(status, to_bytes(body));
+}
+
+// `json_response` with a BYTES body: same shape, no `to_bytes` copy.
+// The hot path (a freshly rendered object) already holds bytes; this
+// keeps them as bytes into `text_response_bytes`.
+pub fn json_response_bytes(status: i32, body: bytes) -> http.Response {
+    return http.text_response_bytes(status, status_text(status), "application/json; charset=utf-8", body);
 }
 
 // `ok` is a slang builtin (the result constructor), so the 200 helper
 // is named for what it sends.
 pub fn ok_json(body: str) -> http.Response {
     return json_response(200, body);
+}
+
+// `ok_json` with a BYTES body: the `render_bytes` path -- no str, no
+// `to_bytes`, no copy between the renderer and the socket.
+pub fn ok_json_bytes(body: bytes) -> http.Response {
+    return json_response_bytes(200, body);
 }
 
 pub fn created(body: str, location: str) -> http.Response {
@@ -30,8 +41,22 @@ pub fn created(body: str, location: str) -> http.Response {
     return r;
 }
 
+// `created` with a BYTES body: same shape, no `to_bytes` copy.
+pub fn created_bytes(body: bytes, location: str) -> http.Response {
+    let r = json_response_bytes(201, body);
+    if len(location) > 0 {
+        r.location = location;
+    }
+    return r;
+}
+
 pub fn accepted(body: str) -> http.Response {
     return json_response(202, body);
+}
+
+// `accepted` with a BYTES body: same shape, no `to_bytes` copy.
+pub fn accepted_bytes(body: bytes) -> http.Response {
+    return json_response_bytes(202, body);
 }
 
 pub fn no_content() -> http.Response {
@@ -39,17 +64,25 @@ pub fn no_content() -> http.Response {
 }
 
 pub fn text(status: i32, body: str) -> http.Response {
-    return http.text_response(status, status_text(status), "text/plain; charset=utf-8", body);
+    return text_bytes(status, to_bytes(body));
+}
+
+// `text` with a BYTES body: same shape, no `to_bytes` copy.
+pub fn text_bytes(status: i32, body: bytes) -> http.Response {
+    return http.text_response_bytes(status, status_text(status), "text/plain; charset=utf-8", body);
 }
 
 pub fn html(status: i32, body: str) -> http.Response {
-    return http.text_response(status, status_text(status), "text/html; charset=utf-8", body);
+    return html_bytes(status, to_bytes(body));
+}
+
+// `html` with a BYTES body: same shape, no `to_bytes` copy.
+pub fn html_bytes(status: i32, body: bytes) -> http.Response {
+    return http.text_response_bytes(status, status_text(status), "text/html; charset=utf-8", body);
 }
 
 pub fn bytes_of(status: i32, content_type: str, body: bytes) -> http.Response {
-    let r = http.text_response(status, status_text(status), content_type, "");
-    r.body = body;
-    return r;
+    return http.text_response_bytes(status, status_text(status), content_type, body);
 }
 
 // 303 after a POST, 307/308 to preserve the method, 301/302 for the

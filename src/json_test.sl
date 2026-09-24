@@ -265,6 +265,27 @@ fn test_checker_types_and_nesting() {
     assert(v.fields[2].reason == "must not be empty");
 }
 
+fn test_render_bytes_matches_render() {
+    let j = jobj().set_str("id", "42").set_str("name", "user 42");
+    assert(to_str(j.render_bytes()) == j.render());
+    let n = jobj().set_int("a", 1).set_bool("b", true).set("c", jnull());
+    assert(to_str(n.render_bytes()) == n.render());
+    let q = jobj().set_str("msg", "quote \" backslash \\ newline \n tab \t");
+    assert(to_str(q.render_bytes()) == q.render());
+    let arr = jarr().add_str("x").add_int(7);
+    assert(to_str(arr.render_bytes()) == arr.render());
+}
+
+fn test_ok_json_bytes_matches_ok_json() {
+    let body = jobj().set_str("id", "42").render_bytes();
+    let a = ok_json_bytes(body);
+    let b = ok_json(to_str(body));
+    assert(a.status == b.status);
+    assert(a.content_type == b.content_type);
+    assert(a.body == b.body);
+    assert(http.serialize(a) == http.serialize(b));
+}
+
 fn test_checker_renders_into_the_standard_envelope() {
     let reg = new_registry();
     let body = jparsed("{}");
