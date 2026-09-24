@@ -453,3 +453,66 @@ fn test_plain_get_is_never_static() {
     println("FAIL plain get must stay dynamic");
     exit(1);
 }
+
+fn h_whoami(c: Ctx[TestState]) -> http.Response {
+    guard let m = c.locals else {
+        return text(200, c.local("user") + "|0|0");
+    }
+    let n = len(m);
+    let h = "0";
+    if c.has_local("user") {
+        h = "1";
+    }
+    return text(200, c.local("user") + "|" + to_str(n) + "|" + h);
+}
+
+fn set_who(c: Ctx[TestState]) -> opt[http.Response] {
+    c.set_local("user", "ada");
+    return none;
+}
+
+fn test_locals_materialise_on_first_write() {
+    // none reads empty; set_local materialises; second write reuses.
+    let r = new_test_router();
+    r.get("/who", h_whoami);
+    assert(to_str(r.serve(req("GET", "/who")).body) == "|0|0");
+    let r2 = new_test_router();
+    r2.before(set_who);
+    r2.get("/who", h_whoami);
+    assert(to_str(r2.serve(req("GET", "/who")).body) == "ada|1|1");
+    // two befores: still one map, count grows. The handler reads
+    // only (no third write) so the count it reports is exact.
+    let r3 = new_test_router();
+    r3.before(set_who);
+    r3.before(set_tenant);
+    r3.get("/who2", h_who2);
+    assert(to_str(r3.serve(req("GET", "/who2")).body) == "ada|acme|2");
+}
+
+fn set_tenant(c: Ctx[TestState]) -> opt[http.Response] {
+    c.set_local("tenant", "acme");
+    return none;
+}
+
+fn h_who2(c: Ctx[TestState]) -> http.Response {
+    let n = 0;
+    guard let m = c.locals else {
+        return text(200, "nolocals");
+    }
+    n = len(m);
+    return text(200, c.local("user") + "|" + c.local("tenant") + "|" +
+                     to_str(n));
+}
+
+fn h_param_missing(c: Ctx[TestState]) -> http.Response {
+    if c.param("id") == "" {
+        return text(200, "empty");
+    }
+    return text(200, "full");
+}
+
+fn test_params_none_is_empty() {
+    let r = new_test_router();
+    r.get("/p", h_param_missing);
+    assert(to_str(r.serve(req("GET", "/p")).body) == "empty");
+}
