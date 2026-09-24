@@ -83,7 +83,7 @@ fn test_upgrade() {
         panic("expected a 101");
     }
     assert(resp.status == 101);
-    assert(resp.headers["sec-websocket-accept"] == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+    assert(resp_header(resp, "sec-websocket-accept") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
 
     let plain: map[str]str = {};
     let nwr = http.request("GET", "/", "HTTP/1.1", plain, b"");
@@ -99,7 +99,7 @@ fn test_upgrade_picks_a_subprotocol() {
     guard let resp = r else {
         panic("expected a 101");
     }
-    assert(resp.headers["sec-websocket-protocol"] == "chat");
+    assert(resp_header(resp, "sec-websocket-protocol") == "chat");
 }
 
 fn test_text_and_binary_messages() {
