@@ -7,6 +7,10 @@
 // http's shaped bytes constructors, so a response arrives at http.write
 // already shaped: no map, no per-header insert, no str->bytes copy,
 // and the fast emit path never touches `extra`.
+//
+// Route handlers are also free to return a response WITHOUT going
+// through here -- `ok_json_bytes(user_json(id))` is the same bytes.
+// These helpers are naming + status_text, not a required path.
 
 import "http";
 

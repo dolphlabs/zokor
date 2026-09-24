@@ -69,7 +69,7 @@ pub fn serve_conn[S](r: Router[S], c: link) {
         // (slang PR #189 fixes the CPU-bound half; the parking half is
         // still open). `serve_id` takes "" for exactly this case, and
         // wiring ids in is its own todo item anyway.
-        let sr = r.serve_static(wf.head, wf);
+        let sr = r.serve_static(wf);
         guard let resp = sr else let dyn_resp = err_of(sr) {
             let wr = http.write(&mut c, dyn_resp, &mut sa,
                                 until_never());

@@ -318,18 +318,33 @@ fn frame_req(method: str, target: str) -> http.WireFrame {
     guard let f = fr else {
         panic("frame_req: bad test frame");
     }
+    // WireFrame carries parsed strs, not raw: method/path straight
+    // out, headers = the block, body = the slice. Tests build the
+    // same shape read_frame returns on the wire.
+    let hb = raw[f.line_end + 2..f.head_end];
+    let bb = raw[f.body_start..f.body_end];
+    let sp = 0;
+    while sp < f.line_end && raw[sp] != 32 {
+        sp = sp + 1;
+    }
+    let pstart = sp + 1;
+    let sp2 = pstart;
+    while sp2 < f.line_end && raw[sp2] != 32 {
+        sp2 = sp2 + 1;
+    }
     return http.WireFrame {
-        line_end: f.line_end,
+        line_end: 0,
         head_end: f.head_end,
-        body_start: f.body_start,
-        body_end: f.body_end,
+        body_start: 0,
+        body_end: 0,
         end: len(raw),
         version: f.version,
         close: false,
         filled: 0,
-        head: raw,
-        chunked_body: b"",
-        is_chunked: false
+        method: to_str(raw[0..sp]),
+        path: to_str(raw[pstart..sp2]),
+        headers: hb,
+        body: bb
     };
 }
 
@@ -340,31 +355,31 @@ fn test_frame_exact_matches_without_segs() {
     r.get("/orgs/:id/keys/:key", h_two);
     r.get("/files/*rest", h_rest);
     let root = frame_req("GET", "/");
-    assert(to_str(r.serve_frame(root.head, root, "").body) ==
+    assert(to_str(r.serve_frame(root, "").body) ==
            "{\"route\":\"/\"}");
     let one = frame_req("GET", "/users/42");
-    assert(to_str(r.serve_frame(one.head, one, "").body) == "{\"id\":\"42\"}");
+    assert(to_str(r.serve_frame(one, "").body) == "{\"id\":\"42\"}");
     // query strings never reach the route: same frame shape, same answer
     let q = frame_req("GET", "/users/42?verbose=true");
-    assert(to_str(r.serve_frame(q.head, q, "").body) == "{\"id\":\"42\"}");
+    assert(to_str(r.serve_frame(q, "").body) == "{\"id\":\"42\"}");
     // multi-param and wildcard shapes fall back to serve_id: same body
     let two = frame_req("GET", "/orgs/7/keys/k1");
-    assert(to_str(r.serve_frame(two.head, two, "").body) ==
+    assert(to_str(r.serve_frame(two, "").body) ==
            "{\"id\":\"7\",\"key\":\"k1\"}");
     let wild = frame_req("GET", "/files/a/b/c.txt");
-    assert(to_str(r.serve_frame(wild.head, wild, "").body) ==
+    assert(to_str(r.serve_frame(wild, "").body) ==
            "{\"rest\":\"a/b/c.txt\"}");
     // method mismatch on an exact path is a 405 with Allow, not a 404
     let bad = frame_req("DELETE", "/");
-    let denied = r.serve_frame(bad.head, bad, "");
+    let denied = r.serve_frame(bad, "");
     assert(denied.status == 405);
     assert(resp_header(denied, "allow") == "GET, HEAD, OPTIONS");
     // unknown path is a 404 through the same error shape
     let nf = frame_req("GET", "/nothing");
-    assert(r.serve_frame(nf.head, nf, "").status == 404);
+    assert(r.serve_frame(nf, "").status == 404);
     // unknown verb is a 501, same as serve_id
     let brew = frame_req("BREW", "/");
-    assert(r.serve_frame(brew.head, brew, "").status == 501);
+    assert(r.serve_frame(brew, "").status == 501);
 }
 
 fn test_static_bytes_serves_without_a_handler_call() {
@@ -373,7 +388,7 @@ fn test_static_bytes_serves_without_a_handler_call() {
                             b"Hello, World!", h_static_hello);
     assert(n == 1);
     let f = frame_req("GET", "/");
-    let sr = r.serve_static(f.head, f);
+    let sr = r.serve_static(f);
     guard let b = sr else {
         println("FAIL static should hit");
         exit(1);
@@ -387,18 +402,18 @@ fn test_static_bytes_serves_without_a_handler_call() {
     // a dynamic route alongside still works through the same entry
     r.get("/users/:id", h_param);
     let one = frame_req("GET", "/users/42");
-    let dr = r.serve_static(one.head, one);
+    let dr = r.serve_static(one);
     guard let _static_hit = dr else let dyn_resp = err_of(dr) {
         assert(to_str(dyn_resp.body) == "{\"id\":\"42\"}");
         // wrong method on a static path is NOT served statically: it
         // falls through to the dynamic 405, not to stale bytes
         let del = frame_req("DELETE", "/");
-        let mr = r.serve_static(del.head, del);
+        let mr = r.serve_static(del);
         guard let _mhit = mr else let mresp = err_of(mr) {
             assert(mresp.status == 405);
             // unknown path misses static and 404s dynamically
             let nf = frame_req("GET", "/nothing");
-            let nr = r.serve_static(nf.head, nf);
+            let nr = r.serve_static(nf);
             guard let _nhit = nr else let nresp = err_of(nr) {
                 assert(nresp.status == 404);
                 return;
@@ -430,7 +445,7 @@ fn test_plain_get_is_never_static() {
     r.get("/", h_static_hello);
     assert(!r.routes[0].has_static);
     let f = frame_req("GET", "/");
-    let sr = r.serve_static(f.head, f);
+    let sr = r.serve_static(f);
     guard let _hit = sr else let dyn_resp = err_of(sr) {
         assert(to_str(dyn_resp.body) == "Hello, World!");
         return;
