@@ -44,14 +44,18 @@ fn response_bytes() -> int {
 // where the next one begins either. That is the framing rule slang's
 // own http package documents, and it is a security boundary (request
 // smuggling), not a convenience.
+//
+// Frame dispatch: read_frame routes on wire offsets (no Request strs,
+// no segs list); the Request is built once for the route that runs.
+// serve_id stays for callers that already hold a Request.
 pub fn serve_conn[S](r: Router[S], c: link) {
     let ra = arena_new(request_bytes());
     let sa = arena_new(response_bytes());
     let buf = ra.wire(request_bytes());
     let filled = 0;
     while true {
-        let rr = http.read(&mut c, buf, filled, until_never());
-        guard let got = rr else {
+        let rr = http.read_frame(&mut c, buf, filled, until_never());
+        guard let wf = rr else {
             return;
         }
         // No request id yet, and not because one is unwanted: slang's
@@ -61,16 +65,16 @@ pub fn serve_conn[S](r: Router[S], c: link) {
         // (slang PR #189 fixes the CPU-bound half; the parking half is
         // still open). `serve_id` takes "" for exactly this case, and
         // wiring ids in is its own todo item anyway.
-        let resp = r.serve_id(got.req, "");
+        let resp = r.serve_frame(wf.head, wf, "");
         let wr = http.write(&mut c, resp, &mut sa, until_never());
         guard let _n = wr else {
             return;
         }
         sa.reset();
-        if http.wants_close(got.req) {
+        if wf.close {
             return;
         }
-        filled = got.filled;
+        filled = wf.filled;
     }
 }
 

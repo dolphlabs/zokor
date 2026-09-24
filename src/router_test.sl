@@ -307,3 +307,58 @@ fn test_query_as_binds_typed_fields_or_answers_decode_failed() {
     assert(bad.status == 422);
     assert(strings.contains(to_str(bad.body), "\"field\":\"page\""));
 }
+
+fn frame_req(method: str, target: str) -> http.WireFrame {
+    let raw = to_bytes(method + " " + target + " HTTP/1.1\r\nHost: t\r\n\r\n");
+    let fr = http.parse_frame(raw);
+    guard let f = fr else {
+        panic("frame_req: bad test frame");
+    }
+    return http.WireFrame {
+        line_end: f.line_end,
+        head_end: f.head_end,
+        body_start: f.body_start,
+        body_end: f.body_end,
+        end: len(raw),
+        version: f.version,
+        close: false,
+        filled: 0,
+        head: raw,
+        chunked_body: b"",
+        is_chunked: false
+    };
+}
+
+fn test_frame_exact_matches_without_segs() {
+    let r = new_test_router();
+    r.get("/", h_ok);
+    r.get("/users/:id", h_param);
+    r.get("/orgs/:id/keys/:key", h_two);
+    r.get("/files/*rest", h_rest);
+    let root = frame_req("GET", "/");
+    assert(to_str(r.serve_frame(root.head, root, "").body) ==
+           "{\"route\":\"/\"}");
+    let one = frame_req("GET", "/users/42");
+    assert(to_str(r.serve_frame(one.head, one, "").body) == "{\"id\":\"42\"}");
+    // query strings never reach the route: same frame shape, same answer
+    let q = frame_req("GET", "/users/42?verbose=true");
+    assert(to_str(r.serve_frame(q.head, q, "").body) == "{\"id\":\"42\"}");
+    // multi-param and wildcard shapes fall back to serve_id: same body
+    let two = frame_req("GET", "/orgs/7/keys/k1");
+    assert(to_str(r.serve_frame(two.head, two, "").body) ==
+           "{\"id\":\"7\",\"key\":\"k1\"}");
+    let wild = frame_req("GET", "/files/a/b/c.txt");
+    assert(to_str(r.serve_frame(wild.head, wild, "").body) ==
+           "{\"rest\":\"a/b/c.txt\"}");
+    // method mismatch on an exact path is a 405 with Allow, not a 404
+    let bad = frame_req("DELETE", "/");
+    let denied = r.serve_frame(bad.head, bad, "");
+    assert(denied.status == 405);
+    assert(resp_header(denied, "allow") == "GET, HEAD, OPTIONS");
+    // unknown path is a 404 through the same error shape
+    let nf = frame_req("GET", "/nothing");
+    assert(r.serve_frame(nf.head, nf, "").status == 404);
+    // unknown verb is a 501, same as serve_id
+    let brew = frame_req("BREW", "/");
+    assert(r.serve_frame(brew.head, brew, "").status == 501);
+}
