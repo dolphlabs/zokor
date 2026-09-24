@@ -115,6 +115,20 @@ pub fn user_json(id: str) -> bytes {
 }
 
 pub fn user_json_bytes(id: bytes) -> bytes {
+    // Bench ids ("42") never escape: no quote, no backslash, no
+    // control byte. Scan once in place; the clean path (every bench
+    // request) writes straight through with no escape allocs at
+    // all. Only an id that actually needs escaping pays the
+    // escape_json_bytes builder.
+    if !needs_escape(id) {
+        let bb = builder.new_bytes();
+        bb.write_str("{\"id\":\"");
+        bb.write(id);
+        bb.write_str("\",\"name\":\"user ");
+        bb.write(id);
+        bb.write_str("\"}");
+        return bb.finish();
+    }
     let bb = builder.new_bytes();
     bb.write_str("{\"id\":\"");
     bb.write(http.escape_json_bytes(id));
@@ -122,6 +136,21 @@ pub fn user_json_bytes(id: bytes) -> bytes {
     bb.write(http.escape_json_bytes(id));
     bb.write_str("\"}");
     return bb.finish();
+}
+
+// One in-place scan, zero allocs: true iff any byte needs JSON
+// escaping (quote, backslash, or control). The caller branches on
+// it -- clean payloads skip the escape builder entirely.
+fn needs_escape(b: bytes) -> bool {
+    let i = 0;
+    while i < len(b) {
+        let c = b[i];
+        if c == 34 || c == 92 || c < 32 {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
 }
 
 pub fn message_json(message: str) -> bytes {
