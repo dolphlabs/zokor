@@ -6,6 +6,7 @@
 // It now calls `zokor.listen_and_serve`, so what is measured is the
 // framework's own server edge rather than a benchmark's stand-in for it.
 
+import "builder";
 import "http";
 import "json";
 import "proc";
@@ -16,19 +17,23 @@ gc struct Bench {
 }
 
 // 1. hello-world: no parsing, no encoding, the floor for request/response
-// overhead alone.
+// overhead alone. The body is bytes so the str->bytes copy never happens.
 fn hello(c: zokor.Ctx[Bench]) -> http.Response {
-    return zokor.text(200, "Hello, World!");
+    return zokor.text_bytes(200, b"Hello, World!");
 }
 
 // 2. a parameterised route: path-segment matching plus building a small
-// JSON body.
+// JSON body. `render_bytes` hands bytes straight to the socket -- no
+// str, no `to_bytes`, no copy in between.
 fn get_user(c: zokor.Ctx[Bench]) -> http.Response {
     let id = c.param("id");
-    return zokor.ok_json(zokor.jobj()
-        .set_str("id", id)
-        .set_str("name", "user " + id)
-        .render());
+    let bb = builder.new_bytes();
+    bb.write_str("{\"id\":\"");
+    bb.write(http.escape_json_bytes(to_bytes(id)));
+    bb.write_str("\",\"name\":\"user ");
+    bb.write(http.escape_json_bytes(to_bytes(id)));
+    bb.write_str("\"}");
+    return zokor.ok_json_bytes(bb.finish());
 }
 
 // 3. JSON echo: decode a small body into a declared shape, re-encode it.
@@ -42,7 +47,11 @@ fn echo(c: zokor.Ctx[Bench]) -> http.Response {
     guard let dto = r else let resp = err_of(r) {
         return resp;
     }
-    return zokor.ok_json(zokor.jobj().set_str("message", dto.message).render());
+    let bb = builder.new_bytes();
+    bb.write_str("{\"message\":\"");
+    bb.write(http.escape_json_bytes(to_bytes(dto.message)));
+    bb.write_str("\"}");
+    return zokor.ok_json_bytes(bb.finish());
 }
 
 let rt = zokor.new_router(Bench { started: 1 });
