@@ -165,12 +165,24 @@ fn listen_reuse(port: int) -> result[link, fault] {
 // Measured before keeping it: on the static `/` path (no Request,
 // no handler, prebuilt bytes) acceptors make NO difference --
 // ZOKOR_ACCEPTORS=1 and 8 both do ~72k rps on `GET /`, because the
-// bottleneck is per-request work, not accepts. The dynamic
-// `/users/:id` path is identical either way too (~27-28k, with
-// timeouts at 8). So the default stays 1: extra acceptors are extra
-// tasks contending on the same cores for no gain, and the knob
-// remains for machines where accepts ARE the bottleneck.
-// `ZOKOR_ACCEPTORS` overrides; default 1.
+// bottleneck is per-request work, not accepts. So the default stays
+// 1: extra acceptors are extra tasks contending on the same cores for
+// no gain, and the knob remains for machines where accepts ARE the
+// bottleneck. `ZOKOR_ACCEPTORS` overrides; default 1.
+//
+// The dynamic `/users/:id` path's timeouts this comment used to
+// mention here (at both 1 and 8 acceptors) are NOT an acceptor-count
+// finding -- root-caused since: it is queueing-delay collapse from
+// driving more concurrent connections than this benchmark machine's
+// real capacity for that path, not a bug in the accept loop, the
+// router, or the GC (SLANG_GC_STAT during the same load: pauses topped
+// out under 8ms; nowhere near the hundreds-of-ms tail observed).
+// `wrk -c{8,16,32,50}` on the same box+binary: p99 1.2ms / 2.5ms /
+// 30ms / ~900ms -- a saturation cliff, not a step function, and Go's
+// net/http and Fiber stay clean at this repo's usual c=50 on the same
+// machine because their own per-request cost is lower, giving them
+// more headroom before the same cliff. See docs/benchmarks.md's
+// "Where the tail actually comes from" for the full bisection.
 pub fn listen_and_serve[S](r: Router[S], port: int) -> result[int, str] {
     let n = acceptor_count();
     if n < 1 {
