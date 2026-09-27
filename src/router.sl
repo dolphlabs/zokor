@@ -46,6 +46,18 @@ pub gc struct Ctx[S] {
     // hook runs. Accessors below treat none as empty; set_local
     // materialises on first write. See lazy_params/lazy_locals.
     params: opt[map[str]str],
+    // The single-`:id`-route fast path (Route.fkind == 2, the common
+    // shape: `/orgs/:id`, one binding). Set directly from the frame
+    // match with no map at all -- `params` stays `none` here, same as
+    // the no-params case, so this costs nothing extra for routes that
+    // don't use it. `param1_name` "" means unused; a real binding is
+    // never an empty name (`:id`'s segment name always has a letter).
+    // `param()` below checks this before `params`. A route with more
+    // than one param (Route.fkind == 0) still goes through the general
+    // `params` map -- this lane exists for the shape that is common
+    // enough to be worth a second field, not every shape.
+    param1_name: str,
+    param1_value: str,
     // The PATTERN that matched, not the path: `/orgs/7` and `/orgs/9`
     // report as one route, so metrics and logs stay one series per
     // route instead of one per id.
@@ -620,6 +632,8 @@ impl Router[S] {
                     state: self.state,
                     req: req,
                     params: none,
+                    param1_name: "",
+                    param1_value: "",
                     route: r.pattern,
                     request_id: request_id,
                     locals: none,
@@ -655,15 +669,21 @@ impl Router[S] {
                 }
                 let pb = to_bytes(p);
                 let id = to_str(pb[len(r.fpath)..len(pb)]);
-                // One map, not two: params holds the single binding
-                // (the route matched, so the cost is earned); locals
-                // stays none until set_local materialises it.
-                let pmap: map[str]str = {};
-                pmap[r.names[len(r.names) - 1]] = id;
+                // No map at all: this is exactly the shape param1_name/
+                // param1_value exist for, one binding, name already
+                // known from the route -- a map here was one allocation
+                // (header + buckets) to hold a single key, and it
+                // measured as the single largest contributor to this
+                // route's own tail latency under load (bench/vs-go's
+                // docs/benchmarks.md, "Where the tail actually comes
+                // from"). locals stays none until set_local
+                // materialises it, same as before.
                 let c = Ctx[S] {
                     state: self.state,
                     req: req,
-                    params: some(pmap),
+                    params: none,
+                    param1_name: r.names[len(r.names) - 1],
+                    param1_value: id,
                     route: r.pattern,
                     request_id: request_id,
                     locals: none,
@@ -694,6 +714,8 @@ impl Router[S] {
                 state: self.state,
                 req: req,
                 params: none,
+                param1_name: "",
+                param1_value: "",
                 route: "",
                 request_id: request_id,
                 locals: none,
@@ -745,6 +767,8 @@ impl Router[S] {
                 state: self.state,
                 req: req,
                 params: popt,
+                param1_name: "",
+                param1_value: "",
                 route: r.pattern,
                 request_id: request_id,
                 locals: none,
@@ -761,6 +785,8 @@ impl Router[S] {
             state: self.state,
             req: req,
             params: none,
+            param1_name: "",
+            param1_value: "",
             route: "",
             request_id: request_id,
             locals: none,
@@ -879,6 +905,8 @@ fn static_probe[S](state: S, errors: Registry) -> Ctx[S] {
             body: b""
         },
         params: none,
+        param1_name: "",
+        param1_value: "",
         route: "",
         request_id: "",
         locals: none,
@@ -1041,6 +1069,9 @@ impl Group[S] {
 
 impl Ctx[S] {
     pub fn param(self: Ctx[S], name: str) -> str {
+        if len(self.param1_name) > 0 && self.param1_name == name {
+            return self.param1_value;
+        }
         guard let m = self.params else {
             return "";
         }

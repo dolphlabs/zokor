@@ -184,6 +184,8 @@ fn test_ctx_json_body() {
         state: 1,
         req: json_req("{\"name\":\"ada\"}", "application/json"),
         params: none,
+        param1_name: "",
+        param1_value: "",
         route: "/x",
         request_id: "r1",
         locals: none,
