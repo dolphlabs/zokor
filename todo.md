@@ -110,9 +110,12 @@ properties of the server, not of a handler.
   *Still owed:* `examples/chat`'s stand-in requests, which belong to "wire
   WebSocket and Socket.IO into the loop" below; a request id per request,
   blocked on the second half of the `crypto.rand` bug (it is still unsafe
-  from a task that parks on socket I/O, so the loop passes ""); and the
-  ~0.5% non-2xx rate on the body-reading path, measured in
-  `docs/benchmarks.md` and the first thing to fix here.
+  from a task that parks on socket I/O, so the loop passes "").
+  ~~The ~0.5% non-2xx rate on the body-reading path~~ was never this
+  repo's bug: root-caused to a codegen bug in slang's `json.decode`
+  (double-evaluating a non-trivial `str` argument, unrooting the first
+  result before it was read -- see `docs/benchmarks.md`), fixed in
+  slang PR #228.
 - [ ] Timeouts: read header, read body, write, idle. Each configurable, each
   with a default that is safe rather than infinite.
 - [ ] Limits: max header bytes, max body bytes (refused at read time with
