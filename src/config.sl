@@ -374,6 +374,18 @@ pub fn optional_url(c: Config, key: str, fallback: str) -> str {
     return checked(c, key, valid.is_url(s), s);
 }
 
+// Same shape as optional_url, for a connection string rather than an
+// HTTP one: `is_dsn` accepts any scheme with a host (redis://, amqp://,
+// ...), where is_url would reject all of them. The dependency this
+// gates is off by default (fallback, typically ""), on once configured
+// -- REDIS_URL is the first caller.
+pub fn optional_dsn(c: Config, key: str, fallback: str) -> str {
+    guard let s = get(c, key) else {
+        return fallback;
+    }
+    return checked(c, key, valid.is_dsn(s), s);
+}
+
 // ---------------------------------------------------------------- //
 // The report                                                         //
 // ---------------------------------------------------------------- //
