@@ -271,8 +271,8 @@ guard let handshake = hr else {
 }
 let resp = r.serve(handshake);
 println("handshake -> " + to_str(resp.status) + " " + resp.status_text);
-println("  sec-websocket-accept: " + resp.headers["sec-websocket-accept"]);
-println("  sec-websocket-protocol: " + resp.headers["sec-websocket-protocol"]);
+println("  sec-websocket-accept: " + (http.resp_header(resp, "sec-websocket-accept") ?? ""));
+println("  sec-websocket-protocol: " + (http.resp_header(resp, "sec-websocket-protocol") ?? ""));
 println("");
 
 // a request that is not an upgrade gets a normal error, same route

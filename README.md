@@ -104,6 +104,7 @@ declare, and every handler receives it.
 | `Json`, `parse`, `jobj` | JSON you did not declare: walk it, build it, render it |
 | `upgrade`, `receive`, `sio_*` | WebSocket (RFC 6455) and Socket.IO, as a state machine you feed bytes |
 | `ok_json`, `created`, … | success responses with the headers they should carry |
+| `redis_from_config` | a Redis pool from `REDIS_URL`, optional by default |
 
 ## Configuration
 
@@ -148,8 +149,39 @@ Validators: `require`, `require_int`, `require_range`, `require_port`,
 `require_bool`, `require_float`, `require_email`, `require_url`,
 `require_dsn`, `require_host`, `require_ipv4`, `require_uuid`,
 `require_one_of`, `require_duration`, `require_min_len`,
-`require_max_len`, and `optional_url` / `optional_one_of` for values that
-must be valid *when set*.
+`require_max_len`, and `optional_url` / `optional_one_of` / `optional_dsn`
+for values that must be valid *when set*.
+
+## Redis
+
+Optional the same way any dependency should be: a service with no
+`REDIS_URL` builds no pool and opens no connection.
+
+```slang
+let cfg = zokor.load_config();
+let pr = zokor.redis_from_config(cfg);   // reads REDIS_URL, REDIS_POOL_SIZE
+guard let pool = pr else let e = err_of(pr) {
+    println(e);       // "REDIS_URL is not set" -- your call whether that's fatal
+    exit(1);
+}
+```
+
+That is the whole of it: a pool from config, nothing more. Everything
+past that point is slang's own `redis` package — `redis.acquire`,
+`redis.get`/`set`/`hset`/`zadd`/…, transactions, pub/sub, streams,
+cluster routing — called directly, the same way any other zokor
+service reaches its dependencies. Wrapping the other ~150 functions
+here would only be a second place for that API to drift from the one
+slang ships.
+
+```slang
+let cr = redis.acquire(pool, deadline);
+guard let conn = cr else let e = err_of(cr) {
+    return zokor.respond(c.state.errors, "unavailable", c.request_id);
+}
+let r = redis.get(conn, "session:" + token, deadline);
+redis.release(pool, conn);
+```
 
 ## Errors
 
