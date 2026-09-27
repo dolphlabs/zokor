@@ -218,9 +218,69 @@ bodies for the same requests -- checked by hand before any load was applied.
 
 Full rounds in `/tmp/wrk_matrix.txt`. Every run had zero socket errors
 except one zokor `/users/42` round (23 timeouts, still 21.4k req/s --
-same timeout shape the old `ab` matrix showed at higher concurrency,
-worth a note, not a verdict: `wrk` timeouts under GC pauses are the
-prime suspect, and the RSS soak is the evidence for where to look).
+the same timeout shape the old `ab` matrix showed at higher
+concurrency). GC pauses were the prime suspect when this note was
+first written. They are ruled out below.
+
+## Where the tail actually comes from
+
+Re-measured (2026-09-27, current `dev` on both sides, generational GC
+included) after `perf/http-volume` landed: `GET /` is clean (94.3k
+req/s, p99 4.3ms). `GET /users/:id` at the same `-c50` is not (49.4k
+req/s, **p99 840ms-1.1s, 6-13 socket timeouts per round**). GC pauses
+were the standing suspect (see the note above, and `serve.sl`'s own
+former comment on this). They are not it:
+
+```
+SLANG_GC_STAT=1, same load: pause_ns_max=2.8ms (major), 7.9ms (minor).
+262 major collections, 258 of them under 1.6ms. Nowhere near the
+observed tail.
+```
+
+Bisected instead by peeling one layer at a time off the same router,
+same machine, same load (`wrk -t4 -c50 -d10s`, `/users/:id`-shaped
+route each time):
+
+| what's running | p99 |
+|---|---:|
+| raw `http.read_frame`/`http.write`, no router at all | 13ms |
+| zokor router + `Ctx`, exact-match route (no `:id`, no param map) | 48ms |
+| + a param-binding route (`:id` matched, map built, handler ignores it) | 147ms |
+| + the actual handler (`c.param` + `user_json_bytes` + `ok_json_bytes`) | 840ms |
+
+Monotonic, not a single toggle -- every layer costs a *little* more
+CPU per request, and on this machine (MacBook Pro, 4 physical cores,
+shared with an active IDE and background processes at the time of
+measurement) that's enough to matter. Confirmed directly by varying
+concurrency alone, same binary, same route, nothing else changed:
+
+| `-c` | p99 |
+|---|---:|
+| 8 | 1.2ms |
+| 16 | 2.5ms |
+| 32 | 30ms |
+| 50 | ~900ms |
+
+Throughput is flat from `-c8` on (40-52k req/s throughout) -- this
+machine's real service capacity for this path is already reached well
+under `-c50`, and everything past that capacity queues instead of
+running, which is exactly the shape queueing delay takes near
+saturation (not a step function, a cliff). Go's `net/http`/Fiber stay
+clean at this same `-c50` on this same machine (p99 7ms / 2.3ms) --
+not because they're immune to the same physics, but because their own
+per-request cost is lower, so their saturation point sits further out.
+
+**The honest read: this is a real gap (zokor's dynamic-dispatch cost
+pulls its own capacity ceiling down further than it should relative to
+Go's), surfaced by a benchmark artifact (this specific machine is
+under-cored and was under real background load during measurement) --
+not a bug to hunt for. The `-c50` timeout numbers above and in every
+older table on this page should be read as "this box's ceiling was
+exceeded," not "zokor lost throughput it should have had."** Reducing
+per-request dispatch cost (the `Ctx` build, the before/after hook
+loops that iterate even when empty, the param map) would push the
+ceiling out; it would not eliminate the cliff shape itself, which is
+inherent to closed-loop load past any server's real capacity.
 
 ## Previous results (ab, Sept 22 -- superseded, kept for history)
 
