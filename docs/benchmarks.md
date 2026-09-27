@@ -305,25 +305,41 @@ Requests/second (mean), and the p50/p95/p99 latency `ab` reported, in ms:
 Requests/second, mean. Every Go run had zero failures at both levels; both
 zokor GET runs did too.
 
-## The POST failures are a bug, not a measurement
+## The POST failures were a bug -- found and fixed, in slang
 
-`POST /echo` answers about **0.5% of requests with a non-2xx** (625 of
-116,497 at c=50; 674 at c=200) and runs at roughly half the throughput of
-the GET routes. Both GET routes are clean, so this is specific to the path
-that reads a request body and decodes it.
+**Resolved.** `POST /echo` used to answer 0.5-9% of requests with a
+non-2xx under real concurrent load (`"unexpected character '?' (at
+byte 0)"` from a body that was completely well-formed) -- both GET
+routes were always clean, so it was specific to the one path that
+decodes a request body into a declared type.
 
-An earlier version of this benchmark, on the hand-rolled accept loop, saw
-the same shape at a far lower rate (0.003%), and four separate isolated
-repros -- `json.decode` alone, the content-length parsing alone, bytes
-concatenation and slicing under forced GC pressure, and the identical load
-against Go net/http repeated four times -- all came back clean. It is not
-reproducible without real concurrent socket I/O. It is now frequent enough
-to chase properly, and it is the first thing to fix on this path: a
-framework that drops one request in two hundred is not one anyone can put
-in front of the internet, whatever its throughput says.
+Root-caused by bisecting isolated repros at each layer of the path
+this route actually uses (`Ctx.dto[S,T]`, calling `json.decode`
+internally): slang's raw socket read, `c.body_str()` alone, and
+`snake_keys(c.body_str())` alone all came back clean at 100,000/100,000
+requests; a minimal **slang-only** program (no zokor at all) matching
+`dto[S,T]`'s exact shape -- two type parameters, one threaded through a
+generic struct argument, decoding a `str` field via `json.decode[T]` --
+reproduced the identical failure. This was never a zokor bug: the
+corruption was already inside `json.decode`'s own generated code, one
+level below anything this framework controls.
 
-Until it is fixed, read the POST row as a bug report rather than a
-measurement.
+The actual bug: `json.decode`'s codegen evaluated a non-trivial
+`str`-typed argument TWICE (once for `sl_json_parse`'s pointer
+argument, again inside `strlen(...)` for its length) -- each embedding
+a separate, allocating call with its own nested safepoint bracket. The
+first call's result stopped being rooted the instant its own bracket
+exited; a GC collection landing during the second embedding's own
+safepoint check-in had nothing marking that first result as live, and
+could sweep it before `sl_json_parse` ever read the pointer it was
+still holding. Fixed in slang PR #228, on `dev` as of this write-up.
+Verified there: 600,000/600,000 clean against both a minimal repro and
+this repo's own bench server, at the same concurrency that reproduced
+6-9% failures before.
+
+Read the POST rows above as historical -- measured against the buggy
+slang, before this fix landed -- not as this framework's current
+number. A re-run against fixed slang belongs here next.
 
 ## What building this found
 
