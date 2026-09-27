@@ -25,6 +25,18 @@ library, made and merged there first.
 - [x] JSON: `snake_keys` / `camel_keys`, `decode_failed`, `checker`, `Json`
   values and builder
 - [x] Test kit: request builder, response readers; request and session ids
+- [x] **Redis helpers**: `redis_from_config` builds a pool from `REDIS_URL`
+  (optional -- a service with none set opens no connection), plus
+  `optional_dsn` added to the config validators for it. Everything past
+  the pool is slang's own `redis` package (`stdlib/redis`, merged there
+  across 9 phases: RESP2 codec, pooling, transactions/scripting,
+  pub/sub, streams, cluster routing, live tests incl. TLS/cluster) --
+  not re-wrapped here, so there is exactly one place its ~150 commands
+  can drift from what slang ships. `src/redis_test.sl` includes a live
+  round trip against a real server on `127.0.0.1:6379` when one is
+  reachable (its own db, 15, and a namespaced key, so it is safe to run
+  against a developer's own Redis) and skips cleanly when none is --
+  this project's own CI containers have no Redis.
 - [x] slang: generic structs and methods, `dir` pins, exportable enums,
   `crypto.sha1`
 - [x] **[slang] Generic functions** (generics PR 3): `fn first[T](xs: [T]) -> T`,
@@ -98,9 +110,12 @@ properties of the server, not of a handler.
   *Still owed:* `examples/chat`'s stand-in requests, which belong to "wire
   WebSocket and Socket.IO into the loop" below; a request id per request,
   blocked on the second half of the `crypto.rand` bug (it is still unsafe
-  from a task that parks on socket I/O, so the loop passes ""); and the
-  ~0.5% non-2xx rate on the body-reading path, measured in
-  `docs/benchmarks.md` and the first thing to fix here.
+  from a task that parks on socket I/O, so the loop passes "").
+  ~~The ~0.5% non-2xx rate on the body-reading path~~ was never this
+  repo's bug: root-caused to a codegen bug in slang's `json.decode`
+  (double-evaluating a non-trivial `str` argument, unrooting the first
+  result before it was read -- see `docs/benchmarks.md`), fixed in
+  slang PR #228.
 - [ ] Timeouts: read header, read body, write, idle. Each configurable, each
   with a default that is safe rather than infinite.
 - [ ] Limits: max header bytes, max body bytes (refused at read time with
