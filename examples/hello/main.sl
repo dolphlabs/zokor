@@ -146,8 +146,7 @@ fn require_token(c: zokor.Ctx[App]) -> opt[http.Response] {
 
 fn count(c: zokor.Ctx[App], r: http.Response) -> http.Response {
     c.state.requests = c.state.requests + 1;
-    r.headers["x-request-count"] = to_str(c.state.requests);
-    return r;
+    return zokor.with_header(r, "x-request-count", to_str(c.state.requests));
 }
 
 // Configuration is read once, here, and validated before anything runs.
