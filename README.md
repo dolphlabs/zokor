@@ -105,6 +105,7 @@ declare, and every handler receives it.
 | `upgrade`, `receive`, `sio_*` | WebSocket (RFC 6455) and Socket.IO, as a state machine you feed bytes |
 | `ok_json`, `created`, … | success responses with the headers they should carry |
 | `redis_from_config` | a Redis pool from `REDIS_URL`, optional by default |
+| `ServerConfig`, `listen_and_serve_with` | idle/header/body/write timeouts, safe defaults, all overridable |
 
 ## Configuration
 
@@ -182,6 +183,28 @@ guard let conn = cr else let e = err_of(cr) {
 let r = redis.get(conn, "session:" + token, deadline);
 redis.release(pool, conn);
 ```
+
+## Server timeouts
+
+Safe defaults, not infinite ones: `listen_and_serve` uses them without
+asking, and `listen_and_serve_with` takes a `ServerConfig` to change
+any of them.
+
+```slang
+let sc = zokor.server_config_from(cfg);  // IDLE_TIMEOUT, READ_HEADER_TIMEOUT,
+                                         // READ_BODY_TIMEOUT, WRITE_TIMEOUT
+spawn zokor.listen_and_serve_with(r, port, sc);
+```
+
+Four separate timeouts, not one, because "how long should this wait"
+has different honest answers depending on what a connection is doing:
+`idle_timeout` (default 60s) governs waiting for a request to start on
+a connection that might legitimately sit open a while; `header_timeout`
+(5s) and `body_timeout` (30s) govern a request that has started
+arriving and then stalls -- the slow-loris shape a tight window exists
+to catch; `write_timeout` (10s) bounds sending the response,
+separately, since a client that stopped reading is a different problem
+than one that stopped sending.
 
 ## Errors
 

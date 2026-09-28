@@ -8,15 +8,75 @@
 // supported: one request is read, answered, and only then is the next
 // one read.
 //
-// What is NOT here yet, each its own item on the todo list: timeouts
-// (every deadline below is `until_never()`), limits (the request buffer
-// is one fixed size, and a request larger than it fails the read rather
-// than answering 413), graceful draining with a deadline, per-request
-// panic recovery, and TLS.
+// What is NOT here yet, each its own item on the todo list: limits
+// (the request buffer is one fixed size, and a request larger than it
+// fails the read rather than answering 413), graceful draining with a
+// deadline, per-request panic recovery, and TLS.
 
 import "http";
 import "proc";
 import "time";
+
+// Four deadlines, not one, because "how long should this wait" has
+// different honest answers depending on what a connection is doing --
+// see http.read_frame's own doc comment, which this mirrors on
+// purpose. idle_timeout governs waiting for a request to START
+// arriving on a connection that might legitimately sit open for a
+// while (keep-alive between a browser's clicks); header_timeout and
+// body_timeout govern a request that HAS started and then stalls,
+// which is the slow-loris shape a tight window exists to catch;
+// write_timeout bounds sending the response, separately, since a
+// client that stopped reading is a different failure than one that
+// stopped sending.
+pub gc struct ServerConfig {
+    idle_timeout: int,
+    header_timeout: int,
+    body_timeout: int,
+    write_timeout: int
+}
+
+// Safe rather than infinite, per the todo item this answers. 60s idle
+// (generous -- nginx's own keepalive_timeout default is 75s, nothing
+// here should be stricter than what a real browser expects), 5s to
+// finish sending headers once bytes start arriving, 30s for a body
+// (uploads are slower than a header block, deliberately more room),
+// 10s to write a response (a client that stops reading a response is
+// not a client this server owes more time to).
+pub fn default_server_config() -> ServerConfig {
+    return ServerConfig {
+        idle_timeout: 60000000000,
+        header_timeout: 5000000000,
+        body_timeout: 30000000000,
+        write_timeout: 10000000000
+    };
+}
+
+// The same defaults, overridable per field from config: IDLE_TIMEOUT,
+// READ_HEADER_TIMEOUT, READ_BODY_TIMEOUT, WRITE_TIMEOUT, each a
+// duration string (config.duration_or's own format, e.g. "30s").
+pub fn server_config_from(cfg: Config) -> ServerConfig {
+    let d = default_server_config();
+    return ServerConfig {
+        idle_timeout: duration_or(cfg, "IDLE_TIMEOUT", d.idle_timeout),
+        header_timeout: duration_or(cfg, "READ_HEADER_TIMEOUT",
+                                    d.header_timeout),
+        body_timeout: duration_or(cfg, "READ_BODY_TIMEOUT", d.body_timeout),
+        write_timeout: duration_or(cfg, "WRITE_TIMEOUT", d.write_timeout)
+    };
+}
+
+fn idle_deadline(sc: ServerConfig) -> until {
+    return until_of(time.mono() + sc.idle_timeout);
+}
+fn header_deadline(sc: ServerConfig) -> until {
+    return until_of(time.mono() + sc.header_timeout);
+}
+fn body_deadline(sc: ServerConfig) -> until {
+    return until_of(time.mono() + sc.body_timeout);
+}
+fn write_deadline(sc: ServerConfig) -> until {
+    return until_of(time.mono() + sc.write_timeout);
+}
 
 // The read buffer is the largest request this server will frame --
 // headers and body together, since http.read fills one wire. 16 KB
@@ -52,13 +112,18 @@ fn response_bytes() -> int {
 // (see Route.has_static); everything else goes through
 // `serve_frame`, which builds the Request once for the route that
 // runs. `serve_id` stays for callers that already hold a Request.
-pub fn serve_conn[S](r: Router[S], c: link) {
+pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
     let ra = arena_new(request_bytes());
     let sa = arena_new(response_bytes());
     let buf = ra.wire(request_bytes());
     let filled = 0;
     while true {
-        let rr = http.read_frame(&mut c, buf, filled, until_never());
+        // Fresh deadlines every request, not one computed at connect
+        // time: a connection that has already served ten requests
+        // still gets the full idle window before an eleventh, the
+        // same as its first ever request did.
+        let rr = http.read_frame(&mut c, buf, filled, idle_deadline(sc),
+                                 header_deadline(sc), body_deadline(sc));
         guard let wf = rr else {
             return;
         }
@@ -72,7 +137,7 @@ pub fn serve_conn[S](r: Router[S], c: link) {
         let sr = r.serve_static(wf);
         guard let resp = sr else let dyn_resp = err_of(sr) {
             let wr = http.write(&mut c, dyn_resp, &mut sa,
-                                until_never());
+                                write_deadline(sc));
             guard let _n = wr else {
                 return;
             }
@@ -90,7 +155,7 @@ pub fn serve_conn[S](r: Router[S], c: link) {
         // size into it); shrinking the static-only case is a
         // follow-up, not this diff.
         let sw = http.write_static(&mut c, resp, &mut sa, wf.close,
-                                   until_never());
+                                   write_deadline(sc));
         guard let _n = sw else {
             return;
         }
@@ -104,12 +169,12 @@ pub fn serve_conn[S](r: Router[S], c: link) {
 
 // Split out so the accept and the spawn are one step the loop below
 // repeats, matching slang's own examples/httpd.
-fn accept_one[S](r: Router[S], ln: &mut link) {
+fn accept_one[S](r: Router[S], ln: &mut link, sc: ServerConfig) {
     let ar = ln.accept(until_never());
     guard let c = ar else {
         return;
     }
-    spawn serve_conn(r, c);
+    spawn serve_conn(r, c, sc);
 }
 
 // One acceptor's loop: accept until the process is asked to stop.
@@ -119,10 +184,10 @@ fn accept_one[S](r: Router[S], ln: &mut link) {
 // blocked `accept` observe it. The drain in `listen_and_serve` waits
 // for in-flight tasks with no deadline; bounding it is the
 // graceful-shutdown item.
-fn accept_loop[S](r: Router[S], ln: link) {
+fn accept_loop[S](r: Router[S], ln: link, sc: ServerConfig) {
     let mut_ln = ln;
     while !proc.shutdown_requested() {
-        accept_one(r, &mut mut_ln);
+        accept_one(r, &mut mut_ln, sc);
     }
 }
 
@@ -184,16 +249,25 @@ fn listen_reuse(port: int) -> result[link, fault] {
 // more headroom before the same cliff. See docs/benchmarks.md's
 // "Where the tail actually comes from" for the full bisection.
 pub fn listen_and_serve[S](r: Router[S], port: int) -> result[int, str] {
+    return listen_and_serve_with(r, port, default_server_config());
+}
+
+// Same, with timeouts (and whatever else Limits/#2 on the todo list
+// adds to ServerConfig later) under the caller's control -- built from
+// config with server_config_from, or by hand for a test that wants a
+// deliberately short one.
+pub fn listen_and_serve_with[S](r: Router[S], port: int,
+                                sc: ServerConfig) -> result[int, str] {
     let n = acceptor_count();
     if n < 1 {
         n = 1;
     }
     let i = 1;
     while i < n {
-        spawn acceptor_task(r, port);
+        spawn acceptor_task(r, port, sc);
         i = i + 1;
     }
-    return accept_first(r, port);
+    return accept_first(r, port, sc);
 }
 
 // A spawned acceptor: its own SO_REUSEPORT listener, its own loop.
@@ -203,22 +277,23 @@ pub fn listen_and_serve[S](r: Router[S], port: int) -> result[int, str] {
 // runtime kills the task. Each acceptor therefore owns its listener
 // from bind to accept, and nothing crosses the boundary but the
 // router (a gc struct, shared, never moved).
-fn acceptor_task[S](r: Router[S], port: int) {
+fn acceptor_task[S](r: Router[S], port: int, sc: ServerConfig) {
     let lr = link_listen(port, 1);
     guard let ln = lr else {
         return;
     }
-    accept_loop(r, ln);
+    accept_loop(r, ln, sc);
 }
 
 // The main task's own acceptor: binds here (so a bad port returns
 // err instead of silently serving nothing) and loops here.
-fn accept_first[S](r: Router[S], port: int) -> result[int, str] {
+fn accept_first[S](r: Router[S], port: int,
+                   sc: ServerConfig) -> result[int, str] {
     let first = listen_reuse(port);
     guard let ln0 = first else let e = err_of(first) {
         return err("cannot listen on port " + to_str(port) + ": " + to_str(e));
     }
-    accept_loop(r, ln0);
+    accept_loop(r, ln0, sc);
     while proc.active_tasks() > 0 {
         time.sleep(20000000);
     }
