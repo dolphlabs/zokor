@@ -8,10 +8,9 @@
 // supported: one request is read, answered, and only then is the next
 // one read.
 //
-// What is NOT here yet, each its own item on the todo list: limits
-// (the request buffer is one fixed size, and a request larger than it
-// fails the read rather than answering 413), graceful draining with a
-// deadline, per-request panic recovery, and TLS.
+// What is NOT here yet, each its own item on the todo list: max
+// concurrent connections, graceful draining with a deadline,
+// per-request panic recovery, and TLS.
 
 import "http";
 import "proc";
@@ -32,7 +31,22 @@ pub gc struct ServerConfig {
     idle_timeout: int,
     header_timeout: int,
     body_timeout: int,
-    write_timeout: int
+    write_timeout: int,
+    // The read buffer's size: the largest a request (headers and body
+    // together, since http.read_frame fills one wire) this server will
+    // frame at all. A request that does not fit is refused with 431
+    // (headers alone too big) or 413 (a declared body too big), not
+    // silently dropped -- see serve_conn's own read_frame error
+    // handling for where that distinction is made.
+    max_request_bytes: int,
+    // How many requests one connection serves before this server
+    // closes it (answering the one that hit the limit normally first,
+    // then closing rather than reading an (n+1)th). Finite so a
+    // connection pinned open for its process's whole lifetime is not
+    // an unbounded, never-recycled thing -- generous so it never
+    // matters for ordinary keep-alive traffic, including a load test
+    // running tens of thousands of requests down one connection.
+    max_requests_per_conn: int
 }
 
 // Safe rather than infinite, per the todo item this answers. 60s idle
@@ -47,13 +61,24 @@ pub fn default_server_config() -> ServerConfig {
         idle_timeout: 60000000000,
         header_timeout: 5000000000,
         body_timeout: 30000000000,
-        write_timeout: 10000000000
+        write_timeout: 10000000000,
+        // 16KB: covers ordinary API traffic (headers, a JSON body) and
+        // is small enough that ten thousand idle connections are not a
+        // gigabyte -- the number this file's buffer literal always
+        // used, now a setting instead of a constant.
+        max_request_bytes: 16384,
+        // 100,000: high enough that no real keep-alive session (or a
+        // load test driving tens of thousands of requests down one
+        // connection) ever notices it, low enough that a connection
+        // genuinely is recycled eventually rather than living forever.
+        max_requests_per_conn: 100000
     };
 }
 
 // The same defaults, overridable per field from config: IDLE_TIMEOUT,
-// READ_HEADER_TIMEOUT, READ_BODY_TIMEOUT, WRITE_TIMEOUT, each a
-// duration string (config.duration_or's own format, e.g. "30s").
+// READ_HEADER_TIMEOUT, READ_BODY_TIMEOUT, WRITE_TIMEOUT (durations,
+// config.duration_or's format, e.g. "30s"), MAX_REQUEST_BYTES,
+// MAX_REQUESTS_PER_CONN (plain integers).
 pub fn server_config_from(cfg: Config) -> ServerConfig {
     let d = default_server_config();
     return ServerConfig {
@@ -61,7 +86,11 @@ pub fn server_config_from(cfg: Config) -> ServerConfig {
         header_timeout: duration_or(cfg, "READ_HEADER_TIMEOUT",
                                     d.header_timeout),
         body_timeout: duration_or(cfg, "READ_BODY_TIMEOUT", d.body_timeout),
-        write_timeout: duration_or(cfg, "WRITE_TIMEOUT", d.write_timeout)
+        write_timeout: duration_or(cfg, "WRITE_TIMEOUT", d.write_timeout),
+        max_request_bytes: int_or(cfg, "MAX_REQUEST_BYTES",
+                                  d.max_request_bytes),
+        max_requests_per_conn: int_or(cfg, "MAX_REQUESTS_PER_CONN",
+                                      d.max_requests_per_conn)
     };
 }
 
@@ -78,23 +107,37 @@ fn write_deadline(sc: ServerConfig) -> until {
     return until_of(time.mono() + sc.write_timeout);
 }
 
-// The read buffer is the largest request this server will frame --
-// headers and body together, since http.read fills one wire. 16 KB
-// covers ordinary API traffic (headers, a JSON body) and is small
-// enough that ten thousand idle connections are not a gigabyte. The
-// send arena is reset after every response, so it only ever has to
-// hold one.
-//
-// Both are literals rather than settings because making them settings
-// is the Limits item, which also owes a 413 instead of the dropped
-// connection an oversized request gets today. A service that needs
-// more before then raises these two numbers.
-fn request_bytes() -> int {
+// The send arena's size, still a literal: it holds one response at a
+// time (reset after every write), and unlike the read side there is
+// no "declared but oversized" shape to refuse -- an oversized dynamic
+// response already falls back to http.write's own slower GC path
+// (see stdlib/http's own emit/write split) rather than needing a
+// limit here.
+fn response_bytes() -> int {
     return 16384;
 }
 
-fn response_bytes() -> int {
-    return 16384;
+// http.read_frame's two too-large messages, exactly -- matched by
+// text because that is the interface read_frame offers (see its own
+// doc comment on why the two are distinguished at all: RFC 9110's
+// 431 for headers vs 413 for a body/payload are different problems
+// with different meanings to a client, not the same failure twice).
+// Matching by text rather than a richer error type is only safe
+// because this package is read_frame's one caller, coordinated in
+// the same repo; a second consumer would be reason to give read_frame
+// a real error enum instead.
+fn is_headers_too_large(e: str) -> bool {
+    return e == "request headers too large for buffer";
+}
+fn is_body_too_large(e: str) -> bool {
+    return e == "request too large for buffer";
+}
+
+fn too_large_response(status: i32, status_text: str, code: str) -> http.Response {
+    let body = "{\"error\":{\"code\":\"" + code + "\",\"message\":\"" +
+               status_text + "\",\"status\":" + to_str(status) + "}}";
+    return http.text_response(status, status_text,
+                              "application/json; charset=utf-8", body);
 }
 
 // One connection, until the client goes away or asks to close.
@@ -113,10 +156,11 @@ fn response_bytes() -> int {
 // `serve_frame`, which builds the Request once for the route that
 // runs. `serve_id` stays for callers that already hold a Request.
 pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
-    let ra = arena_new(request_bytes());
+    let ra = arena_new(sc.max_request_bytes);
     let sa = arena_new(response_bytes());
-    let buf = ra.wire(request_bytes());
+    let buf = ra.wire(sc.max_request_bytes);
     let filled = 0;
+    let served = 0;
     while true {
         // Fresh deadlines every request, not one computed at connect
         // time: a connection that has already served ten requests
@@ -124,7 +168,30 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
         // same as its first ever request did.
         let rr = http.read_frame(&mut c, buf, filled, idle_deadline(sc),
                                  header_deadline(sc), body_deadline(sc));
-        guard let wf = rr else {
+        guard let wf = rr else let e = err_of(rr) {
+            // A read error other than "too large" closes the
+            // connection rather than answering: it means this server
+            // could not tell where the request ended, so it cannot
+            // tell where the next one begins either -- the framing
+            // rule slang's own http package documents, and a security
+            // boundary (request smuggling), not a convenience. "Too
+            // large" is different: read_frame already knows exactly
+            // where THIS request would have ended (its declared
+            // Content-Length, or the fact that its headers alone
+            // never terminated), so answering before closing cannot
+            // desync anything -- there is no next request on this
+            // connection either way, since it closes right after.
+            if is_headers_too_large(e) {
+                let resp431 = too_large_response(431,
+                    "Request Header Fields Too Large", "headers_too_large");
+                let _w = http.write(&mut c, resp431, &mut sa,
+                                    write_deadline(sc));
+            } else if is_body_too_large(e) {
+                let resp413 = too_large_response(413, "Content Too Large",
+                                                 "payload_too_large");
+                let _w = http.write(&mut c, resp413, &mut sa,
+                                    write_deadline(sc));
+            }
             return;
         }
         // No request id yet, and not because one is unwanted: slang's
@@ -134,6 +201,13 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
         // (slang PR #189 fixes the CPU-bound half; the parking half is
         // still open). `serve_id` takes "" for exactly this case, and
         // wiring ids in is its own todo item anyway.
+        served = served + 1;
+        // The request that HITS max_requests_per_conn is still
+        // answered normally -- only the one after it would not be.
+        // Folded into the same close the client's own request can
+        // already ask for, so both paths below need exactly one
+        // check, not two.
+        let must_close = wf.close || served >= sc.max_requests_per_conn;
         let sr = r.serve_static(wf);
         guard let resp = sr else let dyn_resp = err_of(sr) {
             let wr = http.write(&mut c, dyn_resp, &mut sa,
@@ -142,7 +216,7 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
                 return;
             }
             sa.reset();
-            if wf.close {
+            if must_close {
                 return;
             }
             filled = wf.filled;
@@ -154,13 +228,13 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
         // 130-byte memcpy. The send arena stays (dynamic responses
         // size into it); shrinking the static-only case is a
         // follow-up, not this diff.
-        let sw = http.write_static(&mut c, resp, &mut sa, wf.close,
+        let sw = http.write_static(&mut c, resp, &mut sa, must_close,
                                    write_deadline(sc));
         guard let _n = sw else {
             return;
         }
         sa.reset();
-        if wf.close {
+        if must_close {
             return;
         }
         filled = wf.filled;

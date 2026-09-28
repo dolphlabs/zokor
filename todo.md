@@ -127,8 +127,22 @@ properties of the server, not of a handler.
   "how long should this wait" for idle-vs-slow-loris -- merged in
   slang PR #229, along with that function's first-ever test coverage
   (it had none at all before).
-- [ ] Limits: max header bytes, max body bytes (refused at read time with
-  `413`, not after buffering), max connections, max requests per connection.
+- [x] **Limits (per-connection)**: `ServerConfig.max_request_bytes`
+  (default 16KB, the number the read buffer always used, now a
+  setting) refuses an oversized request at read time -- `431` if the
+  headers alone never complete before the buffer fills, `413` if a
+  declared `Content-Length` alone is bigger than the buffer, never a
+  silent drop after buffering. Needed **[slang]** `read_frame` to say
+  which of the two happened, not one message for both (RFC 9110 gives
+  them different codes) -- slang PR #230.
+  `ServerConfig.max_requests_per_conn` (default 100,000) closes a
+  connection after it, answering the request that hit the limit
+  normally first. *Still owed:* max connections (a server-wide cap,
+  not a per-connection one -- needs a shared, concurrency-safe
+  counter across every accept loop, which the other three didn't; a
+  separate item until that's designed).
+- [ ] Graceful shutdown: stop accepting, drain in-flight requests up to a
+  deadline, then close. `proc.shutdown_requested()` and `active_tasks()`
 - [ ] Graceful shutdown: stop accepting, drain in-flight requests up to a
   deadline, then close. `proc.shutdown_requested()` and `active_tasks()`
   already exist.
