@@ -116,8 +116,17 @@ properties of the server, not of a handler.
   (double-evaluating a non-trivial `str` argument, unrooting the first
   result before it was read -- see `docs/benchmarks.md`), fixed in
   slang PR #228.
-- [ ] Timeouts: read header, read body, write, idle. Each configurable, each
-  with a default that is safe rather than infinite.
+- [x] **Timeouts**: read header, read body, write, idle -- each its own
+  `ServerConfig` field (`default_server_config()`'s defaults: 60s idle,
+  5s header, 30s body, 10s write), each overridable via
+  `server_config_from(cfg)` (`IDLE_TIMEOUT`/`READ_HEADER_TIMEOUT`/
+  `READ_BODY_TIMEOUT`/`WRITE_TIMEOUT`). `listen_and_serve` keeps its
+  existing signature (defaults); `listen_and_serve_with(r, port, sc)`
+  takes a config. Needed **[slang]** `read_frame` to take three
+  deadlines instead of one, since one deadline can't honestly answer
+  "how long should this wait" for idle-vs-slow-loris -- merged in
+  slang PR #229, along with that function's first-ever test coverage
+  (it had none at all before).
 - [ ] Limits: max header bytes, max body bytes (refused at read time with
   `413`, not after buffering), max connections, max requests per connection.
 - [ ] Graceful shutdown: stop accepting, drain in-flight requests up to a
