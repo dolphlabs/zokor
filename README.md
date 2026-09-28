@@ -184,15 +184,16 @@ let r = redis.get(conn, "session:" + token, deadline);
 redis.release(pool, conn);
 ```
 
-## Server timeouts
+## Server timeouts and limits
 
 Safe defaults, not infinite ones: `listen_and_serve` uses them without
 asking, and `listen_and_serve_with` takes a `ServerConfig` to change
 any of them.
 
 ```slang
-let sc = zokor.server_config_from(cfg);  // IDLE_TIMEOUT, READ_HEADER_TIMEOUT,
-                                         // READ_BODY_TIMEOUT, WRITE_TIMEOUT
+let sc = zokor.server_config_from(cfg);
+// IDLE_TIMEOUT, READ_HEADER_TIMEOUT, READ_BODY_TIMEOUT, WRITE_TIMEOUT,
+// MAX_REQUEST_BYTES, MAX_REQUESTS_PER_CONN
 spawn zokor.listen_and_serve_with(r, port, sc);
 ```
 
@@ -205,6 +206,13 @@ arriving and then stalls -- the slow-loris shape a tight window exists
 to catch; `write_timeout` (10s) bounds sending the response,
 separately, since a client that stopped reading is a different problem
 than one that stopped sending.
+
+`max_request_bytes` (default 16KB) refuses an oversized request at
+read time -- `431` if the headers alone never complete, `413` if a
+declared body is bigger than the buffer -- never a silent drop after
+buffering. `max_requests_per_conn` (default 100,000) closes a
+connection after it, answering the request that hit the limit
+normally first.
 
 ## Errors
 
