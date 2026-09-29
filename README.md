@@ -184,7 +184,7 @@ let r = redis.get(conn, "session:" + token, deadline);
 redis.release(pool, conn);
 ```
 
-## Server timeouts and limits
+## Server timeouts, limits, and shutdown
 
 Safe defaults, not infinite ones: `listen_and_serve` uses them without
 asking, and `listen_and_serve_with` takes a `ServerConfig` to change
@@ -193,7 +193,7 @@ any of them.
 ```slang
 let sc = zokor.server_config_from(cfg);
 // IDLE_TIMEOUT, READ_HEADER_TIMEOUT, READ_BODY_TIMEOUT, WRITE_TIMEOUT,
-// MAX_REQUEST_BYTES, MAX_REQUESTS_PER_CONN
+// MAX_REQUEST_BYTES, MAX_REQUESTS_PER_CONN, SHUTDOWN_TIMEOUT
 spawn zokor.listen_and_serve_with(r, port, sc);
 ```
 
@@ -213,6 +213,12 @@ declared body is bigger than the buffer -- never a silent drop after
 buffering. `max_requests_per_conn` (default 100,000) closes a
 connection after it, answering the request that hit the limit
 normally first.
+
+On `SIGTERM`/`SIGINT`, `listen_and_serve` stops accepting immediately
+and gives in-flight connections up to `shutdown_timeout` (default 30s)
+to finish on their own before returning anyway -- long enough for
+ordinary requests to complete, bounded so one stuck connection cannot
+hang a deployment's rollout forever.
 
 ## Errors
 
@@ -563,11 +569,10 @@ make test
 
 The full list, ordered and checkable, is [todo.md](todo.md). In short:
 
-- **The serve loop.** `listen_and_serve` needs generic **functions**
-  in slang, which has generic structs and methods today. It is what
-  turns the WebSocket state machine into a running server, and it
-  carries the timeouts, body limits, graceful shutdown and panic
-  recovery that belong to the server rather than to a handler.
+- **The serve loop.** `listen_and_serve` turns the WebSocket state
+  machine into a running server; timeouts, body limits, and graceful
+  shutdown are done (see above). Still owed: max concurrent
+  connections and per-request panic recovery.
 - **Middleware**, none of it blocked: CORS, security headers, rate
   limiting, cookies, JWT and basic auth, ETag/304, compression, static
   files, request logging, health endpoints.
