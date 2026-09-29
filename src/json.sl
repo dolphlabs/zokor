@@ -24,6 +24,8 @@
 
 import "builder";
 import "http";
+import "json";
+import "strings";
 
 pub enum JsonKind {
     Null,
@@ -101,25 +103,53 @@ pub fn jarr() -> Json {
     return empty(JsonKind.Array);
 }
 
-// The two shapes the throughput bench serves, rendered straight to
-// bytes: no Json struct, no keys/values lists, no str in between --
-// one builder, one finish, one response. Handlers with a fixed shape
-// should do the same rather than building a Json to render once; the
-// Json builder stays for shapes that are actually dynamic.
+// The two shapes the throughput bench serves. A handler with a fixed
+// shape should do what these do: declare a gc struct and json.encode
+// it. That is 2 allocations; a builder writing the same bytes by hand
+// was 20 (builder.new_bytes alone is 5, and every write_str copies) --
+// bench/allocs. The Json builder stays for shapes that are dynamic.
 //
-// user_json_bytes: the id as BYTES (already sliced out of the path)
-// -- skips the to_bytes the str form pays. The bench's :id path
-// uses this; the str form stays for callers that hold a str.
-pub fn user_json(id: str) -> bytes {
-    return user_json_bytes(to_bytes(id));
+// The output is byte-identical to the hand-built form. json.encode and
+// http's escaper agree on every byte but two: 0x08 and 0x0C, which
+// json.encode writes as \b and \f and http as \u0008 and \u000c. Output
+// holding \b or \f (or a backslash followed by b or f, which only costs
+// a detour) is rebuilt the old way.
+gc struct UserOut {
+    id: str,
+    name: str,
 }
 
+gc struct MessageOut {
+    message: str,
+}
+
+fn has_short_bf_escape(enc: str) -> bool {
+    return strings.contains(enc, "\\b") || strings.contains(enc, "\\f");
+}
+
+pub fn user_json(id: str) -> bytes {
+    let enc = json.encode(UserOut { id: id, name: "user " + id });
+    if has_short_bf_escape(enc) {
+        return user_json_built(to_bytes(id));
+    }
+    return to_bytes(enc);
+}
+
+// user_json_bytes: the id as BYTES (already sliced out of a path).
 pub fn user_json_bytes(id: bytes) -> bytes {
-    // Bench ids ("42") never escape: no quote, no backslash, no
-    // control byte. Scan once in place; the clean path (every bench
-    // request) writes straight through with no escape allocs at
-    // all. Only an id that actually needs escaping pays the
-    // escape_json_bytes builder.
+    // A clean id needs no escaping at all, so json.encode writes exactly
+    // the hand-built bytes -- and a clean id has no NUL, so to_str keeps
+    // all of it.
+    if !needs_escape(id) {
+        let s = to_str(id);
+        return to_bytes(json.encode(UserOut { id: s, name: "user " + s }));
+    }
+    return user_json_built(id);
+}
+
+// The hand-built form: the reference the encoded form must match, and
+// the path for an id holding 0x08, 0x0C or a NUL.
+fn user_json_built(id: bytes) -> bytes {
     if !needs_escape(id) {
         let bb = builder.new_bytes();
         bb.write_str("{\"id\":\"");
@@ -154,6 +184,14 @@ fn needs_escape(b: bytes) -> bool {
 }
 
 pub fn message_json(message: str) -> bytes {
+    let enc = json.encode(MessageOut { message: message });
+    if has_short_bf_escape(enc) {
+        return message_json_built(message);
+    }
+    return to_bytes(enc);
+}
+
+fn message_json_built(message: str) -> bytes {
     let bb = builder.new_bytes();
     bb.write_str("{\"message\":\"");
     bb.write(http.escape_json_bytes(to_bytes(message)));
@@ -1008,6 +1046,276 @@ pub fn snake_keys(text: str) -> str {
         return text;   // not JSON: leave it for the decoder to report
     }
     return rekey(j, true).render();
+}
+
+// The text `dto` decodes: the body as it arrived when `snake_keys` could
+// not change it, else `snake_keys` of it. Same result either way; see
+// snake_keys_is_identity for why the first is safe.
+fn dto_text(body: bytes) -> str {
+    let text = to_str(body);
+    if snake_keys_is_identity(body) {
+        return text;
+    }
+    return snake_keys(text);
+}
+
+// True only when `snake_keys` provably cannot change what `json.decode`
+// makes of `b`, so `dto` can decode the body as it arrived instead of
+// parsing it, rebuilding every key, rendering it back and parsing it a
+// second time -- 79 allocations for a one-field body, the single largest
+// cost on a body-taking route (bench/allocs).
+//
+// "Provably" is deliberately narrow; anything else answers false and
+// takes the full rewrite, exactly as before:
+//   - strict JSON only -- lenient input (trailing commas, bare words,
+//     NUL, deeper than max_depth) is left to parse/render to judge;
+//   - no key with an uppercase ASCII letter (the only bytes
+//     to_snake_case rewrites) or any escape (an escape could spell one);
+//   - no key twice in one object: rekey keeps the LAST value and
+//     json.decode the FIRST, so a duplicate changes the result;
+//   - no \u escape anywhere: the render could re-spell it.
+// One pass, no copy of the body; the only allocations are the small
+// bookkeeping lists, and an object's key list is dropped when it closes.
+fn snake_keys_is_identity(b: bytes) -> bool {
+    let n = len(b);
+    let i = 0;
+    // Per open container, 1 = object, 2 = array.
+    let kinds: [int] = [];
+    // [start, end) byte ranges of the keys seen so far in every open
+    // object, flattened; key_base[k] is where the k-th open object's
+    // keys begin in it.
+    let ranges: [int] = [];
+    let key_base: [int] = [];
+    // 0 = a value, 1 = a key (or `}` just after `{`), 2 = the colon,
+    // 3 = after a value: `,`, a close, or the end.
+    let expect = 0;
+    let just_opened = false;
+    let done = false;
+    while true {
+        while i < n && (b[i] == 32 || b[i] == 9 || b[i] == 10 || b[i] == 13) {
+            i = i + 1;
+        }
+        if i >= n {
+            break;
+        }
+        let ch = b[i];
+        if expect == 0 {
+            if ch == 123 {
+                if len(kinds) >= max_depth() {
+                    return false;
+                }
+                push(kinds, 1);
+                push(key_base, len(ranges));
+                expect = 1;
+                just_opened = true;
+                i = i + 1;
+            } else if ch == 91 {
+                if len(kinds) >= max_depth() {
+                    return false;
+                }
+                push(kinds, 2);
+                just_opened = true;
+                i = i + 1;
+            } else if ch == 93 && just_opened && kinds[len(kinds) - 1] == 2 {
+                pop(kinds);
+                i = i + 1;
+                expect = 3;
+                just_opened = false;
+            } else {
+                let j = identity_scalar_end(b, i);
+                if j < 0 {
+                    return false;
+                }
+                i = j;
+                expect = 3;
+                just_opened = false;
+            }
+        } else if expect == 1 {
+            if ch == 125 && just_opened {
+                pop(kinds);
+                pop(key_base);
+                i = i + 1;
+                expect = 3;
+                just_opened = false;
+            } else {
+                if ch != 34 {
+                    return false;
+                }
+                let j = identity_key_end(b, i);
+                if j < 0 {
+                    return false;
+                }
+                let k = key_base[len(key_base) - 1];
+                while k < len(ranges) {
+                    if same_bytes(b, ranges[k], ranges[k + 1], i + 1, j - 1) {
+                        return false;
+                    }
+                    k = k + 2;
+                }
+                push(ranges, i + 1);
+                push(ranges, j - 1);
+                i = j;
+                expect = 2;
+            }
+        } else if expect == 2 {
+            if ch != 58 {
+                return false;
+            }
+            i = i + 1;
+            expect = 0;
+            just_opened = false;
+        } else {
+            if len(kinds) == 0 {
+                return false;   // something after the top-level value
+            }
+            let top = kinds[len(kinds) - 1];
+            if ch == 44 {
+                i = i + 1;
+                expect = 0;
+                if top == 1 {
+                    expect = 1;
+                }
+                just_opened = false;
+            } else if ch == 125 && top == 1 {
+                pop(kinds);
+                let base = pop(key_base);
+                while len(ranges) > base {
+                    pop(ranges);
+                }
+                i = i + 1;
+            } else if ch == 93 && top == 2 {
+                pop(kinds);
+                i = i + 1;
+            } else {
+                return false;
+            }
+        }
+        if expect == 3 && len(kinds) == 0 {
+            done = true;
+        }
+    }
+    return done && len(kinds) == 0;
+}
+
+// End (one past) of the string, number or literal starting at b[i], or
+// -1 when it is not strict JSON or holds a \u escape.
+fn identity_scalar_end(b: bytes, i: int) -> int {
+    let n = len(b);
+    let ch = b[i];
+    if ch == 34 {
+        let k = i + 1;
+        while k < n {
+            let c = b[k];
+            if c == 34 {
+                return k + 1;
+            }
+            if c < 32 {
+                return -1;
+            }
+            if c == 92 {
+                if k + 1 >= n {
+                    return -1;
+                }
+                let e = b[k + 1];
+                // " \ / b f n r t -- not u, which the render could re-spell
+                if e != 34 && e != 92 && e != 47 && e != 98 && e != 102 &&
+                   e != 110 && e != 114 && e != 116 {
+                    return -1;
+                }
+                k = k + 2;
+            } else {
+                k = k + 1;
+            }
+        }
+        return -1;
+    }
+    if ch == 45 || (ch >= 48 && ch <= 57) {
+        let k = i;
+        if b[k] == 45 {
+            k = k + 1;
+        }
+        if k >= n {
+            return -1;
+        }
+        if b[k] == 48 {
+            k = k + 1;
+        } else if b[k] >= 49 && b[k] <= 57 {
+            while k < n && b[k] >= 48 && b[k] <= 57 {
+                k = k + 1;
+            }
+        } else {
+            return -1;
+        }
+        if k < n && b[k] == 46 {
+            k = k + 1;
+            let f = k;
+            while k < n && b[k] >= 48 && b[k] <= 57 {
+                k = k + 1;
+            }
+            if k == f {
+                return -1;
+            }
+        }
+        if k < n && (b[k] == 101 || b[k] == 69) {
+            k = k + 1;
+            if k < n && (b[k] == 43 || b[k] == 45) {
+                k = k + 1;
+            }
+            let x = k;
+            while k < n && b[k] >= 48 && b[k] <= 57 {
+                k = k + 1;
+            }
+            if k == x {
+                return -1;
+            }
+        }
+        return k;
+    }
+    // true / null / false, compared byte by byte: no str per literal
+    if i + 4 <= n && ((b[i] == 116 && b[i + 1] == 114 && b[i + 2] == 117 &&
+                       b[i + 3] == 101) ||
+                      (b[i] == 110 && b[i + 1] == 117 && b[i + 2] == 108 &&
+                       b[i + 3] == 108)) {
+        return i + 4;
+    }
+    if i + 5 <= n && b[i] == 102 && b[i + 1] == 97 && b[i + 2] == 108 &&
+       b[i + 3] == 115 && b[i + 4] == 101 {
+        return i + 5;
+    }
+    return -1;
+}
+
+// End (one past the closing quote) of the key starting at b[i], or -1
+// when to_snake_case could change it: an uppercase letter, or any
+// escape. A control byte is not strict JSON either.
+fn identity_key_end(b: bytes, i: int) -> int {
+    let n = len(b);
+    let k = i + 1;
+    while k < n {
+        let c = b[k];
+        if c == 34 {
+            return k + 1;
+        }
+        if c == 92 || c < 32 || (c >= 65 && c <= 90) {
+            return -1;
+        }
+        k = k + 1;
+    }
+    return -1;
+}
+
+fn same_bytes(b: bytes, s1: int, e1: int, s2: int, e2: int) -> bool {
+    if e1 - s1 != e2 - s2 {
+        return false;
+    }
+    let k = 0;
+    while k < e1 - s1 {
+        if b[s1 + k] != b[s2 + k] {
+            return false;
+        }
+        k = k + 1;
+    }
+    return true;
 }
 
 pub fn camel_keys(text: str) -> str {

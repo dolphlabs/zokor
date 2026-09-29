@@ -1,4 +1,6 @@
 import "http";
+import "json";
+import "strings";
 
 fn jparsed(s: str) -> Json {
     let r = parse(s);
@@ -306,4 +308,173 @@ fn test_checker_renders_into_the_standard_envelope() {
     assert(resp.status == 422);
     assert(to_str(resp.body) ==
         "{\"error\":{\"code\":\"validation_failed\",\"message\":\"some fields are not valid\",\"status\":422,\"request_id\":\"r9\",\"fields\":[{\"field\":\"name\",\"reason\":\"is required\"}]}}");
+}
+
+// ---- dto's fast path: snake_keys_is_identity -------------------------
+
+// Every document the fast path takes must be one snake_keys leaves alone.
+fn identity_docs() -> [str] {
+    return [
+        "{\"message\":\"hi\"}",
+        "  {\"a\" : {\"b\":[1, 2, {\"c\":null}]}, \"d\":true}  ",
+        "{\"t\":\"line\\nbreak \\\"q\\\" \\\\ \\/ \\b\\f\\r\\t\"}",
+        "{\"n\":-0.5e+3,\"m\":0,\"k\":12E-2,\"z\":-0}",
+        "[1,\"x\",false,[],{}]",
+        "\"just a string\"",
+        "{}",
+        "[]",
+        "{\"a\":{\"a\":1},\"b\":{\"a\":2}}",
+        "{\"été\":1}",
+        "{\"snake_case_key\":[{\"x\":1},{\"x\":2}]}",
+        "{\"id\":9007199254740993}"
+    ];
+}
+
+// ...and every document it refuses must still go through snake_keys.
+fn rewrite_docs() -> [str] {
+    return [
+        "{\"userId\":1}",
+        "{\"a\\u0041\":1}",
+        "{\"a\\\\\":1}",
+        "{\"a\":\"\\u00e9\"}",
+        "{\"a\":1,\"a\":2}",
+        "{\"x\":{\"k\":1,\"k\":2}}",
+        "[1,2,]",
+        "{\"a\":1,}",
+        "{a:1}",
+        "{'a':1}",
+        "01",
+        "+1",
+        ".5",
+        "1.",
+        "1e",
+        "{} x",
+        "1 2",
+        "{\"a\":1",
+        "[",
+        "",
+        "   ",
+        "{\"a\":\"tab\there\"}",
+        "{\"a\":tru}",
+        "nul",
+        "{\"a\"1}",
+        "[1 2]"
+    ];
+}
+
+fn nested(depth: int) -> str {
+    let s = "";
+    let i = 0;
+    while i < depth {
+        s = s + "[";
+        i = i + 1;
+    }
+    i = 0;
+    while i < depth {
+        s = s + "]";
+        i = i + 1;
+    }
+    return s;
+}
+
+fn test_identity_fast_path_accepts_only_no_op_documents() {
+    for d in identity_docs() {
+        if !snake_keys_is_identity(to_bytes(d)) {
+            panic("fast path refused a no-op document: " + d);
+        }
+        // and snake_keys really is a no-op on it
+        assert(jparsed(snake_keys(d)).render() == jparsed(d).render());
+    }
+    assert(snake_keys_is_identity(to_bytes(nested(max_depth()))));
+}
+
+fn test_identity_fast_path_refuses_anything_it_cannot_prove() {
+    for d in rewrite_docs() {
+        if snake_keys_is_identity(to_bytes(d)) {
+            panic("fast path took a document it cannot prove: " + d);
+        }
+    }
+    assert(!snake_keys_is_identity(to_bytes(nested(max_depth() + 1))));
+    // a NUL byte: to_str would end the text there, so the bytes and the
+    // text json.decode sees would differ
+    assert(!snake_keys_is_identity(b"{\"a\":1}\x00"));
+    assert(!snake_keys_is_identity(b"{\"a\":\"x\x00y\"}"));
+}
+
+gc struct DtoProbe {
+    a: opt[int],
+    message: opt[str],
+    t: opt[str],
+    k: opt[int],
+    user_id: opt[int],
+}
+
+fn decode_outcome(text: str) -> str {
+    let r: result[DtoProbe, str] = json.decode(text);
+    guard let v = r else let e = err_of(r) {
+        return "err: " + e;
+    }
+    return "ok: " + json.encode(v);
+}
+
+// The contract that matters: whichever way dto_text goes, json.decode
+// sees a document that decodes the same -- values and errors alike.
+fn test_dto_text_decodes_exactly_as_snake_keys_did() {
+    let docs = identity_docs();
+    for d in rewrite_docs() {
+        push(docs, d);
+    }
+    push(docs, "{\"a\":\"not an int\"}");
+    push(docs, "{\"a\":1,\"message\":\"m\",\"k\":2}");
+    for d in docs {
+        let fast = decode_outcome(dto_text(to_bytes(d)));
+        let slow = decode_outcome(snake_keys(d));
+        if fast != slow {
+            panic("dto_text changed the result for " + d + ": " + fast +
+                  " vs " + slow);
+        }
+    }
+}
+
+// ---- user_json / message_json: encoded == hand-built, byte for byte ---
+
+fn one_byte_str(c: int) -> str {
+    let b = strings.bytes_zero(1);
+    b[0] = c;
+    return to_str(b);
+}
+
+fn json_helper_inputs() -> [str] {
+    let xs: [str] = ["42", "", "user", "a\"b", "back\\slash", "\\b", "\\f",
+                     "tab\tnew\nline\rret", "été ✓ 日本", "/api/v1", "</script>"];
+    let c = 1;
+    while c < 128 {
+        push(xs, one_byte_str(c));
+        push(xs, "x" + one_byte_str(c) + "y");
+        c = c + 1;
+    }
+    return xs;
+}
+
+fn test_user_json_is_byte_identical_to_the_hand_built_form() {
+    for s in json_helper_inputs() {
+        let want = user_json_built(to_bytes(s));
+        if user_json(s) != want {
+            panic("user_json differs for input of length " + to_str(len(s)) +
+                  ": " + to_str(user_json(s)) + " vs " + to_str(want));
+        }
+        if user_json_bytes(to_bytes(s)) != want {
+            panic("user_json_bytes differs for " + to_str(want));
+        }
+    }
+}
+
+fn test_message_json_is_byte_identical_to_the_hand_built_form() {
+    for s in json_helper_inputs() {
+        let want = message_json_built(s);
+        if message_json(s) != want {
+            panic("message_json differs: " + to_str(message_json(s)) + " vs " +
+                  to_str(want));
+        }
+    }
 }
