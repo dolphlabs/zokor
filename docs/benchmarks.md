@@ -6,6 +6,48 @@ loses." This is that measurement, today, and zokor still loses it -- but
 by half what it used to. Read past the headline number for why, and what
 closes the rest of the gap.
 
+## Latest: four servers, and the dynamic-route fix (wrk, 2026-09-29)
+
+Same machine (i5-8279U, 8 logical cores), `wrk -t4 --latency`, 10 s runs
+after a 2 s warm-up, keep-alive, 3 rounds with the order rotated, medians.
+Client and server share the machine and other programs were running, so
+read ratios, not absolutes. "Plain slang" is a stdlib `http` + `json`
+server doing the same work with no framework.
+
+| req/s, c=50 | plain slang | zokor (before) | Go `net/http` | Go Fiber |
+|---|---:|---:|---:|---:|
+| `GET /` | 69.3k | 71.5k | 106.1k | 117.5k |
+| `GET /users/:id` | 66.7k | 33.7k | 103.2k | 115.1k |
+| `POST /echo` | 56.0k | 14.6k | 87.2k | 110.0k |
+
+zokor matched plain slang on the static route and fell to half and a
+quarter of it on the other two. `bench/allocs/` pinned it on allocation:
+`dto` rewrote every body's keys before decoding it (79 allocations for a
+one-field body), and the fixed-shape JSON helpers went through a builder.
+After the fix (todo.md, section 0), same harness, the two zokor builds
+alternated run by run:
+
+| req/s | zokor before | zokor after | |
+|---|---:|---:|---:|
+| `GET /` (control) | 84.0k | 81.4k | 0.97x |
+| `GET /users/:id` | 51.2k | 67.4k | **1.32x** |
+| `POST /echo` | 19.8k | 50.9k | **2.57x** |
+
+(c=50; c=200 is the same shape: 1.00x, 1.35x, 2.61x. Absolute numbers are
+higher than the table above because this pair ran on a quieter machine.)
+Allocations per request went 52 -> 31 on `/users/:id` and 149 -> 47 on
+`/echo`, against 28 and 36 for plain slang.
+
+What is left is slang's, not zokor's. Throughput: slang's `http` path costs
+~67 us of CPU per request against Go's 45 and Fiber's 31. Latency: plain
+slang's p50 beats Go's (0.3 ms against ~1.1 ms at c=200) but its p99 is
+hundreds of milliseconds, with some requests hitting wrk's 2 s timeout, on
+every route -- zokor included, and unchanged by this fix. Measured to be
+scheduler wakeup stalls, not GC pauses (the longest collection was 5 ms);
+it is on slang's next-steps list. Memory: plain slang peaks at 9.2 MB and
+zokor at 14.6 MB, against Go `net/http`'s 17.9 MB and Fiber's 13.5 MB
+(macOS physical footprint).
+
 ## The result, in one line (wrk, 2026-09-24)
 
 On this machine (MacBook Pro, i5-8279U, 8 logical / 4 physical cores,

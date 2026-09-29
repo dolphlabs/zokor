@@ -69,6 +69,38 @@ body is not one anyone can put in front of the internet.
   (`listen_and_serve`, below) -- not a routing or JSON problem, the same
   gap shows on a bare `GET /`. Re-run once `listen_and_serve` lands; the
   goal of edging Go stands.
+- [x] **Dynamic routes and `dto` cost 2-4x a plain slang server.** Measured
+  2026-09-29 against a plain stdlib `http` server doing the same work (same
+  machine, `wrk -t4`): zokor matched it on the static route but ran
+  `/users/:id` at half its rate and `POST /echo` at a quarter. The cost was
+  allocation, not routing: `bench/allocs/` (new) counts it per operation.
+  `dto` ran `snake_keys` on every body -- parse, rebuild every key, render,
+  then `json.decode` parsed again: 79 allocations for a one-field body. It
+  now skips that when `snake_keys_is_identity` proves the rewrite is a no-op
+  (strict JSON, no uppercase or escaped key, no duplicate key, no `\u`
+  escape); the differential test decodes every corpus document both ways.
+  `user_json`/`message_json` went through a builder (20 and 32 allocations);
+  they now `json.encode` a struct (5 and 4), byte-identical to before.
+  `strip_query` and the `:id` slice stopped copying the whole path.
+  Per request: `/users/:id` 52 -> 31 allocations, `/echo` 149 -> 47; the
+  plain server is at 28 and 36. Throughput, alternated A/B: `/users/:id`
+  1.32-1.35x, `/echo` 2.57-2.61x, `/` unchanged (the control). p99 did not
+  move: it is set by slang's scheduler wakeup stalls (slang next-steps,
+  "Tail latency"), which the same runs show on `/` too.
+- [ ] **`make check` hangs in `test_drain_stops_at_deadline`.** Found
+  2026-09-29, on `dev` as it stands (not introduced by anything since).
+  Both drain tests hang even run alone (`slangc test src --run drain`):
+  their `wait_idle()` loops until `proc.active_tasks()` is 0, which under
+  the test runner apparently never happens. Every other test passes. Until
+  this is fixed `make check` cannot go green, so CI cannot either.
+- [ ] **[slang] `builder.new_bytes()` costs 5 allocations and 1.3 KB** before
+  anything is written (its 512-byte chunk is built with `strings.repeat` and
+  `to_bytes`), and every `write_str` copies through `to_bytes`. Every
+  builder user pays it, `http.escape_json_bytes` included.
+- [ ] **[slang] `json.decode` into `int` loses precision above 2^53**:
+  `9007199254740993` decodes as `9007199254740992`, so a 64-bit id in a
+  request body is silently changed. zokor's own `Json` keeps number text and
+  is unaffected; `dto` is not, since it decodes through slang.
 
 ## 1. Language prerequisites
 
@@ -116,16 +148,56 @@ properties of the server, not of a handler.
   (double-evaluating a non-trivial `str` argument, unrooting the first
   result before it was read -- see `docs/benchmarks.md`), fixed in
   slang PR #228.
-- [ ] Timeouts: read header, read body, write, idle. Each configurable, each
-  with a default that is safe rather than infinite.
-- [ ] Limits: max header bytes, max body bytes (refused at read time with
-  `413`, not after buffering), max connections, max requests per connection.
-- [ ] Graceful shutdown: stop accepting, drain in-flight requests up to a
-  deadline, then close. `proc.shutdown_requested()` and `active_tasks()`
-  already exist.
-- [ ] Panic recovery per request: a panicking handler answers `500` with the
-  request id and the server carries on. `spawn` already isolates a task's
-  panic; this surfaces it.
+- [x] **Timeouts**: read header, read body, write, idle -- each its own
+  `ServerConfig` field (`default_server_config()`'s defaults: 60s idle,
+  5s header, 30s body, 10s write), each overridable via
+  `server_config_from(cfg)` (`IDLE_TIMEOUT`/`READ_HEADER_TIMEOUT`/
+  `READ_BODY_TIMEOUT`/`WRITE_TIMEOUT`). `listen_and_serve` keeps its
+  existing signature (defaults); `listen_and_serve_with(r, port, sc)`
+  takes a config. Needed **[slang]** `read_frame` to take three
+  deadlines instead of one, since one deadline can't honestly answer
+  "how long should this wait" for idle-vs-slow-loris -- merged in
+  slang PR #229, along with that function's first-ever test coverage
+  (it had none at all before).
+- [x] **Limits (per-connection)**: `ServerConfig.max_request_bytes`
+  (default 16KB, the number the read buffer always used, now a
+  setting) refuses an oversized request at read time -- `431` if the
+  headers alone never complete before the buffer fills, `413` if a
+  declared `Content-Length` alone is bigger than the buffer, never a
+  silent drop after buffering. Needed **[slang]** `read_frame` to say
+  which of the two happened, not one message for both (RFC 9110 gives
+  them different codes) -- slang PR #230.
+  `ServerConfig.max_requests_per_conn` (default 100,000) closes a
+  connection after it, answering the request that hit the limit
+  normally first. *Still owed:* max connections (a server-wide cap,
+  not a per-connection one -- needs a shared, concurrency-safe
+  counter across every accept loop, which the other three didn't; a
+  separate item until that's designed).
+- [x] **Graceful shutdown**: on `SIGTERM`/`SIGINT`, `accept_loop` stops
+  accepting (`proc.shutdown_requested()`, unchanged from `listen_and_serve`'s
+  original landing), then `accept_first` drains in-flight connections
+  with a new `drain(deadline)` helper -- `proc.active_tasks() > 0` polled
+  against a real deadline (`time.mono() + sc.shutdown_timeout`) instead
+  of waited on unconditionally, so one stuck connection cannot hang a
+  shutdown forever. `ServerConfig.shutdown_timeout` (default 30s,
+  overridable via `SHUTDOWN_TIMEOUT`) is the bound. Tests exercise
+  `drain` directly against a spawned task that outlives its deadline
+  (returns at the deadline, not the task's own finish) and one that
+  doesn't (returns as soon as idle, not at the deadline).
+- [x] **Panic recovery per request**: a panicking handler answers `500`
+  (`errors.respond(r.errors, "internal", "")` -- "" until request ids
+  land, same placeholder every response on this path already uses)
+  instead of silently dropping the connection. `Router.serve_static`
+  split into `match_static` (the static check alone, `opt[StaticBody]`,
+  no handler call, cannot panic) and the unchanged `serve_static`
+  wrapper, so `serve_conn` can run the static fast path with zero
+  isolation cost and only spawn+`join_wait` around `dispatch` (a
+  plain-function wrapper `serve_frame` needs, since `spawn`'s target
+  can't be a method) on the dynamic path, where a handler actually
+  runs. A panicking connection is closed after answering, not kept
+  open for more requests. *Still owed:* a real per-request id in that
+  500 (blocked on the same `crypto.rand` parking-safety gap every
+  other request-id mention in this file already points at).
 - [ ] TLS termination through slang's `net.tls_*`, or a documented decision to
   leave it to a proxy.
 - [ ] Wire WebSocket and Socket.IO into the loop: upgrade a connection in
