@@ -9,8 +9,7 @@
 // one read.
 //
 // What is NOT here yet, each its own item on the todo list: max
-// concurrent connections, graceful draining with a deadline,
-// per-request panic recovery, and TLS.
+// concurrent connections, per-request panic recovery, and TLS.
 
 import "http";
 import "proc";
@@ -46,7 +45,16 @@ pub gc struct ServerConfig {
     // an unbounded, never-recycled thing -- generous so it never
     // matters for ordinary keep-alive traffic, including a load test
     // running tens of thousands of requests down one connection.
-    max_requests_per_conn: int
+    max_requests_per_conn: int,
+    // How long `listen_and_serve`'s shutdown drain waits for in-flight
+    // connections to finish on their own, once the process has been
+    // asked to stop, before returning anyway. Bounded rather than
+    // unbounded so one slow or stuck connection cannot hang a
+    // deployment's shutdown forever -- whatever is still running past
+    // this point goes away when the process exits, the same as it
+    // would under a hard kill, just later and with everything else
+    // given a real chance to finish first.
+    shutdown_timeout: int
 }
 
 // Safe rather than infinite, per the todo item this answers. 60s idle
@@ -71,13 +79,19 @@ pub fn default_server_config() -> ServerConfig {
         // load test driving tens of thousands of requests down one
         // connection) ever notices it, low enough that a connection
         // genuinely is recycled eventually rather than living forever.
-        max_requests_per_conn: 100000
+        max_requests_per_conn: 100000,
+        // 30s: the same grace period Kubernetes gives a container by
+        // default (terminationGracePeriodSeconds) and a common nginx
+        // worker_shutdown_timeout choice -- long enough for an ordinary
+        // in-flight request to finish, short enough that a deployment's
+        // rollout is not left waiting on this one process indefinitely.
+        shutdown_timeout: 30000000000
     };
 }
 
 // The same defaults, overridable per field from config: IDLE_TIMEOUT,
-// READ_HEADER_TIMEOUT, READ_BODY_TIMEOUT, WRITE_TIMEOUT (durations,
-// config.duration_or's format, e.g. "30s"), MAX_REQUEST_BYTES,
+// READ_HEADER_TIMEOUT, READ_BODY_TIMEOUT, WRITE_TIMEOUT, SHUTDOWN_TIMEOUT
+// (durations, config.duration_or's format, e.g. "30s"), MAX_REQUEST_BYTES,
 // MAX_REQUESTS_PER_CONN (plain integers).
 pub fn server_config_from(cfg: Config) -> ServerConfig {
     let d = default_server_config();
@@ -90,7 +104,9 @@ pub fn server_config_from(cfg: Config) -> ServerConfig {
         max_request_bytes: int_or(cfg, "MAX_REQUEST_BYTES",
                                   d.max_request_bytes),
         max_requests_per_conn: int_or(cfg, "MAX_REQUESTS_PER_CONN",
-                                      d.max_requests_per_conn)
+                                      d.max_requests_per_conn),
+        shutdown_timeout: duration_or(cfg, "SHUTDOWN_TIMEOUT",
+                                      d.shutdown_timeout)
     };
 }
 
@@ -255,9 +271,9 @@ fn accept_one[S](r: Router[S], ln: &mut link, sc: ServerConfig) {
 // Stopping is SIGTERM/SIGINT, which `proc.shutdown_requested()`
 // reports: slang blocks both in every spawned thread's signal mask,
 // so only the main thread can run the handler, which is what lets a
-// blocked `accept` observe it. The drain in `listen_and_serve` waits
-// for in-flight tasks with no deadline; bounding it is the
-// graceful-shutdown item.
+// blocked `accept` observe it. Once this loop exits, `accept_first`
+// drains in-flight connections up to `sc.shutdown_timeout` -- see
+// `drain` below.
 fn accept_loop[S](r: Router[S], ln: link, sc: ServerConfig) {
     let mut_ln = ln;
     while !proc.shutdown_requested() {
@@ -295,7 +311,8 @@ fn listen_reuse(port: int) -> result[link, fault] {
 // There is no host parameter because slang's `link_listen` has none: it
 // binds every interface. Returns `err` when the port cannot be bound --
 // the common one is "already in use" -- and `ok` once the loop has
-// stopped, after in-flight connections have finished.
+// stopped and in-flight connections have either finished or run out
+// their `sc.shutdown_timeout`.
 //
 // Acceptors: one accept loop per worker, each on its own SO_REUSEPORT
 // listener (`link_listen(port, 1)`), the same shape slang's own
@@ -326,10 +343,9 @@ pub fn listen_and_serve[S](r: Router[S], port: int) -> result[int, str] {
     return listen_and_serve_with(r, port, default_server_config());
 }
 
-// Same, with timeouts (and whatever else Limits/#2 on the todo list
-// adds to ServerConfig later) under the caller's control -- built from
-// config with server_config_from, or by hand for a test that wants a
-// deliberately short one.
+// Same, with timeouts, limits, and the shutdown drain window under the
+// caller's control -- built from config with server_config_from, or by
+// hand for a test that wants a deliberately short one.
 pub fn listen_and_serve_with[S](r: Router[S], port: int,
                                 sc: ServerConfig) -> result[int, str] {
     let n = acceptor_count();
@@ -359,8 +375,31 @@ fn acceptor_task[S](r: Router[S], port: int, sc: ServerConfig) {
     accept_loop(r, ln, sc);
 }
 
+// Waits for every in-flight `spawn`ed task to finish, same as
+// `proc.wait_idle()` would, but bounded: gives up once `deadline`
+// (a `time.mono()`-scale instant, built the same way every other
+// deadline in this file is: `time.mono() + <a ServerConfig field>`)
+// has passed, however many tasks are still running.
+// `proc.active_tasks()` counts every spawned task in the process, not
+// only this server's connections -- the same thing `listen_and_serve`'s
+// pre-Limits drain already relied on unbounded, so this changes nothing
+// about what is counted, only how long counting it is allowed to take.
+// Polled rather than a park, matching the loop this replaces: there is
+// no "wake me when idle, or after N nanoseconds, whichever first"
+// primitive to park on instead.
+fn drain(deadline: duration) {
+    while proc.active_tasks() > 0 && time.mono() < deadline {
+        time.sleep(20000000);
+    }
+}
+
 // The main task's own acceptor: binds here (so a bad port returns
 // err instead of silently serving nothing) and loops here.
+//
+// Once accepting stops, in-flight connections get up to
+// `sc.shutdown_timeout` to finish on their own before this returns
+// regardless -- long enough for ordinary work to complete, bounded so
+// one stuck connection cannot hang a deployment's shutdown forever.
 fn accept_first[S](r: Router[S], port: int,
                    sc: ServerConfig) -> result[int, str] {
     let first = listen_reuse(port);
@@ -368,8 +407,6 @@ fn accept_first[S](r: Router[S], port: int,
         return err("cannot listen on port " + to_str(port) + ": " + to_str(e));
     }
     accept_loop(r, ln0, sc);
-    while proc.active_tasks() > 0 {
-        time.sleep(20000000);
-    }
+    drain(time.mono() + sc.shutdown_timeout);
     return ok(0);
 }
