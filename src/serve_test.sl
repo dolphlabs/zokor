@@ -1,4 +1,5 @@
 import "http";
+import "proc";
 import "time";
 
 gc struct ServeState { hits: int }
@@ -24,6 +25,7 @@ fn test_default_server_config_is_safe() {
     assert(d.body_timeout > d.header_timeout);
     assert(d.max_request_bytes > 0);
     assert(d.max_requests_per_conn > 0);
+    assert(d.shutdown_timeout > 0);
 }
 
 fn test_server_config_from_defaults_when_unset() {
@@ -36,10 +38,11 @@ fn test_server_config_from_defaults_when_unset() {
     assert(sc.write_timeout == d.write_timeout);
     assert(sc.max_request_bytes == d.max_request_bytes);
     assert(sc.max_requests_per_conn == d.max_requests_per_conn);
+    assert(sc.shutdown_timeout == d.shutdown_timeout);
 }
 
 fn test_server_config_from_overrides() {
-    let c = cfg_of("IDLE_TIMEOUT=1s\nREAD_HEADER_TIMEOUT=250ms\nREAD_BODY_TIMEOUT=2s\nWRITE_TIMEOUT=3s\nMAX_REQUEST_BYTES=8192\nMAX_REQUESTS_PER_CONN=500\n");
+    let c = cfg_of("IDLE_TIMEOUT=1s\nREAD_HEADER_TIMEOUT=250ms\nREAD_BODY_TIMEOUT=2s\nWRITE_TIMEOUT=3s\nMAX_REQUEST_BYTES=8192\nMAX_REQUESTS_PER_CONN=500\nSHUTDOWN_TIMEOUT=5s\n");
     let sc = server_config_from(c);
     assert(sc.idle_timeout == 1000000000);
     assert(sc.header_timeout == 250000000);
@@ -47,6 +50,7 @@ fn test_server_config_from_overrides() {
     assert(sc.write_timeout == 3000000000);
     assert(sc.max_request_bytes == 8192);
     assert(sc.max_requests_per_conn == 500);
+    assert(sc.shutdown_timeout == 5000000000);
 }
 
 fn short_config() -> ServerConfig {
@@ -57,7 +61,8 @@ fn short_config() -> ServerConfig {
         body_timeout: 200000000,
         write_timeout: 200000000,
         max_request_bytes: d.max_request_bytes,
-        max_requests_per_conn: d.max_requests_per_conn
+        max_requests_per_conn: d.max_requests_per_conn,
+        shutdown_timeout: d.shutdown_timeout
     };
 }
 
@@ -139,7 +144,8 @@ fn tiny_body_config() -> ServerConfig {
         body_timeout: d.body_timeout,
         write_timeout: d.write_timeout,
         max_request_bytes: 256,
-        max_requests_per_conn: d.max_requests_per_conn
+        max_requests_per_conn: d.max_requests_per_conn,
+        shutdown_timeout: d.shutdown_timeout
     };
 }
 
@@ -226,7 +232,8 @@ fn max2_config() -> ServerConfig {
         body_timeout: d.body_timeout,
         write_timeout: d.write_timeout,
         max_request_bytes: d.max_request_bytes,
-        max_requests_per_conn: 2
+        max_requests_per_conn: 2,
+        shutdown_timeout: d.shutdown_timeout
     };
 }
 
@@ -282,6 +289,55 @@ fn test_serve_conn_closes_after_max_requests() {
     println("serve_conn_closes_after_max_requests ok");
 }
 
+fn slow_task(ms: int) {
+    time.sleep(ms * 1000000);
+}
+
+// Waits out any task still finishing from an earlier test, so a
+// drain test's own timing reads are not skewed by unrelated leftover
+// work -- `proc.active_tasks()` counts every spawned task in the
+// process, not just the one each test below spawns for itself.
+fn wait_idle() {
+    while proc.active_tasks() > 0 {
+        time.sleep(20000000);
+    }
+}
+
+// The deadline actually bounds the wait: a task that runs far past it
+// does not make `drain` wait for it -- it returns once the deadline
+// passes regardless, which is the whole point of a bounded shutdown
+// drain over the unbounded wait it replaced.
+fn test_drain_stops_at_deadline() {
+    wait_idle();
+    spawn slow_task(500);
+    let t0 = time.mono();
+    drain(time.mono() + 100000000);
+    let dt = time.mono() - t0;
+    if dt > 400000000 {
+        panic("drain did not stop at its deadline, took " + to_str(dt));
+    }
+    // Let the background task finish before returning, so it does not
+    // leak into whatever test runs next.
+    wait_idle();
+    println("drain_stops_at_deadline ok");
+}
+
+// The common case: everything finishes well within the deadline, and
+// drain returns as soon as it does rather than waiting the deadline
+// out regardless.
+fn test_drain_returns_early_when_idle() {
+    wait_idle();
+    spawn slow_task(50);
+    let t0 = time.mono();
+    drain(time.mono() + 2000000000);
+    let dt = time.mono() - t0;
+    if dt > 500000000 {
+        panic("drain waited for its full deadline instead of returning " +
+              "once idle, took " + to_str(dt));
+    }
+    println("drain_returns_early_when_idle ok");
+}
+
 test_default_server_config_is_safe();
 test_server_config_from_defaults_when_unset();
 test_server_config_from_overrides();
@@ -290,3 +346,5 @@ test_serve_conn_idle_closes_connection();
 test_serve_conn_body_too_large_answers_413();
 test_serve_conn_headers_too_large_answers_431();
 test_serve_conn_closes_after_max_requests();
+test_drain_returns_early_when_idle();
+test_drain_stops_at_deadline();

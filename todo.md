@@ -141,11 +141,17 @@ properties of the server, not of a handler.
   not a per-connection one -- needs a shared, concurrency-safe
   counter across every accept loop, which the other three didn't; a
   separate item until that's designed).
-- [ ] Graceful shutdown: stop accepting, drain in-flight requests up to a
-  deadline, then close. `proc.shutdown_requested()` and `active_tasks()`
-- [ ] Graceful shutdown: stop accepting, drain in-flight requests up to a
-  deadline, then close. `proc.shutdown_requested()` and `active_tasks()`
-  already exist.
+- [x] **Graceful shutdown**: on `SIGTERM`/`SIGINT`, `accept_loop` stops
+  accepting (`proc.shutdown_requested()`, unchanged from `listen_and_serve`'s
+  original landing), then `accept_first` drains in-flight connections
+  with a new `drain(deadline)` helper -- `proc.active_tasks() > 0` polled
+  against a real deadline (`time.mono() + sc.shutdown_timeout`) instead
+  of waited on unconditionally, so one stuck connection cannot hang a
+  shutdown forever. `ServerConfig.shutdown_timeout` (default 30s,
+  overridable via `SHUTDOWN_TIMEOUT`) is the bound. Tests exercise
+  `drain` directly against a spawned task that outlives its deadline
+  (returns at the deadline, not the task's own finish) and one that
+  doesn't (returns as soon as idle, not at the deadline).
 - [ ] Panic recovery per request: a panicking handler answers `500` with the
   request id and the server carries on. `spawn` already isolates a task's
   panic; this surfaces it.
