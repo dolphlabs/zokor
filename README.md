@@ -105,6 +105,7 @@ declare, and every handler receives it.
 | `upgrade`, `receive`, `sio_*` | WebSocket (RFC 6455) and Socket.IO, as a state machine you feed bytes |
 | `ok_json`, `created`, … | success responses with the headers they should carry |
 | `redis_from_config` | a Redis pool from `REDIS_URL`, optional by default |
+| `ServerConfig`, `listen_and_serve_with` | idle/header/body/write timeouts, safe defaults, all overridable |
 
 ## Configuration
 
@@ -182,6 +183,49 @@ guard let conn = cr else let e = err_of(cr) {
 let r = redis.get(conn, "session:" + token, deadline);
 redis.release(pool, conn);
 ```
+
+## Server timeouts, limits, and shutdown
+
+Safe defaults, not infinite ones: `listen_and_serve` uses them without
+asking, and `listen_and_serve_with` takes a `ServerConfig` to change
+any of them.
+
+```slang
+let sc = zokor.server_config_from(cfg);
+// IDLE_TIMEOUT, READ_HEADER_TIMEOUT, READ_BODY_TIMEOUT, WRITE_TIMEOUT,
+// MAX_REQUEST_BYTES, MAX_REQUESTS_PER_CONN, SHUTDOWN_TIMEOUT
+spawn zokor.listen_and_serve_with(r, port, sc);
+```
+
+Four separate timeouts, not one, because "how long should this wait"
+has different honest answers depending on what a connection is doing:
+`idle_timeout` (default 60s) governs waiting for a request to start on
+a connection that might legitimately sit open a while; `header_timeout`
+(5s) and `body_timeout` (30s) govern a request that has started
+arriving and then stalls -- the slow-loris shape a tight window exists
+to catch; `write_timeout` (10s) bounds sending the response,
+separately, since a client that stopped reading is a different problem
+than one that stopped sending.
+
+`max_request_bytes` (default 16KB) refuses an oversized request at
+read time -- `431` if the headers alone never complete, `413` if a
+declared body is bigger than the buffer -- never a silent drop after
+buffering. `max_requests_per_conn` (default 100,000) closes a
+connection after it, answering the request that hit the limit
+normally first.
+
+On `SIGTERM`/`SIGINT`, `listen_and_serve` stops accepting immediately
+and gives in-flight connections up to `shutdown_timeout` (default 30s)
+to finish on their own before returning anyway -- long enough for
+ordinary requests to complete, bounded so one stuck connection cannot
+hang a deployment's rollout forever.
+
+A panicking handler answers `500` instead of dropping the connection
+or taking the process down -- the handler call runs isolated in its
+own task, and the connection closes right after answering rather than
+serving more requests on whatever state the panic left behind. The
+static fast path (`GET /`, no handler call) never pays for this
+isolation, since nothing there can panic in the first place.
 
 ## Errors
 
@@ -532,11 +576,10 @@ make test
 
 The full list, ordered and checkable, is [todo.md](todo.md). In short:
 
-- **The serve loop.** `listen_and_serve` needs generic **functions**
-  in slang, which has generic structs and methods today. It is what
-  turns the WebSocket state machine into a running server, and it
-  carries the timeouts, body limits, graceful shutdown and panic
-  recovery that belong to the server rather than to a handler.
+- **The serve loop.** `listen_and_serve` turns the WebSocket state
+  machine into a running server; timeouts, body limits, graceful
+  shutdown, and panic recovery are done (see above). Still owed: max
+  concurrent connections.
 - **Middleware**, none of it blocked: CORS, security headers, rate
   limiting, cookies, JWT and basic auth, ETag/304, compression, static
   files, request logging, health endpoints.

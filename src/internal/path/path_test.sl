@@ -15,6 +15,10 @@ fn test_strip_query() {
     assert(strip_query("/a/b?x=1") == "/a/b");
     assert(strip_query("/a/b") == "/a/b");
     assert(strip_query("?x=1") == "");
+    assert(strip_query("/a?") == "/a");
+    assert(strip_query("/a?b?c") == "/a");
+    assert(strip_query("") == "");
+    assert(strip_query("/café?q=é") == "/café");
 }
 
 fn test_query_get() {
