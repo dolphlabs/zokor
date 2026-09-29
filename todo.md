@@ -152,9 +152,20 @@ properties of the server, not of a handler.
   `drain` directly against a spawned task that outlives its deadline
   (returns at the deadline, not the task's own finish) and one that
   doesn't (returns as soon as idle, not at the deadline).
-- [ ] Panic recovery per request: a panicking handler answers `500` with the
-  request id and the server carries on. `spawn` already isolates a task's
-  panic; this surfaces it.
+- [x] **Panic recovery per request**: a panicking handler answers `500`
+  (`errors.respond(r.errors, "internal", "")` -- "" until request ids
+  land, same placeholder every response on this path already uses)
+  instead of silently dropping the connection. `Router.serve_static`
+  split into `match_static` (the static check alone, `opt[StaticBody]`,
+  no handler call, cannot panic) and the unchanged `serve_static`
+  wrapper, so `serve_conn` can run the static fast path with zero
+  isolation cost and only spawn+`join_wait` around `dispatch` (a
+  plain-function wrapper `serve_frame` needs, since `spawn`'s target
+  can't be a method) on the dynamic path, where a handler actually
+  runs. A panicking connection is closed after answering, not kept
+  open for more requests. *Still owed:* a real per-request id in that
+  500 (blocked on the same `crypto.rand` parking-safety gap every
+  other request-id mention in this file already points at).
 - [ ] TLS termination through slang's `net.tls_*`, or a documented decision to
   leave it to a proxy.
 - [ ] Wire WebSocket and Socket.IO into the loop: upgrade a connection in
