@@ -663,9 +663,11 @@ impl Router[S] {
             }
             if r.fkind == 2 {
                 // Single trailing :id: prefix compare on the str,
-                // then slice the id -- one allocation (the id),
-                // no segs list, no to_bytes of the prefix. strs
-                // cannot slice, so the id comes out of bytes.
+                // then slice the id -- one allocation (the id), no segs
+                // list. strings.slice takes byte offsets, the same
+                // offsets has_prefix matched, and copies only the id;
+                // going through to_bytes copied the whole path first
+                // (5 allocations, bench/allocs).
                 if !strings.has_prefix(p, r.fpath) {
                     i = i + 1;
                     continue;
@@ -683,8 +685,7 @@ impl Router[S] {
                     i = i + 1;
                     continue;
                 }
-                let pb = to_bytes(p);
-                let id = to_str(pb[len(r.fpath)..len(pb)]);
+                let id = strings.slice(p, len(r.fpath), len(p));
                 // No map at all: this is exactly the shape param1_name/
                 // param1_value exist for, one binding, name already
                 // known from the route -- a map here was one allocation
@@ -1240,7 +1241,7 @@ impl Ctx[S] {
 // parameter of its own beyond the struct's (`T` here, next to `Ctx`'s
 // own `S`) -- see "Generic structs" in slang's README.
 pub fn dto[S, T](c: Ctx[S]) -> result[T, http.Response] {
-    let r: result[T, str] = json.decode(snake_keys(c.body_str()));
+    let r: result[T, str] = json.decode(dto_text(c.body_bytes()));
     guard let v = r else let e = err_of(r) {
         return err(decode_failed(c.errors, e, c.request_id));
     }

@@ -69,6 +69,38 @@ body is not one anyone can put in front of the internet.
   (`listen_and_serve`, below) -- not a routing or JSON problem, the same
   gap shows on a bare `GET /`. Re-run once `listen_and_serve` lands; the
   goal of edging Go stands.
+- [x] **Dynamic routes and `dto` cost 2-4x a plain slang server.** Measured
+  2026-09-29 against a plain stdlib `http` server doing the same work (same
+  machine, `wrk -t4`): zokor matched it on the static route but ran
+  `/users/:id` at half its rate and `POST /echo` at a quarter. The cost was
+  allocation, not routing: `bench/allocs/` (new) counts it per operation.
+  `dto` ran `snake_keys` on every body -- parse, rebuild every key, render,
+  then `json.decode` parsed again: 79 allocations for a one-field body. It
+  now skips that when `snake_keys_is_identity` proves the rewrite is a no-op
+  (strict JSON, no uppercase or escaped key, no duplicate key, no `\u`
+  escape); the differential test decodes every corpus document both ways.
+  `user_json`/`message_json` went through a builder (20 and 32 allocations);
+  they now `json.encode` a struct (5 and 4), byte-identical to before.
+  `strip_query` and the `:id` slice stopped copying the whole path.
+  Per request: `/users/:id` 52 -> 31 allocations, `/echo` 149 -> 47; the
+  plain server is at 28 and 36. Throughput, alternated A/B: `/users/:id`
+  1.32-1.35x, `/echo` 2.57-2.61x, `/` unchanged (the control). p99 did not
+  move: it is set by slang's scheduler wakeup stalls (slang next-steps,
+  "Tail latency"), which the same runs show on `/` too.
+- [ ] **`make check` hangs in `test_drain_stops_at_deadline`.** Found
+  2026-09-29, on `dev` as it stands (not introduced by anything since).
+  Both drain tests hang even run alone (`slangc test src --run drain`):
+  their `wait_idle()` loops until `proc.active_tasks()` is 0, which under
+  the test runner apparently never happens. Every other test passes. Until
+  this is fixed `make check` cannot go green, so CI cannot either.
+- [ ] **[slang] `builder.new_bytes()` costs 5 allocations and 1.3 KB** before
+  anything is written (its 512-byte chunk is built with `strings.repeat` and
+  `to_bytes`), and every `write_str` copies through `to_bytes`. Every
+  builder user pays it, `http.escape_json_bytes` included.
+- [ ] **[slang] `json.decode` into `int` loses precision above 2^53**:
+  `9007199254740993` decodes as `9007199254740992`, so a 64-bit id in a
+  request body is silently changed. zokor's own `Json` keeps number text and
+  is unaffected; `dto` is not, since it decodes through slang.
 
 ## 1. Language prerequisites
 

@@ -10,6 +10,7 @@
 // One pass over the bytes, one allocation per segment, and nothing for
 // the separators.
 import "builder";
+import "strings";
 
 pub fn split(p: str) -> [str] {
     let out: [str] = [];
@@ -32,16 +33,14 @@ pub fn split(p: str) -> [str] {
 // The path without its query string. Returns the same string when there
 // is no "?", so the common case costs one scan and no allocation.
 pub fn strip_query(p: str) -> str {
-    let b = to_bytes(p);
-    let n = len(b);
-    let i = 0;
-    while i < n {
-        if b[i] == 63 {
-            return to_str(b[0..i]);
-        }
-        i = i + 1;
+    // strings.find is native and allocates nothing, so a path with no
+    // query (almost every request) costs no allocation; the byte copy
+    // this replaced cost two on every request.
+    let q = strings.find(p, "?");
+    if q < 0 {
+        return p;
     }
-    return p;
+    return strings.slice(p, 0, q);
 }
 
 // The query string, without the "?", or "".
