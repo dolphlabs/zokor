@@ -220,6 +220,13 @@ to finish on their own before returning anyway -- long enough for
 ordinary requests to complete, bounded so one stuck connection cannot
 hang a deployment's rollout forever.
 
+A panicking handler answers `500` instead of dropping the connection
+or taking the process down -- the handler call runs isolated in its
+own task, and the connection closes right after answering rather than
+serving more requests on whatever state the panic left behind. The
+static fast path (`GET /`, no handler call) never pays for this
+isolation, since nothing there can panic in the first place.
+
 ## Errors
 
 Every failure names a code; every code is registered once with its status
@@ -570,9 +577,9 @@ make test
 The full list, ordered and checkable, is [todo.md](todo.md). In short:
 
 - **The serve loop.** `listen_and_serve` turns the WebSocket state
-  machine into a running server; timeouts, body limits, and graceful
-  shutdown are done (see above). Still owed: max concurrent
-  connections and per-request panic recovery.
+  machine into a running server; timeouts, body limits, graceful
+  shutdown, and panic recovery are done (see above). Still owed: max
+  concurrent connections.
 - **Middleware**, none of it blocked: CORS, security headers, rate
   limiting, cookies, JWT and basic auth, ETag/304, compression, static
   files, request logging, health endpoints.

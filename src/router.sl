@@ -546,7 +546,15 @@ impl Router[S] {
     // (built by serve_frame with request_id ""), so the serve loop
     // never frames twice -- one call, either a static body or the
     // response to write.
-    pub fn serve_static(self: Router[S], f: http.WireFrame) -> result[http.StaticBody, http.Response] {
+    // The static check alone, with no dynamic fallback: `none` means
+    // "not a static route," not "not found" (a 404 is itself a
+    // dynamic response, built by serve_frame). Split out from
+    // `serve_static` below so a caller that wants to isolate the
+    // dynamic path (a handler call, which is the only place in this
+    // router that can panic) can run this cheap, panic-free check
+    // first without paying for that isolation on every request --
+    // see serve_conn's own use of it.
+    pub fn match_static(self: Router[S], f: http.WireFrame) -> opt[http.StaticBody] {
         // Static routes are exact GETs, so the check is str compares
         // on the already-parsed method/path -- no raw bytes, no
         // offsets, no from_str chain. Anything that is not exactly
@@ -558,7 +566,7 @@ impl Router[S] {
                 let r = self.routes[i];
                 if r.fkind == 1 && r.has_static {
                     if f.path == r.fpath {
-                        return ok(http.StaticBody {
+                        return some(http.StaticBody {
                             status: r.static_status,
                             content_type: r.static_ctype,
                             body: r.static_body,
@@ -569,7 +577,15 @@ impl Router[S] {
                 i = i + 1;
             }
         }
-        return err(self.serve_frame(f, ""));
+        return none;
+    }
+
+    pub fn serve_static(self: Router[S], f: http.WireFrame) -> result[http.StaticBody, http.Response] {
+        let m = self.match_static(f);
+        guard let sb = m else {
+            return err(self.serve_frame(f, ""));
+        }
+        return ok(sb);
     }
 
     // serve() stays for callers that already hold a Request (tests,
