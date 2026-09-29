@@ -9,7 +9,7 @@
 // one read.
 //
 // What is NOT here yet, each its own item on the todo list: max
-// concurrent connections, per-request panic recovery, and TLS.
+// concurrent connections, and TLS.
 
 import "http";
 import "proc";
@@ -156,6 +156,16 @@ fn too_large_response(status: i32, status_text: str, code: str) -> http.Response
                               "application/json; charset=utf-8", body);
 }
 
+// The dynamic path's handler call, run in its own task so a panic in
+// it surfaces as `join_wait`'s own `err` -- see serve_conn's use of
+// this -- instead of ending the whole connection's task silently.
+// `spawn`'s target has to be a plain function, not a method, which is
+// the only reason this exists rather than serve_conn calling
+// `r.serve_frame(f, "")` directly.
+fn dispatch[S](r: Router[S], f: http.WireFrame) -> http.Response {
+    return r.serve_frame(f, "");
+}
+
 // One connection, until the client goes away or asks to close.
 //
 // A read error closes the connection rather than answering: it means
@@ -167,10 +177,14 @@ fn too_large_response(status: i32, status_text: str, code: str) -> http.Response
 // Two dispatch paths, chosen per route at registration, not per
 // request: a static route (exact GET, no middleware, fixed body --
 // `GET /` is the shape) answers from its snapshot via
-// `serve_static` with NO Request, NO maps, NO Ctx, NO handler call
-// (see Route.has_static); everything else goes through
-// `serve_frame`, which builds the Request once for the route that
-// runs. `serve_id` stays for callers that already hold a Request.
+// `match_static` with NO Request, NO maps, NO Ctx, NO handler call,
+// and -- since none of that ran -- nothing that could panic, so this
+// path costs no isolation either; everything else goes through
+// `dispatch` (a plain-function wrapper around `serve_frame`, which
+// builds the Request once for the route that runs), spawned and
+// joined so a panic in application handler code answers `500`
+// instead of silently ending the connection. `serve_id` stays for
+// callers that already hold a Request.
 pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
     let ra = arena_new(sc.max_request_bytes);
     let sa = arena_new(response_bytes());
@@ -224,8 +238,27 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
         // already ask for, so both paths below need exactly one
         // check, not two.
         let must_close = wf.close || served >= sc.max_requests_per_conn;
-        let sr = r.serve_static(wf);
-        guard let resp = sr else let dyn_resp = err_of(sr) {
+        let m = r.match_static(wf);
+        guard let resp = m else {
+            // Not a static route: the handler runs here, isolated in
+            // its own task -- see `dispatch`'s own doc comment.
+            let h = spawn dispatch(r, wf);
+            let jr = join_wait(h);
+            guard let dyn_resp = jr else {
+                // The handler panicked. spawn/join_wait already
+                // isolated it -- this task, and the process, are
+                // both still fine -- but the client is still owed an
+                // answer. "" for the request id, the same placeholder
+                // every response on this path uses today (wiring a
+                // real one is a separate, already-tracked item).
+                // Closed afterward rather than trusted to keep
+                // serving more requests on whatever state the panic
+                // left behind.
+                let resp500 = respond(r.errors, "internal", "");
+                let _w5 = http.write(&mut c, resp500, &mut sa,
+                                     write_deadline(sc));
+                return;
+            }
             let wr = http.write(&mut c, dyn_resp, &mut sa,
                                 write_deadline(sc));
             guard let _n = wr else {
