@@ -8,6 +8,17 @@ fn ok_hi(c: Ctx[ServeState]) -> http.Response {
     return text(200, "hi");
 }
 
+fn panics_handler(c: Ctx[ServeState]) -> http.Response {
+    panic("boom");
+}
+
+fn panic_test_router() -> Router[ServeState] {
+    let r = new_router(ServeState { hits: 0 });
+    r.get("/hi", ok_hi);
+    r.get("/boom", panics_handler);
+    return r;
+}
+
 fn test_default_server_config_is_safe() {
     let d = default_server_config();
     // Safe rather than infinite: every field is a real, positive
@@ -289,6 +300,72 @@ fn test_serve_conn_closes_after_max_requests() {
     println("serve_conn_closes_after_max_requests ok");
 }
 
+// A handler that panics answers 500 rather than silently dropping
+// the connection or taking the whole process down: spawn/join_wait
+// isolate the panic (see `dispatch`'s own doc comment in serve.sl);
+// serve_conn just has to notice and answer.
+fn test_serve_conn_panicking_handler_answers_500() {
+    let lr = link_listen(0);
+    guard let ln = lr else { panic("listen"); }
+    let dr = link_dial("127.0.0.1", ln.port(), until_never());
+    guard let client = dr else { panic("dial"); }
+    let ar = ln.accept(until_never());
+    guard let server = ar else { panic("accept"); }
+    let r = panic_test_router();
+    spawn serve_conn(r, server, default_server_config());
+    let req = to_bytes("GET /boom HTTP/1.1\r\nHost: t\r\n\r\n");
+    let a = arena_new(512);
+    let out = a.wire(len(req));
+    let i = 0;
+    while i < len(req) {
+        out[i] = req[i];
+        i = i + 1;
+    }
+    let sr = client.send(out, until_never());
+    guard let _n = sr else { panic("client send"); }
+    let inb = a.wire(256);
+    let rr = client.recv(inb, until_of(time.mono() + 2000000000));
+    guard let n = rr else { panic("client recv"); }
+    if n < 12 { panic("response too short"); }
+    if resp_status_bytes(inb) != "500" {
+        panic("expected 500, got " + resp_status_bytes(inb));
+    }
+    println("serve_conn_panicking_handler_answers_500 ok");
+}
+
+// The static fast path never runs a handler, so a panic there is not
+// a reachable case -- what matters instead is that splitting
+// serve_static into match_static + a dynamic fallback did not change
+// its behavior: an ordinary static-shaped request still answers
+// normally, and a route that panics does not disturb one that
+// doesn't, on the same router.
+fn test_serve_conn_static_route_unaffected_by_panic_isolation() {
+    let lr = link_listen(0);
+    guard let ln = lr else { panic("listen"); }
+    let dr = link_dial("127.0.0.1", ln.port(), until_never());
+    guard let client = dr else { panic("dial"); }
+    let ar = ln.accept(until_never());
+    guard let server = ar else { panic("accept"); }
+    let r = panic_test_router();
+    spawn serve_conn(r, server, default_server_config());
+    let req = to_bytes("GET /hi HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n");
+    let a = arena_new(512);
+    let out = a.wire(len(req));
+    let i = 0;
+    while i < len(req) {
+        out[i] = req[i];
+        i = i + 1;
+    }
+    let sr = client.send(out, until_never());
+    guard let _n = sr else { panic("client send"); }
+    let inb = a.wire(256);
+    let rr = client.recv(inb, until_of(time.mono() + 2000000000));
+    guard let n = rr else { panic("client recv"); }
+    if n < 12 { panic("response too short"); }
+    if inb[9] != 50 { panic("expected status 200"); }
+    println("serve_conn_static_route_unaffected_by_panic_isolation ok");
+}
+
 fn slow_task(ms: int) {
     time.sleep(ms * 1000000);
 }
@@ -348,3 +425,5 @@ test_serve_conn_headers_too_large_answers_431();
 test_serve_conn_closes_after_max_requests();
 test_drain_returns_early_when_idle();
 test_drain_stops_at_deadline();
+test_serve_conn_panicking_handler_answers_500();
+test_serve_conn_static_route_unaffected_by_panic_isolation();
