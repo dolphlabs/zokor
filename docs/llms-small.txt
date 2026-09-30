@@ -1,0 +1,219 @@
+# zokor in one page
+
+> zokor is a backend framework for slang: routing, errors, config,
+> validation, JSON, uploads, WebSockets, tests. Read slang's
+> `llms-small.txt` first; this page assumes it. Every code block below
+> is a whole program that compiles and runs as shown; the test suite
+> checks that. In your own project, pin the package with
+> `pkg zokor git https://github.com/dolphlabs/zokor tag v0.1.0 dir src`
+> in `slang.project` and write `import "zokor";` -- the blocks here use
+> a relative import only so they compile in place.
+
+## A complete service
+
+```slang
+import "http";
+import "../../src" as zokor;
+
+gc struct App {
+    token: str,
+}
+
+fn show_org(c: zokor.Ctx[App]) -> http.Response {
+    if c.param("id") != "7" {
+        return zokor.respond(c.errors, "org.not_found", c.request_id);
+    }
+    return zokor.ok_json("{\"org\":\"7\"}");
+}
+
+gc struct CreateOrg {
+    name: str,
+    seats: i32,
+}
+
+fn create_org(c: zokor.Ctx[App]) -> http.Response {
+    let r: result[CreateOrg, http.Response] = zokor.dto(c);
+    guard let dto = r else let resp = err_of(r) {
+        return resp;
+    }
+    let v = zokor.checker();
+    if len(dto.name) == 0 {
+        v.note("name", "must not be empty");
+    }
+    if v.failed() {
+        return zokor.respond_fields(c.errors, "validation_failed",
+                                    v.fields, c.request_id);
+    }
+    return zokor.created("{\"id\":\"org_7\"}", "/orgs/org_7");
+}
+
+fn require_token(c: zokor.Ctx[App]) -> opt[http.Response] {
+    if c.bearer() != c.state.token {
+        return some(zokor.respond(c.errors, "unauthorized", c.request_id));
+    }
+    return none;
+}
+
+let app = App { token: "s3cret" };
+let r = zokor.new_router(app);
+zokor.register(r.errors, "org.not_found", 404, "no such organisation");
+r.get("/orgs/:id", show_org);
+let api = r.group("/api");
+api.before(require_token);
+api.post("/orgs", create_org);
+
+let good = r.serve(zokor.request(zokor.Method.POST, "/api/orgs")
+    .bearer("s3cret")
+    .json_body("{\"name\":\"acme\",\"seats\":12}")
+    .build());
+assert(zokor.resp_status(good) == 201);
+let denied = r.serve(zokor.request(zokor.Method.POST, "/api/orgs").build());
+assert(zokor.resp_error_code(denied) == "unauthorized");
+println("ok");
+```
+
+`Ctx[App]` carries your state, the request, path params, and the error
+registry. Handlers are top-level functions; there are no closures, so a
+handler that needs something takes it through `Ctx` (`c.state`,
+`c.local`). A `before` returns `none` to continue or `some(response)`
+to stop; `after` hooks still run either way.
+
+## Errors: one envelope, named codes
+
+```slang
+import "http";
+import "../../src" as zokor;
+
+gc struct App {
+    token: str,
+}
+
+fn boom(c: zokor.Ctx[App]) -> http.Response {
+    return zokor.respond(c.errors, "teapot", c.request_id);
+}
+
+let app = App { token: "x" };
+let r = zokor.new_router(app);
+zokor.register(r.errors, "teapot", 418, "short and stout");
+r.get("/brew", boom);
+let resp = r.serve(zokor.request(zokor.Method.GET, "/brew").build());
+assert(zokor.resp_status(resp) == 418);
+assert(zokor.resp_error_code(resp) == "teapot");
+let missing = r.serve(zokor.request(zokor.Method.GET, "/nope").build());
+assert(zokor.resp_status(missing) == 404);
+println("ok");
+```
+
+Never hand-write a failure body: `respond`, `respond_with` (custom
+detail) and `respond_fields` (field errors) render the one envelope.
+Register every code you return; an unregistered code answers 500 and
+names itself, which means a typo, not a contract.
+
+## Config: read once, check everything
+
+```slang
+import "../../src" as zokor;
+
+let cfg = zokor.load_config();
+let name = zokor.str_or(cfg, "ZOKOR_SNIPPET_NAME", "shop");
+let port = zokor.require_port(cfg, "PORT");
+let ready = zokor.check(cfg);
+guard let _ok = ready else let e = err_of(ready) {
+    println("config: " + e);
+    exit(1);
+}
+assert(name == "shop");
+assert(port == 8080);
+println("ok");
+```
+
+`load_config` reads `.env`, then the environment wins. `require_*`
+records problems instead of throwing; `check` reports them all at
+once. Nothing reads the environment while serving -- handlers take
+config through `App`. (This block runs with `PORT=8080`.)
+
+## Query strings into a struct
+
+```slang
+import "http";
+import "../../src" as zokor;
+
+gc struct App {
+    token: str,
+}
+
+gc struct Search {
+    q: str,
+    page: i32,
+}
+
+fn search(c: zokor.Ctx[App]) -> http.Response {
+    let r: result[Search, http.Response] = zokor.query_as(c);
+    guard let q = r else let resp = err_of(r) {
+        return resp;
+    }
+    return zokor.ok_json("{\"q\":\"" + q.q + "\"}");
+}
+
+let app = App { token: "x" };
+let r = zokor.new_router(app);
+r.get("/search", search);
+let resp = r.serve(zokor.request(zokor.Method.GET, "/search?q=slang&page=2").build());
+assert(zokor.resp_status(resp) == 200);
+println("ok");
+```
+
+## Serving for real
+
+```slang
+import "http";
+import "../../src" as zokor;
+
+gc struct App {
+    token: str,
+}
+
+fn home(c: zokor.Ctx[App]) -> http.Response {
+    return zokor.text(200, "hi");
+}
+
+let app = App { token: "x" };
+let r = zokor.new_router(app);
+r.get("/", home);
+spawn zokor.listen_and_serve(r, 18341);
+println("up");
+```
+
+`spawn` it; it runs per connection until `SIGTERM`, then drains.
+`listen_and_serve_with(r, port, sc)` takes timeouts and limits from
+`zokor.server_config_from(cfg)`.
+
+## Rules: the one way
+
+- Errors: `respond*` with a registered code, never hand JSON. Field
+  problems go through `respond_fields`; a failure names its field.
+- Config: `load_config` once at startup, `require_*` per variable,
+  `check` before serving. No `getenv` in handlers or helpers.
+- Validation: decode with `dto`/`query_as` (types are checked),
+  check values with `checker`/`note`, report all problems at once
+  with one `failed()` branch.
+- Routing: `new_router(state)`, groups for prefixes, `before` for
+  cross-cutting auth, `guarded` for one route. Middleware applies to
+  routes registered after it.
+- Tests: build requests with `zokor.request(..)`, serve with
+  `r.serve(..)`, read with `resp_status`/`resp_json`/`resp_error_code`.
+  No sockets in tests.
+
+## Mistakes that cost a retry
+
+- `dto`/`query_as` without a `result[T, http.Response]` annotation:
+  the compiler cannot infer `T`.
+- A handler that isn't top-level: no closures or lambdas; pass state
+  through `Ctx` (`c.state`, `c.set_local`/`c.local`).
+- Returning a code you never registered: the client gets a 500 that
+  names it. Register first, in the same file as the router.
+- `r.get(..)` returns an `int`, not the router: don't chain it.
+- Building response JSON by hand with `+`: quote with `zokor.jobj()`
+  instead (`set_str`, `set_int`, `set_opt_str`, `render`).
+- A `before` that returns a bare response instead of `some(...)`,
+  or falls through instead of returning `none`.
