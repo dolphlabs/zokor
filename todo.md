@@ -289,3 +289,8 @@ now and tested with the test kit.
   Requirements section is the truth.
 - [ ] A `slangc new`-style scaffold: `zokor new <name>` producing a service
   with the layout, config, one route and one test.
+- [x] **Agent guide `docs/llms-small.txt`**: one page (under 2,000 tokens)
+  that lets an agent write a correct service without reading anything else
+  -- example-first, the one way for errors/config/validation/routing/tests,
+  every snippet compile-checked by `make snippets` (new `docs/check_snippets.sh`,
+  wired into `make check`), so the guide cannot drift from the code.
