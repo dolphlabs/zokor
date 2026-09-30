@@ -550,14 +550,22 @@ honest.
 
 ## Requirements
 
-slang with **generic structs and methods** — on `dev`, not yet in a
-release. `pkg ... dir src` needs the sub-directory pin, also on `dev`.
+slang v0.2.1 or later: zokor needs generic structs and methods, and the
+`dir` sub-directory pin.
 
 ## Install
 
+In a new project (`slangc new app` writes the `name` and `version`
+lines), add the pin to `slang.project`. The whole file:
+
 ```
+name app
+version 0.1.0
+
 pkg zokor git https://github.com/dolphlabs/zokor tag v0.1.0 dir src
 ```
+
+Then fetch it, and import it as `import "zokor";`:
 
 ```
 slangc get
