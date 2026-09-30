@@ -1,6 +1,6 @@
 SLANGC ?= slangc
 
-.PHONY: test example check
+.PHONY: test example check snippets
 
 # Every package dir is listed explicitly: a new package without its own
 # line here is a package with no tests, and that fails review.
@@ -19,5 +19,11 @@ example:
 example-chat:
 	$(SLANGC) examples/chat/main.sl --run
 
+# docs/ is not a package (`slangc test` cannot run it), so its line here
+# is the guide's drift check: every ```slang block in llms-small.txt
+# must still compile and run.
+snippets:
+	SLANGC="$(SLANGC)" docs/check_snippets.sh
+
 # Everything CI runs.
-check: test example example-chat
+check: test example example-chat snippets
