@@ -540,7 +540,8 @@ examples/
   chat/           WebSocket and socket.io
 assets/           the logo
 todo.md           what is next, checkable
-docs/
+docs/             benchmarks, llms-small.txt (the agent guide: one page,
+                every snippet compile-checked by `make snippets`)
 ```
 
 `internal/` holds the pure parts: no sockets, no clock, no environment.
@@ -571,6 +572,17 @@ into your build.
 ```
 make test
 ```
+
+`make check` runs the tests, both examples end to end, and the agent
+guide's snippets (`docs/llms-small.txt`, via `make snippets`), so the
+guide cannot drift from the code.
+
+## Agent guide
+
+An agent writing a service reads slang's `llms-small.txt` then
+[docs/llms-small.txt](docs/llms-small.txt): one page, example-first, with
+the one way for errors, config, validation, routing and tests. Every
+snippet in it compiles; `make snippets` proves it.
 
 ## Not yet
 
