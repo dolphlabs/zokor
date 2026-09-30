@@ -2,18 +2,28 @@
 
 > zokor is a backend framework for slang: routing, errors, config,
 > validation, JSON, uploads, WebSockets, tests. Read slang's
-> `llms-small.txt` first; this page assumes it. Every code block below
+> `llms-small.txt` first; this page assumes it. Every `slang` block below
 > is a whole program that compiles and runs as shown; the test suite
-> checks that. In your own project, pin the package with
-> `pkg zokor git https://github.com/dolphlabs/zokor tag v0.1.0 dir src`
-> in `slang.project` and write `import "zokor";` -- the blocks here use
-> a relative import only so they compile in place.
+> checks that.
+
+Setup: run `slangc new app`, then add the pin so `app/slang.project`
+reads:
+
+```
+name app
+version 0.1.0
+
+pkg zokor git https://github.com/dolphlabs/zokor tag v0.1.0 dir src
+```
+
+Then run `slangc get` in `app/`. Programs import the package with
+`import "zokor";`.
 
 ## A complete service
 
 ```slang
 import "http";
-import "../../src" as zokor;
+import "zokor";
 
 gc struct App {
     token: str,
@@ -82,7 +92,7 @@ to stop; `after` hooks still run either way.
 
 ```slang
 import "http";
-import "../../src" as zokor;
+import "zokor";
 
 gc struct App {
     token: str,
@@ -112,7 +122,7 @@ names itself, which means a typo, not a contract.
 ## Config: read once, check everything
 
 ```slang
-import "../../src" as zokor;
+import "zokor";
 
 let cfg = zokor.load_config();
 let name = zokor.str_or(cfg, "ZOKOR_SNIPPET_NAME", "shop");
@@ -136,7 +146,7 @@ config through `App`. (This block runs with `PORT=8080`.)
 
 ```slang
 import "http";
-import "../../src" as zokor;
+import "zokor";
 
 gc struct App {
     token: str,
@@ -167,7 +177,7 @@ println("ok");
 
 ```slang
 import "http";
-import "../../src" as zokor;
+import "zokor";
 
 gc struct App {
     token: str,

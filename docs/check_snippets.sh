@@ -1,9 +1,11 @@
 #!/bin/sh
 # Every ```slang block in docs/llms-small.txt is a whole program and must
 # compile and run as shown -- an agent copies them verbatim, so a block
-# that drifts teaches every reader the wrong thing. This script stages
-# each block two levels below the repo root (so the guide's
-# `import "../../src"` resolves) and runs it with slangc.
+# that drifts teaches every reader the wrong thing. The blocks import the
+# package as a service does, `import "zokor";`; this script stages each
+# block two levels below the repo root and points that one import at the
+# checkout (`import "../../src" as zokor;`), so it tests this tree, not a
+# fetched tag, and needs no network.
 #
 # PORT=8080 is set because the config block asserts it; harmless to the
 # others, which never read the environment.
@@ -33,6 +35,7 @@ awk -v stage="$STAGE" '
         next
     }
     /^```$/ { if (inb) { close(out); inb = 0 } next }
+    inb && $0 == "import \"zokor\";" { print "import \"../../src\" as zokor;" > out; next }
     inb { print > out }
 ' "$DOC"
 
