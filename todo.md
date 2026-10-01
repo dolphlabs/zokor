@@ -87,12 +87,15 @@ body is not one anyone can put in front of the internet.
   1.32-1.35x, `/echo` 2.57-2.61x, `/` unchanged (the control). p99 did not
   move: it is set by slang's scheduler wakeup stalls (slang next-steps,
   "Tail latency"), which the same runs show on `/` too.
-- [ ] **`make check` hangs in `test_drain_stops_at_deadline`.** Found
+- [x] **`make check` hangs in `test_drain_stops_at_deadline`.** Found
   2026-09-29, on `dev` as it stands (not introduced by anything since).
   Both drain tests hang even run alone (`slangc test src --run drain`):
   their `wait_idle()` loops until `proc.active_tasks()` is 0, which under
   the test runner apparently never happens. Every other test passes. Until
   this is fixed `make check` cannot go green, so CI cannot either.
+  Fixed 2026-10-01: `slangc test` runs each test in a spawned task, which
+  `active_tasks()` counts, so the count never reached 0. The tests now
+  drain to the count they started with (`drain_to`).
 - [ ] **[slang] `builder.new_bytes()` costs 5 allocations and 1.3 KB** before
   anything is written (its 512-byte chunk is built with `strings.repeat` and
   `to_bytes`), and every `write_str` copies through `to_bytes`. Every
@@ -220,10 +223,13 @@ now and tested with the test kit.
 - [ ] **Rate limiter**: token bucket, per key (address, token, tenant),
   sharded so it does not serialise on one mutex, time injected so it is
   testable, `429` with `Retry-After` and `RateLimit-*` headers. Was in the
-  v0.1 scope.
+  v0.1 scope. Started: `RateLimiter`/`rate_limit` (sliding window, per
+  key, time injected via `take_at`, `429` + `Retry-After` through the
+  registry). Still owed: sharding, `RateLimit-*` headers.
 - [ ] **Cookies**: parse, set with every attribute, and signed cookies with a
   rotating key.
-- [ ] **Auth helpers**: Bearer extraction (exists), Basic, API keys with
+- [ ] **Auth helpers**: Bearer extraction (exists), opaque bearer
+  tokens (`TokenStore`, exists, in memory), Basic, API keys with
   constant-time comparison, and JWT HS256 sign and verify with `exp` /
   `nbf` / `aud` checks. RS256 once slang can verify it.
 - [ ] **Conditional requests**: `ETag`, `Last-Modified`, `If-None-Match`,
