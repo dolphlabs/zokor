@@ -370,32 +370,26 @@ fn slow_task(ms: int) {
     time.sleep(ms * 1000000);
 }
 
-// Waits out any task still finishing from an earlier test, so a
-// drain test's own timing reads are not skewed by unrelated leftover
-// work -- `proc.active_tasks()` counts every spawned task in the
-// process, not just the one each test below spawns for itself.
-fn wait_idle() {
-    while proc.active_tasks() > 0 {
-        time.sleep(20000000);
-    }
-}
-
+// The drain tests measure against the tasks already running when they
+// start: under `slangc test` each test is itself a spawned task, so
+// `proc.active_tasks()` is never 0 from inside one, and leftovers from
+// an earlier test are counted in the baseline rather than waited for.
 // The deadline actually bounds the wait: a task that runs far past it
 // does not make `drain` wait for it -- it returns once the deadline
 // passes regardless, which is the whole point of a bounded shutdown
 // drain over the unbounded wait it replaced.
 fn test_drain_stops_at_deadline() {
-    wait_idle();
+    let base = proc.active_tasks();
     spawn slow_task(500);
     let t0 = time.mono();
-    drain(time.mono() + 100000000);
+    drain_to(time.mono() + 100000000, base);
     let dt = time.mono() - t0;
     if dt > 400000000 {
         panic("drain did not stop at its deadline, took " + to_str(dt));
     }
     // Let the background task finish before returning, so it does not
     // leak into whatever test runs next.
-    wait_idle();
+    drain_to(time.mono() + 2000000000, base);
     println("drain_stops_at_deadline ok");
 }
 
@@ -403,10 +397,10 @@ fn test_drain_stops_at_deadline() {
 // drain returns as soon as it does rather than waiting the deadline
 // out regardless.
 fn test_drain_returns_early_when_idle() {
-    wait_idle();
+    let base = proc.active_tasks();
     spawn slow_task(50);
     let t0 = time.mono();
-    drain(time.mono() + 2000000000);
+    drain_to(time.mono() + 2000000000, base);
     let dt = time.mono() - t0;
     if dt > 500000000 {
         panic("drain waited for its full deadline instead of returning " +

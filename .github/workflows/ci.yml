@@ -1,0 +1,70 @@
+# CI: zokor's suite, both examples, every program in the agent guide, and
+# the API reference's freshness, all against slangc built from slang `dev`.
+#
+# The guide (docs/llms-small.txt) is what an agent copies verbatim, so a
+# block in it that no longer compiles teaches every reader the wrong
+# thing; docs/check_snippets.sh extracts each ```slang block and builds
+# and runs it against this checkout. README blocks are fragments of a
+# service (no imports, no main), not programs, so they are not extracted.
+#
+# slang `dev`, not a release: zokor tracks the compiler it is developed
+# against, and a break here is something to report upstream early.
+
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out slang (dev)
+        uses: actions/checkout@v4
+        with:
+          repository: dolphlabs/slang
+          ref: dev
+          path: .slang
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libssl-dev libsqlite3-dev \
+            zlib1g-dev git curl
+
+      # GCC 14 makes incompatible-pointer-types an error and slang's C
+      # does not build clean under it yet; demote it so a newer runner
+      # image does not turn into a red build for a reason that is not ours.
+      - name: Build slangc
+        run: |
+          make -C .slang slangc CC="cc -Wno-error=incompatible-pointer-types"
+          echo "SLANGC=$GITHUB_WORKSPACE/.slang/slangc" >> "$GITHUB_ENV"
+          .slang/slangc --version || true
+          git -C .slang log -1 --format='slang dev at %h %s'
+
+      - name: Tests
+        timeout-minutes: 10
+        run: make test SLANGC="$SLANGC"
+
+      - name: Examples
+        timeout-minutes: 5
+        run: |
+          make example SLANGC="$SLANGC"
+          make example-chat SLANGC="$SLANGC"
+
+      - name: Guide programs compile and run
+        timeout-minutes: 10
+        run: make snippets SLANGC="$SLANGC"
+
+      - name: docs/api.txt is up to date
+        run: make api-check

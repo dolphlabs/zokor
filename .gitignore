@@ -2,3 +2,4 @@ main.gen.c
 bin/
 *.o
 main
+.snip_check/

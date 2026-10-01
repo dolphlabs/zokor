@@ -1,10 +1,12 @@
 # zokor in one page
 
 > zokor is a backend framework for slang: routing, errors, config,
-> validation, JSON, uploads, WebSockets, tests. Read slang's
-> `llms-small.txt` first; this page assumes it. Every `slang` block below
-> is a whole program that compiles and runs as shown; the test suite
-> checks that.
+> validation, JSON, uploads, rate limiting, bearer tokens, WebSockets,
+> tests. Read slang's `llms-small.txt` first; this page assumes it. Every
+> `slang` block below is a whole program that compiles and runs as shown;
+> CI checks that. Every signature, one line each: `docs/api.txt` (or
+> `slangc doc zokor` inside a project). Look things up there; don't read
+> zokor's source.
 
 Setup: run `slangc new app`, then add the pin so `app/slang.project`
 reads:
@@ -17,7 +19,8 @@ pkg zokor git https://github.com/dolphlabs/zokor tag v0.1.0 dir src
 ```
 
 Then run `slangc get` in `app/`. Programs import the package with
-`import "zokor";`.
+`import "zokor";`. (`rate_limit` and `TokenStore` are newer than v0.1.0:
+pin the first tag that has them.)
 
 ## A complete service
 
@@ -88,7 +91,7 @@ handler that needs something takes it through `Ctx` (`c.state`,
 `c.local`). A `before` returns `none` to continue or `some(response)`
 to stop; `after` hooks still run either way.
 
-## Errors: one envelope, named codes
+## Errors: one envelope, named codes, your shape
 
 ```slang
 import "http";
@@ -98,26 +101,51 @@ gc struct App {
     token: str,
 }
 
+// Exactly {"error":{"code":"..","message":".."}}; field errors are folded
+// into the message. Without set_renderer the envelope also carries
+// "status", "request_id" and "fields".
+fn render(v: zokor.ErrorView) -> http.Response {
+    let msg = v.message;
+    for f in v.fields {
+        msg = msg + "; " + f.field + ": " + f.reason;
+    }
+    return zokor.json_response(v.status, "{\"error\":{\"code\":" +
+        zokor.quote(v.code) + ",\"message\":" + zokor.quote(msg) + "}}");
+}
+
 fn boom(c: zokor.Ctx[App]) -> http.Response {
     return zokor.respond(c.errors, "teapot", c.request_id);
 }
 
-let app = App { token: "x" };
-let r = zokor.new_router(app);
+fn bad(c: zokor.Ctx[App]) -> http.Response {
+    let fields = [zokor.field("title", "is required")];
+    return zokor.respond_fields(c.errors, "validation_failed", fields, c.request_id);
+}
+
+let r = zokor.new_router(App { token: "x" });
+zokor.set_renderer(r.errors, render);
 zokor.register(r.errors, "teapot", 418, "short and stout");
 r.get("/brew", boom);
+r.post("/notes", bad);
 let resp = r.serve(zokor.request(zokor.Method.GET, "/brew").build());
 assert(zokor.resp_status(resp) == 418);
-assert(zokor.resp_error_code(resp) == "teapot");
+assert(zokor.resp_text(resp) == "{\"error\":{\"code\":\"teapot\",\"message\":\"short and stout\"}}");
+let v = r.serve(zokor.request(zokor.Method.POST, "/notes").build());
+assert(zokor.resp_json(v).path("error.message").str_or("") ==
+       "some fields are not valid; title: is required");
 let missing = r.serve(zokor.request(zokor.Method.GET, "/nope").build());
-assert(zokor.resp_status(missing) == 404);
+assert(zokor.resp_text(missing) == "{\"error\":{\"code\":\"not_found\",\"message\":\"no such resource\"}}");
 println("ok");
 ```
 
-Never hand-write a failure body: `respond`, `respond_with` (custom
-detail) and `respond_fields` (field errors) render the one envelope.
-Register every code you return; an unregistered code answers 500 and
-names itself, which means a typo, not a contract.
+Never hand-write a failure body: `respond`, `respond_with(reg, code,
+detail, id)` (detail replaces the message) and `respond_fields` render
+the one envelope, also for zokor's own 404/405/413/429. Built-in codes
+include `bad_request` 400, `unauthorized` 401, `invalid_credentials` 401,
+`forbidden` 403, `not_found` 404, `conflict` 409, `payload_too_large` 413,
+`unsupported_media_type` 415, `validation_failed` 422, `rate_limited`
+429, `internal` 500. Register every other code you return; an
+unregistered one answers 500 and names itself.
 
 ## Config: read once, check everything
 
@@ -162,16 +190,252 @@ fn search(c: zokor.Ctx[App]) -> http.Response {
     guard let q = r else let resp = err_of(r) {
         return resp;
     }
-    return zokor.ok_json("{\"q\":\"" + q.q + "\"}");
+    return zokor.ok_json(zokor.jobj().set_str("q", q.q).set_int("page", q.page).render());
 }
 
-let app = App { token: "x" };
-let r = zokor.new_router(app);
+let r = zokor.new_router(App { token: "x" });
 r.get("/search", search);
 let resp = r.serve(zokor.request(zokor.Method.GET, "/search?q=slang&page=2").build());
-assert(zokor.resp_status(resp) == 200);
+assert(zokor.resp_json(resp).get("page").int_or(0) == 2);
 println("ok");
 ```
+
+One value: `c.query("q")`, `c.query_int("page", 1)`, `c.param("id")`,
+`c.param_int("id", 0)`.
+
+## Headers and rate limiting
+
+```slang
+import "http";
+import "zokor";
+
+gc struct App {
+    limiter: zokor.RateLimiter,
+}
+
+// Per client: the X-Client-Id header; "" counts as "anonymous".
+fn limit(c: zokor.Ctx[App]) -> opt[http.Response] {
+    return zokor.rate_limit(c, c.state.limiter, c.header("x-client-id"));
+}
+
+fn ping(c: zokor.Ctx[App]) -> http.Response {
+    let resp = zokor.ok_json("{\"pong\":true}");
+    return zokor.with_header(resp, "x-client", c.header("X-Client-Id"));
+}
+
+fn get_as(r: zokor.Router[App], client: str) -> http.Response {
+    return r.serve(zokor.request(zokor.Method.GET, "/ping")
+        .header("X-Client-Id", client).build());
+}
+
+let r = zokor.new_router(App { limiter: zokor.new_rate_limiter(5, 1000000000) });
+r.before(limit);
+r.get("/ping", ping);
+for i in 0..5 {
+    assert(zokor.resp_status(get_as(r, "a")) == 200);
+}
+let denied = get_as(r, "a");
+assert(zokor.resp_status(denied) == 429);
+assert(zokor.resp_error_code(denied) == "rate_limited");
+assert(zokor.resp_header(denied, "retry-after") == "1");
+assert(zokor.resp_header(get_as(r, "b"), "x-client") == "b");
+println("ok");
+```
+
+`new_rate_limiter(limit, window_ns)`: at most `limit` requests per key in
+any rolling window; refused requests aren't counted; `Retry-After` is
+whole seconds, at least 1, and the body is your envelope. Header names
+are case-insensitive. Other headers: `zokor.no_store(resp)`,
+`zokor.cache_for(resp, secs)`, `c.content_type()`, `c.bearer()`.
+
+## Login, bearer tokens, logout
+
+```slang
+import "http";
+import "zokor";
+
+gc struct App {
+    tokens: zokor.TokenStore,
+}
+
+gc struct Login {
+    username: str,
+    password: str,
+}
+
+fn login(c: zokor.Ctx[App]) -> http.Response {
+    let r: result[Login, http.Response] = zokor.dto(c);
+    guard let body = r else let resp = err_of(r) {
+        return resp;
+    }
+    if body.password != "pw" {
+        return zokor.respond(c.errors, "invalid_credentials", c.request_id);
+    }
+    let t = c.state.tokens.issue(body.username);
+    guard let tok = t else {
+        return zokor.respond(c.errors, "internal", c.request_id);
+    }
+    return zokor.ok_json(zokor.jobj().set_str("token", tok).render());
+}
+
+fn require_user(c: zokor.Ctx[App]) -> opt[http.Response] {
+    guard let user = zokor.bearer_subject(c, c.state.tokens) else {
+        return some(zokor.respond(c.errors, "unauthorized", c.request_id));
+    }
+    c.set_local("user", user);
+    return none;
+}
+
+fn me(c: zokor.Ctx[App]) -> http.Response {
+    return zokor.ok_json(zokor.jobj().set_str("username", c.local("user")).render());
+}
+
+fn logout(c: zokor.Ctx[App]) -> http.Response {
+    c.state.tokens.revoke(c.bearer());
+    return zokor.no_content();
+}
+
+let r = zokor.new_router(App { tokens: zokor.new_token_store(0) });
+r.post("/login", login);
+let authed = r.group("/");
+authed.before(require_user);
+authed.get("/me", me);
+authed.post("/logout", logout);
+
+let lr = r.serve(zokor.request(zokor.Method.POST, "/login")
+    .json_body("{\"username\":\"ada\",\"password\":\"pw\"}").build());
+let tok = zokor.resp_json(lr).get("token").str_or("");
+assert(len(tok) == 64);
+let mr = r.serve(zokor.request(zokor.Method.GET, "/me").bearer(tok).build());
+assert(zokor.resp_json(mr).get("username").str_or("") == "ada");
+r.serve(zokor.request(zokor.Method.POST, "/logout").bearer(tok).build());
+let after = r.serve(zokor.request(zokor.Method.GET, "/me").bearer(tok).build());
+assert(zokor.resp_status(after) == 401);
+println("ok");
+```
+
+Tokens are 256 random bits as 64 hex chars, looked up server-side.
+`new_token_store(ttl_ns)` (0 = until revoked); `issue` returns
+`result[str, str]`; `lookup(tok) -> opt[str]`; `revoke(tok) -> bool`;
+`revoke_subject(user) -> int`. The store is mutex-guarded.
+
+## Uploads: limits, types, safe names
+
+```slang
+import "http";
+import "zokor";
+
+gc struct App {
+    names: [str],
+}
+
+fn upload(c: zokor.Ctx[App]) -> http.Response {
+    let rules = zokor.with_max_file_bytes(zokor.uploads_allowing(["text/plain"]), 1024);
+    let r = c.upload(rules);
+    guard let form = r else let e = err_of(r) {
+        return zokor.respond_with(c.errors, e.code, e.detail, c.request_id);
+    }
+    guard let f = zokor.file(form, "file") else {
+        return zokor.respond_fields(c.errors, "validation_failed",
+            [zokor.field("file", "is required")], c.request_id);
+    }
+    push(c.state.names, f.filename);
+    return zokor.created(zokor.jobj().set_str("name", f.filename)
+        .set_int("size", len(f.data)).render(), "/files/" + f.filename);
+}
+
+fn send(r: zokor.Router[App], name: str, content: str) -> http.Response {
+    let fields: map[str]str = {"note": "hi"};
+    let part = zokor.upload_part("file", name, "text/plain", content);
+    return r.serve(zokor.request(zokor.Method.POST, "/files")
+        .multipart("XyZ", fields, [part]).build());
+}
+
+let r = zokor.new_router(App { names: [] });
+r.post("/files", upload);
+let ok = send(r, "../../etc/passwd", "hello");
+assert(zokor.resp_status(ok) == 201);
+assert(zokor.resp_json(ok).get("name").str_or("") == "passwd");
+let big = "";
+for i in 0..2000 {
+    big = big + "x";
+}
+assert(zokor.resp_error_code(send(r, "a.txt", big)) == "payload_too_large");
+println("ok");
+```
+
+Failures come back as `FormError { code, detail }` with registered codes
+(`payload_too_large` 413, `unsupported_media_type` 415,
+`method_not_allowed`). `f.filename` is one sanitised path segment, safe
+to join to a directory; `f.raw_filename` is what the client sent. Other
+rules: `with_max_total_bytes`, `with_max_files`, `with_extensions`,
+`default_uploads()`; form fields: `zokor.value(form, "note")`. A real
+server refuses bodies over `ServerConfig.max_request_bytes` (default
+16 KiB) with 413 before your handler runs: raise it (next sections).
+
+## Shared state and a background worker
+
+```slang
+import "http";
+import "time";
+import "zokor";
+
+gc struct Job {
+    id: int,
+    status: str,
+}
+
+gc struct App {
+    jobs: map[int]Job,
+    next_id: int,
+    lock: mutex,
+    queue: chan[int],
+}
+
+fn submit(c: zokor.Ctx[App]) -> http.Response {
+    let s = c.state;
+    mutex_lock(s.lock);
+    s.next_id += 1;
+    let id = s.next_id;
+    s.jobs[id] = Job { id: id, status: "queued" };
+    mutex_unlock(s.lock);
+    chan_send(s.queue, id);
+    return zokor.accepted(zokor.jobj().set_int("id", id).render());
+}
+
+fn worker(s: App) -> int {
+    let done = 0;
+    while true {
+        let next = chan_recv(s.queue);
+        guard let id = next else {
+            return done;
+        }
+        time.sleep(1000000);
+        mutex_lock(s.lock);
+        let j = s.jobs[id];
+        j.status = "done";
+        mutex_unlock(s.lock);
+        done += 1;
+    }
+    return done;
+}
+
+let app = App { jobs: {}, next_id: 0, lock: make_mutex(), queue: make_chan(64) };
+let w = spawn worker(app);
+let r = zokor.new_router(app);
+r.post("/jobs", submit);
+assert(zokor.resp_status(r.serve(zokor.request(zokor.Method.POST, "/jobs").build())) == 202);
+chan_close(app.queue);
+assert((join_wait(w) ?? 0) == 1);
+assert(app.jobs[1].status == "done");
+println("ok");
+```
+
+Every request runs on its own task, so any state a handler writes needs
+a `mutex` field (`make_mutex()`); never `return` between `mutex_lock` and
+`mutex_unlock`. A `gc struct` is shared by reference, so `App` passed to
+`spawn` is the same object the router holds. A real worker loops
+forever; this one stops when the channel closes.
 
 ## Serving for real
 
@@ -180,39 +444,62 @@ import "http";
 import "zokor";
 
 gc struct App {
-    token: str,
+    name: str,
 }
 
-fn home(c: zokor.Ctx[App]) -> http.Response {
-    return zokor.text(200, "hi");
+fn health(c: zokor.Ctx[App]) -> http.Response {
+    return zokor.ok_json("{\"ok\":true}");
 }
 
-let app = App { token: "x" };
-let r = zokor.new_router(app);
-r.get("/", home);
-spawn zokor.listen_and_serve(r, 18341);
-println("up");
+let cfg = zokor.load_config();
+let port = zokor.require_port(cfg, "PORT");
+let ready = zokor.check(cfg);
+guard let _ok = ready else let e = err_of(ready) {
+    println("config: " + e);
+    exit(1);
+}
+let sc = zokor.server_config_from(cfg);
+sc.max_request_bytes = 1048576;
+let r = zokor.new_router(App { name: "svc" });
+r.get("/health", health);
+println("listening on " + to_str(port));
+// Blocks until SIGTERM/SIGINT, then stops accepting and drains
+// in-flight requests (up to sc.shutdown_timeout) before returning.
+let res = zokor.listen_and_serve_with(r, port, sc);
+guard let _done = res else let e = err_of(res) {
+    println(e);
+    exit(1);
+}
+println("drained");
 ```
 
-`spawn` it; it runs per connection until `SIGTERM`, then drains.
-`listen_and_serve_with(r, port, sc)` takes timeouts and limits from
-`zokor.server_config_from(cfg)`.
+Call it from the main program, not `spawn`. It binds every interface
+(0.0.0.0); there is no host option. `ServerConfig` fields (int
+nanoseconds / bytes): `idle_timeout` 60s, `header_timeout` 5s,
+`body_timeout` 30s, `write_timeout` 10s, `max_request_bytes` 16384 (413
+or 431 above it), `max_requests_per_conn` 100000, `shutdown_timeout` 30s.
+`server_config_from(cfg)` reads `IDLE_TIMEOUT`, `READ_HEADER_TIMEOUT`,
+`READ_BODY_TIMEOUT`, `WRITE_TIMEOUT`, `SHUTDOWN_TIMEOUT` ("30s"),
+`MAX_REQUEST_BYTES`, `MAX_REQUESTS_PER_CONN`. `listen_and_serve(r, port)`
+uses the defaults. A start script: `slangc main.sl -o app && exec ./app`
+(builds take ~10 s); to test by hand, run `./app > app.log 2>&1 &`,
+poll `/health`, then `kill $!`.
 
 ## Rules: the one way
 
-- Errors: `respond*` with a registered code, never hand JSON. Field
-  problems go through `respond_fields`; a failure names its field.
+- Errors: `respond*` with a registered code, never hand JSON; a custom
+  shape is `set_renderer`, once. A failure names its field.
 - Config: `load_config` once at startup, `require_*` per variable,
   `check` before serving. No `getenv` in handlers or helpers.
 - Validation: decode with `dto`/`query_as` (types are checked),
   check values with `checker`/`note`, report all problems at once
   with one `failed()` branch.
 - Routing: `new_router(state)`, groups for prefixes, `before` for
-  cross-cutting auth, `guarded` for one route. Middleware applies to
-  routes registered after it.
+  cross-cutting auth and limits, `guarded` for one route. Middleware
+  applies to routes registered after it.
 - Tests: build requests with `zokor.request(..)`, serve with
-  `r.serve(..)`, read with `resp_status`/`resp_json`/`resp_error_code`.
-  No sockets in tests.
+  `r.serve(..)`, read with `resp_status`/`resp_json`/`resp_error_code`/
+  `resp_header`/`resp_text`. No sockets in tests.
 
 ## Mistakes that cost a retry
 
@@ -223,7 +510,26 @@ println("up");
 - Returning a code you never registered: the client gets a 500 that
   names it. Register first, in the same file as the router.
 - `r.get(..)` returns an `int`, not the router: don't chain it.
-- Building response JSON by hand with `+`: quote with `zokor.jobj()`
-  instead (`set_str`, `set_int`, `set_opt_str`, `render`).
+- Building response JSON by hand with `+`: use `zokor.jobj()` (`set_str`,
+  `set_int`, `set_bool`, `set_opt_str`, `set`, `render`), `zokor.jarr()`
+  (`add`), and `zokor.quote(s)` for one string.
 - A `before` that returns a bare response instead of `some(...)`,
   or falls through instead of returning `none`.
+
+slang itself (each one cost benchmark agents several turns):
+
+- `to_int(s)` is `result[int, str]`, not `opt[int]`: `to_int(s) ?? 0`, or
+  `guard let n = to_int(s) else { return none; }` to make an opt.
+- `x ?? d` needs an `opt`/`result` on the left and `d` of the inner type;
+  `x == none` doesn't compile: use `guard let`/`if let`/`??`.
+- A top-level `let` is invisible inside functions: put it in `App` or
+  return it from a function.
+- No trailing commas in struct literals, lists, maps or calls.
+- `result` is reserved: not usable as a field or variable name.
+- Every `.sl` in a directory is one package: a scratch `test.sl` next to
+  `main.sl` redefines things. Experiment in a fresh directory.
+- `time.mono()` is a `duration`: `time.mono() as int` for arithmetic.
+- `60 * 1000000000` silently wraps (a literal times a literal is
+  32-bit): write `60000000000`. Durations here are int nanoseconds.
+- The package cache (`~/.cache/slang/pkg/zokor/sha256:<64 hex>/src`) is
+  easy to mistype and expensive to read: use `docs/api.txt`.
