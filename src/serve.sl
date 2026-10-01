@@ -421,7 +421,15 @@ fn acceptor_task[S](r: Router[S], port: int, sc: ServerConfig) {
 // no "wake me when idle, or after N nanoseconds, whichever first"
 // primitive to park on instead.
 fn drain(deadline: duration) {
-    while proc.active_tasks() > 0 && time.mono() < deadline {
+    drain_to(deadline, 0);
+}
+
+// The same wait, down to `others` tasks instead of none. A caller that
+// is itself a spawned task -- every test under `slangc test`, which
+// runs each test in its own task -- counts in `proc.active_tasks()`,
+// so waiting for zero from there would wait for itself forever.
+fn drain_to(deadline: duration, others: int) {
+    while proc.active_tasks() > others && time.mono() < deadline {
         time.sleep(20000000);
     }
 }
