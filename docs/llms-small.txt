@@ -4,9 +4,11 @@
 > validation, JSON, uploads, rate limiting, bearer tokens, WebSockets,
 > tests. Read slang's `llms-small.txt` first; this page assumes it. Every
 > `slang` block below is a whole program that compiles and runs as shown;
-> CI checks that. Every signature, one line each: `docs/api.txt` (or
-> `slangc doc zokor` inside a project). Look things up there; don't read
-> zokor's source.
+> CI checks that. Every signature, one line each:
+> https://raw.githubusercontent.com/dolphlabs/zokor/main/docs/api.txt
+> (inside a project: `slangc doc zokor.<name>`; newer slangc also
+> searches, `slangc doc zokor header`). Look things up there; don't
+> read zokor's source.
 
 Setup: run `slangc new app`, then add the pin so `app/slang.project`
 reads:
@@ -15,12 +17,11 @@ reads:
 name app
 version 0.1.0
 
-pkg zokor git https://github.com/dolphlabs/zokor tag v0.1.0 dir src
+pkg zokor git https://github.com/dolphlabs/zokor tag v0.2.0 dir src
 ```
 
 Then run `slangc get` in `app/`. Programs import the package with
-`import "zokor";`. (`rate_limit` and `TokenStore` are newer than v0.1.0:
-pin the first tag that has them.)
+`import "zokor";`.
 
 ## A complete service
 
@@ -532,4 +533,5 @@ slang itself (each one cost benchmark agents several turns):
 - `60 * 1000000000` silently wraps (a literal times a literal is
   32-bit): write `60000000000`. Durations here are int nanoseconds.
 - The package cache (`~/.cache/slang/pkg/zokor/sha256:<64 hex>/src`) is
-  easy to mistype and expensive to read: use `docs/api.txt`.
+  easy to mistype and expensive to read: use api.txt. (Newer `slangc get`
+  prints a typeable `.../pkg/zokor/v0.2.0/src`.)

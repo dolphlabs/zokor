@@ -617,7 +617,7 @@ lines), add the pin to `slang.project`. The whole file:
 name app
 version 0.1.0
 
-pkg zokor git https://github.com/dolphlabs/zokor tag v0.1.0 dir src
+pkg zokor git https://github.com/dolphlabs/zokor tag v0.2.0 dir src
 ```
 
 Then fetch it, and import it as `import "zokor";`:
