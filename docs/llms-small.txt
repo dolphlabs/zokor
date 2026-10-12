@@ -241,6 +241,18 @@ Never logged: query strings, bodies, headers. `zokor.no_logger()` turns
 it off. A full queue drops records and counts them; a request never waits
 on the log.
 
+## Security headers
+
+On by default: CSP `default-src 'none'; frame-ancestors 'none'`, HSTS (one
+year, includeSubDomains), `nosniff`, `X-Frame-Options: DENY`,
+`Referrer-Policy: no-referrer`, on every response including static routes and
+errors. A handler's own `with_header` value wins.
+`r.security_headers(zokor.security_from(cfg))` reads `SECURITY_HEADERS`,
+`CONTENT_SECURITY_POLICY`, `HSTS_MAX_AGE`, `HSTS_INCLUDE_SUBDOMAINS`,
+`HSTS_PRELOAD`, `FRAME_OPTIONS`, `REFERRER_POLICY`,
+`CROSS_ORIGIN_OPENER_POLICY`, `CROSS_ORIGIN_RESOURCE_POLICY`;
+`zokor.no_security_headers()` turns them off.
+
 ## CORS
 
 ```slang
