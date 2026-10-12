@@ -317,6 +317,49 @@ in `ServerConfig.logger`, and drain `ch` from your own task.
 `new_log_format(pid)` gives you zokor's `json` and `pretty` formats to reuse.
 `no_logger()` turns logging off.
 
+## CORS
+
+Off by default. One call turns it on:
+
+```slang
+r.cors(zokor.cors_from(cfg));   // CORS_ORIGINS=https://app.example.com,https://*.example.org
+```
+
+or `r.cors(zokor.cors_policy(["https://app.example.com"]))` from code.
+
+| Setting | Meaning | Default |
+|---|---|---|
+| `CORS_ORIGINS` | exact origins, `https://*.example.com` for subdomains, or `*` alone | none (off) |
+| `CORS_METHODS` | allowed methods | `GET, HEAD, POST, PUT, PATCH, DELETE` |
+| `CORS_HEADERS` | request headers a page may send | `Content-Type, Authorization, X-Request-Id` |
+| `CORS_EXPOSE` | response headers a page may read | `X-Request-Id` |
+| `CORS_CREDENTIALS` | allow cookies and `Authorization` | `false` |
+| `CORS_MAX_AGE` | seconds a browser may cache a preflight | `600` |
+
+The router applies it, so it isn't one more `before`:
+- **Preflights.** A preflight to a path that exists gets a `204` with the
+  allowed methods and headers before routing. Neither an auth hook nor a
+  route's own `OPTIONS` handler can turn it away, and browsers send
+  preflights without credentials.
+- **Every response.** Any answer to an allowed origin carries its headers:
+  the 404, the 422, a `before`'s 401 and the 500 after a panic. Without
+  that, the page sees a CORS error instead of the real one.
+- **`Vary: Origin`.** It's sent whenever the answer depends on the origin,
+  so a shared cache never hands one origin's answer to another.
+- **Other origins.** An origin that isn't allowed gets no CORS headers, and
+  the browser withholds the response from the page.
+
+A policy is checked before use, and every problem names the fix:
+- an origin with a path or trailing slash, which an `Origin` header never has
+- a missing scheme
+- upper case
+- a wildcard anywhere but a leading `*.`
+- `*` together with credentials, which browsers refuse
+
+`https://*.example.com` matches `api.example.com` and `a.b.example.com`,
+but never `example.com` or `evilexample.com`. CORS protects users'
+browsers, not your server: it is no substitute for authentication.
+
 ## Health and readiness
 
 ```slang
@@ -789,7 +832,7 @@ The full list, ordered and checkable, is [todo.md](todo.md). In short:
   machine into a running server; timeouts, body limits, graceful
   shutdown, panic recovery and a connection cap are done (see above).
   Still owed: TLS.
-- **Middleware**, none of it blocked: CORS, security headers,
+- **Middleware**, none of it blocked: security headers,
   cookies, JWT and basic auth, ETag/304, compression, static
   files. (A rate limiter and a
   bearer-token store exist; `RateLimit-*` headers and sharding do not.)

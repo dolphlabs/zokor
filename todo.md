@@ -63,8 +63,11 @@ library, made and merged there first.
 
 ## 2. Browser-facing APIs
 
-- [ ] **CORS**: allowed origins, methods, headers, credentials, max-age,
-  correct `Vary: Origin`, and a real preflight answer.
+- [x] **CORS**: allowed origins, methods, headers, credentials, max-age,
+  correct `Vary: Origin`, and a real preflight answer. `r.cors(policy)` /
+  `cors_from(cfg)` (`CORS_*`); applied by the router, so preflights skip
+  `before`s and every answer, errors and the panic 500 included, carries
+  the headers. Static routes stay static for requests without an Origin.
 - [ ] **Security headers**: HSTS, `X-Content-Type-Options`, frame options,
   referrer policy, a configurable CSP; on by default, off by choice.
 - [ ] **Cookies**: parse, set with every attribute (`Secure`,

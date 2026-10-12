@@ -385,6 +385,17 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
                 if len(rid) > 0 {
                     resp500 = http.with_header(resp500, "x-request-id", rid);
                 }
+                if r.cors.on {
+                    // Built here, not by the router, so CORS is applied
+                    // here: without it the page sees a CORS error, not
+                    // the 500.
+                    let origins = header_list(wf.headers, "origin");
+                    let origin = "";
+                    if len(origins) > 0 {
+                        origin = origins[0];
+                    }
+                    resp500 = r.cors.apply(resp500, origin);
+                }
                 let _w5 = http.write(&mut c, resp500, &mut sa,
                                      write_deadline(sc));
                 if logging {
