@@ -241,6 +241,46 @@ Never logged: query strings, bodies, headers. `zokor.no_logger()` turns
 it off. A full queue drops records and counts them; a request never waits
 on the log.
 
+## Cookies
+
+```slang
+import "http";
+import "strings";
+import "zokor";
+
+gc struct App {
+    keys: zokor.CookieKeys,
+}
+
+fn login(c: zokor.Ctx[App]) -> http.Response {
+    let resp = zokor.text(200, "hi " + c.cookie("theme"));
+    let r = zokor.signed_cookie("uid", "42", c.state.keys);
+    guard let ck = r else let e = err_of(r) {
+        return zokor.respond(c.errors, "internal", c.request_id);
+    }
+    return zokor.set_cookie(resp, ck) ?? resp;
+}
+
+let kr = zokor.cookie_keys(["0123456789abcdef0123456789abcdef"]);   // COOKIE_KEYS
+guard let keys = kr else { exit(1); }
+let r = zokor.new_router(App { keys: keys });
+r.get("/login", login);
+let resp = r.serve(zokor.get_request("/login").header("Cookie", "theme=dark").build());
+assert(zokor.resp_text(resp) == "hi dark");
+// The cookie the browser will send back verifies; a changed one does not.
+let sent = zokor.parse_cookies(zokor.resp_header(resp, "set-cookie"))["uid"];
+assert((zokor.verify_signed("uid", sent, keys) ?? "") == "42");
+assert((zokor.verify_signed("uid", "43" + strings.slice(sent, 2, len(sent)), keys) ?? "none") == "none");
+println("ok");
+```
+
+New cookies are `HttpOnly; Secure; SameSite=Lax; Path=/`; `set_cookie` returns
+`err` for anything a browser would drop or an attacker could abuse (`;` in a
+value, `SameSite=None` without `Secure`, broken `__Host-` rules). Signed
+cookies: `zokor.signed_value(c, name, keys)` is none when forged; COOKIE_KEYS
+lists 32+ byte keys, newest first (rotation keeps old cookies valid). Signed
+is not encrypted.
+
 ## Security headers
 
 On by default: CSP `default-src 'none'; frame-ancestors 'none'`, HSTS (one
