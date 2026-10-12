@@ -238,8 +238,8 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
         // already ask for, so both paths below need exactly one
         // check, not two.
         let must_close = wf.close || served >= sc.max_requests_per_conn;
-        let m = r.match_static(wf);
-        guard let resp = m else {
+        let si = r.static_index(wf);
+        if si < 0 {
             // Not a static route: the handler runs here, isolated in
             // its own task -- see `dispatch`'s own doc comment.
             let h = spawn dispatch(r, wf);
@@ -277,6 +277,9 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
         // 130-byte memcpy. The send arena stays (dynamic responses
         // size into it); shrinking the static-only case is a
         // follow-up, not this diff.
+        guard let resp = r.routes[si].static_hit else {
+            return;
+        }
         let sw = http.write_static(&mut c, resp, &mut sa, must_close,
                                    write_deadline(sc));
         guard let _n = sw else {
