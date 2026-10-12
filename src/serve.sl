@@ -156,8 +156,18 @@ fn is_body_too_large(e: str) -> bool {
 fn too_large_response(status: i32, status_text: str, code: str) -> http.Response {
     let body = "{\"error\":{\"code\":\"" + code + "\",\"message\":\"" +
                status_text + "\",\"status\":" + to_str(status) + "}}";
-    return http.text_response(status, status_text,
-                              "application/json; charset=utf-8", body);
+    return closing(http.text_response(status, status_text,
+                                      "application/json; charset=utf-8",
+                                      body));
+}
+
+// A response this connection is closed after must say so (RFC 9112
+// 9.6): a client told keep-alive may already be sending its next request
+// on it, and a POST sent there cannot safely be retried. http.write
+// writes one Connection header, from the last `connection` line, so
+// this overrides a handler's own keep-alive rather than adding a second.
+fn closing(r: http.Response) -> http.Response {
+    return http.with_header(r, "connection", "close");
 }
 
 // The dynamic path's handler call, run in its own task so a panic in
@@ -260,13 +270,16 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
                 // Closed afterward rather than trusted to keep
                 // serving more requests on whatever state the panic
                 // left behind.
-                let resp500 = respond(r.errors, "internal", "");
+                let resp500 = closing(respond(r.errors, "internal", ""));
                 let _w5 = http.write(&mut c, resp500, &mut sa,
                                      write_deadline(sc));
                 return;
             }
-            let wr = http.write(&mut c, dyn_resp, &mut sa,
-                                write_deadline(sc));
+            let out = dyn_resp;
+            if must_close {
+                out = closing(dyn_resp);
+            }
+            let wr = http.write(&mut c, out, &mut sa, write_deadline(sc));
             guard let _n = wr else {
                 return;
             }
