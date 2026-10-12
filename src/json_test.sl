@@ -190,6 +190,7 @@ fn test_ctx_json_body() {
         param1_value: "",
         route: "/x",
         request_id: "r1",
+        client_ip: "",
         locals: none,
         errors: new_registry()
     };
