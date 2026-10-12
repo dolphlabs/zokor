@@ -5,13 +5,13 @@ SLANGC ?= slangc
 # Every package dir is listed explicitly: a new package without its own
 # line here is a package with no tests, and that fails review.
 test:
-	$(SLANGC) test src
-	$(SLANGC) test src/internal/path
-	$(SLANGC) test src/internal/envfile
-	$(SLANGC) test src/internal/validate
-	$(SLANGC) test src/internal/multipart
-	$(SLANGC) test src/internal/ws
-	$(SLANGC) test src/internal/sio
+	$(SLANGC) test zokor
+	$(SLANGC) test zokor/internal/path
+	$(SLANGC) test zokor/internal/envfile
+	$(SLANGC) test zokor/internal/validate
+	$(SLANGC) test zokor/internal/multipart
+	$(SLANGC) test zokor/internal/ws
+	$(SLANGC) test zokor/internal/sio
 
 example:
 	$(SLANGC) examples/hello/main.sl --run
@@ -25,7 +25,7 @@ example-chat:
 snippets:
 	SLANGC="$(SLANGC)" docs/check_snippets.sh
 
-# docs/api.txt is generated from the doc comments in src/*.sl; api-check
+# docs/api.txt is generated from the doc comments in zokor/*.sl; api-check
 # fails when someone changed a public symbol and did not regenerate it.
 api:
 	docs/gen_api.sh

@@ -17,8 +17,10 @@ reads:
 name app
 version 0.1.0
 
-pkg zokor git https://github.com/dolphlabs/zokor tag v0.2.0 dir src
+pkg zokor git https://github.com/dolphlabs/zokor tag v0.2.0 dir zokor
 ```
+
+(Until `v0.2.0` is tagged: `tag v0.1.0 dir src`.)
 
 Then run `slangc get` in `app/`. Programs import the package with
 `import "zokor";`.
@@ -571,6 +573,6 @@ slang itself (each one cost benchmark agents several turns):
 - `time.mono()` is a `duration`: `time.mono() as int` for arithmetic.
 - `60 * 1000000000` silently wraps (a literal times a literal is
   32-bit): write `60000000000`. Durations here are int nanoseconds.
-- The package cache (`~/.cache/slang/pkg/zokor/sha256:<64 hex>/src`) is
+- The package cache (`~/.cache/slang/pkg/zokor/sha256:<64 hex>/zokor`) is
   easy to mistype and expensive to read: use api.txt. (Newer `slangc get`
-  prints a typeable `.../pkg/zokor/v0.2.0/src`.)
+  prints a typeable `.../pkg/zokor/v0.2.0/zokor`.)

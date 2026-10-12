@@ -8,7 +8,7 @@
 import "http";
 import "httpc";
 import "time";
-import "../../src" as zokor;
+import "../../zokor" as zokor;
 
 // ---------------------------------------------------------------- //
 // the service                                                        //
