@@ -241,6 +241,14 @@ Never logged: query strings, bodies, headers. `zokor.no_logger()` turns
 it off. A full queue drops records and counts them; a request never waits
 on the log.
 
+## Operator injection (MongoDB)
+
+`r.mongo_sanitize(zokor.SanitizeMode.REJECT)` (or `zokor.sanitize_from(cfg)`,
+`MONGO_SANITIZE=off|reject|strip`): JSON body keys at any depth and decoded
+query names that start with `$` or contain `.` get `400 bad_request` before
+any `before` or handler (`STRIP` removes them instead). Values are untouched.
+Off by default. For SQL, use parameterised queries; there is no SQL filter.
+
 ## Cookies
 
 ```slang

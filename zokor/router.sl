@@ -163,6 +163,8 @@ pub gc struct Router[S] {
     cors: Cors,
     // On by default; see security.sl.
     security: Security,
+    // Off until `r.mongo_sanitize(mode)`; see sanitize.sl.
+    sanitize: SanitizeMode,
 }
 
 // An application builds its router from its state alone; everything else
@@ -184,7 +186,8 @@ pub fn new_router[S](state: S) -> Router[S] {
         auto_head: true,
         ready: Readiness[S] { live_path: "", ready_path: "", checks: [], timeout: default_ready_timeout(), logger: no_logger() },
         cors: cors_off(),
-        security: security_compile(default_security_headers())
+        security: security_compile(default_security_headers()),
+        sanitize: SanitizeMode.OFF
     };
 }
 
@@ -471,6 +474,13 @@ impl Router[S] {
             }
         }
         return len(self.security.lines);
+    }
+
+    // Turns the operator-injection guard on (REJECT, STRIP) or off; see
+    // sanitize.sl.
+    pub fn mongo_sanitize(self: Router[S], mode: SanitizeMode) -> int {
+        self.sanitize = mode;
+        return 0;
     }
 
     // Turns CORS on with `p` (see cors.sl). -1, leaving CORS off, when the
@@ -1057,6 +1067,15 @@ impl Router[S] {
     // `after`s still run, so a logging or header hook cannot be skipped
     // by a short circuit.
     fn run(self: Router[S], c: Ctx[S], r: Route[S]) -> http.Response {
+        // Ahead of every hook, so nothing downstream sees an unchecked body.
+        if self.sanitize != SanitizeMode.OFF {
+            let why = sanitize_request(c.req, self.sanitize);
+            if len(why) > 0 {
+                return self.finish_route(c, r, respond_with(self.errors, "bad_request",
+                    why + " is not allowed: a key may not start with $ or contain a dot",
+                    c.request_id));
+            }
+        }
         let i = 0;
         while i < len(self.befores) {
             let b = self.befores[i];
