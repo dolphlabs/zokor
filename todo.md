@@ -117,6 +117,14 @@ body is not one anyone can put in front of the internet.
   clock read (four reads per request -> two). Unreproduced: one c=2000 run on Linux collapsed to
   356 rps with a 9 s p99; six runs after it did not.
 
+- [x] **A connection the server closes says so.** The response before a
+  server-initiated close (`max_requests_per_conn`, a client's own
+  `Connection: close`, 413/431, the 500 after a panic) carried
+  `Connection: keep-alive`, so a keep-alive client could send its next
+  request -- a POST included -- on a connection already closing. Found on
+  a quiet VPS: latgen logged one error per connection at exactly the
+  100,000th request. Each such response now says `Connection: close`.
+
 ## 1. Language prerequisites
 
 - [x] `new_router(state)` and `new_group(router, prefix)` constructors,
