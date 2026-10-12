@@ -317,6 +317,47 @@ in `ServerConfig.logger`, and drain `ch` from your own task.
 `new_log_format(pid)` gives you zokor's `json` and `pretty` formats to reuse.
 `no_logger()` turns logging off.
 
+## Cookies
+
+```slang
+let theme = c.cookie("theme");                    // "" when not sent
+
+let ck = zokor.new_cookie("theme", "dark");        // HttpOnly, Secure, SameSite=Lax, Path=/
+ck.max_age = 86400 * 30;
+return zokor.set_cookie(resp, ck) ?? resp;         // err names what is wrong
+```
+
+- **Safe defaults.** A new cookie is `HttpOnly`, `Secure`, `SameSite=Lax`
+  and `Path=/`, with no `Domain`, so it's host-only.
+- **Checked before it's sent.** `set_cookie` refuses:
+  - a value with a space, quote, comma, `;`, backslash or control byte,
+    which could add attributes of its own
+  - a bad name
+  - a path or domain carrying `;`
+  - `SameSite=None` without `Secure`, which browsers drop
+  - a `__Host-` or `__Secure-` cookie that breaks its prefix's rules
+  - more than 4,096 bytes
+- **Reading.** `c.cookie(name)` and `c.cookies()` skip malformed pairs the
+  way browsers do, and the first of two same-named cookies wins.
+- **Deleting.** `clear_cookie(resp, name, path, domain)` removes a cookie.
+- **No `Expires`.** `Max-Age` (seconds, `0` deletes) says the same thing
+  to every browser in use.
+
+**Signed cookies** carry an HMAC-SHA256 over their name and value, so a
+client can read them but not change them, or move one to another name:
+
+```slang
+let keys = zokor.cookie_keys_from(cfg);            // COOKIE_KEYS=newest,older
+let ck = zokor.signed_cookie("uid", "42", keys) ?? zokor.new_cookie("uid", "");
+let uid = zokor.signed_value(c, "uid", keys) ?? "";  // none when forged
+```
+
+The first key signs and every listed key verifies. To rotate, put the new
+key first and keep the old one until the cookies it signed have expired;
+nobody is logged out. Keys must be at least 32 bytes. Signatures are
+compared in constant time. Signed is not encrypted: never put a secret in
+a cookie.
+
 ## Security headers
 
 On by default, on every response: dynamic, static, errors, and the 500
