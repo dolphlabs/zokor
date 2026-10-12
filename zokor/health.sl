@@ -30,7 +30,8 @@
 // The response names each check and whether it passed, never why it
 // failed: /readyz is reachable by anyone who can reach the API, and a
 // driver's error text carries hosts and user names. The reason goes to
-// stderr instead, once per change of state rather than once per probe.
+// the server's log instead (stderr when it has none), once per change of
+// state rather than once per probe.
 //
 // A check runs in its own task, so a panic inside it fails the check
 // instead of the probe. A check that outlives the timeout keeps running;
@@ -64,6 +65,10 @@ pub gc struct Readiness[S] {
     checks: [ReadyCheck[S]],
     // Nanoseconds a probe waits for its checks before answering 503.
     timeout: int,
+    // Where a check's failures and recoveries are reported: the server's
+    // logger, set by listen_and_serve_with. With none (a router served
+    // some other way), stderr.
+    logger: Logger,
 }
 
 // 0.9s: inside Kubernetes' default 1s probe timeout, so a slow
@@ -88,7 +93,7 @@ fn ready_response[S](rd: Readiness[S], state: S) -> http.Response {
     let targets: [int] = [];
     let i = 0;
     while i < n {
-        push(targets, begin_run(rd.checks[i], state));
+        push(targets, begin_run(rd.checks[i], state, rd.logger));
         i = i + 1;
     }
     let deadline = time.mono() + rd.timeout;
@@ -98,7 +103,7 @@ fn ready_response[S](rd: Readiness[S], state: S) -> http.Response {
 
 // Starts a run of `ch` unless one is already in flight, and returns the
 // run number the caller should wait for.
-fn begin_run[S](ch: ReadyCheck[S], state: S) -> int {
+fn begin_run[S](ch: ReadyCheck[S], state: S, lg: Logger) -> int {
     mutex_lock(ch.lock);
     let start = ch.started == ch.finished;
     if start {
@@ -107,18 +112,18 @@ fn begin_run[S](ch: ReadyCheck[S], state: S) -> int {
     let target = ch.started;
     mutex_unlock(ch.lock);
     if start {
-        spawn run_check(ch, state);
+        spawn run_check(ch, state, lg);
     }
     return target;
 }
 
 // Runs the check in a task of its own so a panic is a failed check,
 // then records the outcome.
-fn run_check[S](ch: ReadyCheck[S], state: S) {
+fn run_check[S](ch: ReadyCheck[S], state: S, lg: Logger) {
     let h = spawn call_check(ch.check, state);
     let jr = join_wait(h);
     guard let r = jr else let pe = err_of(jr) {
-        record_run(ch, false, "panicked: " + pe);
+        record_run(ch, false, "panicked: " + pe, lg);
         return;
     }
     guard let _v = r else let e = err_of(r) {
@@ -126,29 +131,38 @@ fn run_check[S](ch: ReadyCheck[S], state: S) {
         if len(why) == 0 {
             why = "failed";
         }
-        record_run(ch, false, why);
+        record_run(ch, false, why, lg);
         return;
     }
-    record_run(ch, true, "");
+    record_run(ch, true, "", lg);
 }
 
 fn call_check[S](f: fn(S) -> result[int, str], state: S) -> result[int, str] {
     return f(state);
 }
 
-fn record_run[S](ch: ReadyCheck[S], passed: bool, why: str) {
+fn record_run[S](ch: ReadyCheck[S], passed: bool, why: str, lg: Logger) {
     mutex_lock(ch.lock);
     ch.finished = ch.finished + 1;
     ch.passed = passed;
     let was = ch.reported;
     ch.reported = why;
     mutex_unlock(ch.lock);
-    if why != was {
+    if why == was {
+        return;
+    }
+    if lg.enabled(LogLevel.WARN) {
         if len(why) > 0 {
-            io.eprintln("zokor: readiness check " + ch.name + " failing: " + why);
+            lg.warn("Health", "readiness check " + ch.name + " failing: " + why);
         } else {
-            io.eprintln("zokor: readiness check " + ch.name + " recovered");
+            lg.log("Health", "readiness check " + ch.name + " recovered");
         }
+        return;
+    }
+    if len(why) > 0 {
+        io.eprintln("zokor: readiness check " + ch.name + " failing: " + why);
+    } else {
+        io.eprintln("zokor: readiness check " + ch.name + " recovered");
     }
 }
 

@@ -82,6 +82,13 @@ pub gc struct Ctx[S] {
     errors: Registry,
 }
 
+// A response and the route pattern that produced it, for the request
+// log. A value struct: returned by value, never allocated.
+pub struct Served {
+    resp: http.Response,
+    route: str,
+}
+
 pub gc struct Route[S] {
     method: Method,
     pattern: str,
@@ -168,7 +175,7 @@ pub fn new_router[S](state: S) -> Router[S] {
         errors: new_registry(),
         auto_options: true,
         auto_head: true,
-        ready: Readiness[S] { live_path: "", ready_path: "", checks: [], timeout: default_ready_timeout() }
+        ready: Readiness[S] { live_path: "", ready_path: "", checks: [], timeout: default_ready_timeout(), logger: no_logger() }
     };
 }
 
@@ -682,10 +689,17 @@ impl Router[S] {
         return self.serve_frame_for(f, request_id, "");
     }
 
-    // serve_frame, with the client's address for Ctx.client_ip: what the
-    // serve loop calls.
+    // serve_frame, with the client's address for Ctx.client_ip.
     pub fn serve_frame_for(self: Router[S], f: http.WireFrame,
                            request_id: str, client_ip: str) -> http.Response {
+        return self.serve_frame_routed(f, request_id, client_ip).resp;
+    }
+
+    // What the serve loop calls: the response, and the route pattern that
+    // answered it for the request log ("" when none did). A value struct,
+    // so returning the pattern costs no allocation.
+    pub fn serve_frame_routed(self: Router[S], f: http.WireFrame,
+                              request_id: str, client_ip: str) -> Served {
         // Method without from_str: the frame path already holds the
         // method str, and only the enum comparison matters below.
         // Compare inline (GET/POST/HEAD cover the bench + almost all
@@ -702,7 +716,7 @@ impl Router[S] {
         } else if !mget {
             let parsed = Method.from_str(f.method);
             guard let m = parsed else {
-                return self.serve_id_for(http.wire_request(f), request_id, client_ip);
+                return self.serve_id_routed(http.wire_request(f), request_id, client_ip);
             }
             method = m;
         }
@@ -751,7 +765,7 @@ impl Router[S] {
                 if head_of_get && r.method == Method.GET {
                     resp.body = to_bytes("");
                 }
-                return resp;
+                return Served { resp: resp, route: r.pattern };
             }
             if r.fkind == 2 {
                 // Single trailing :id: prefix compare on the str,
@@ -803,13 +817,13 @@ impl Router[S] {
                 if head_of_get && r.method == Method.GET {
                     resp.body = to_bytes("");
                 }
-                return resp;
+                return Served { resp: resp, route: r.pattern };
             }
             i = i + 1;
         }
         // General routes (wildcards, multi-param) or no frame hit:
         // the Request is already built -- use the classic path.
-        return self.serve_id_for(req, request_id, client_ip);
+        return self.serve_id_routed(req, request_id, client_ip);
     }
 
     pub fn serve_id(self: Router[S], req: http.Request,
@@ -819,6 +833,11 @@ impl Router[S] {
 
     pub fn serve_id_for(self: Router[S], req: http.Request,
                         request_id: str, client_ip: str) -> http.Response {
+        return self.serve_id_routed(req, request_id, client_ip).resp;
+    }
+
+    pub fn serve_id_routed(self: Router[S], req: http.Request,
+                           request_id: str, client_ip: str) -> Served {
         let p = path.strip_query(req.path);
         let segs = path.split(p);
         // An unknown verb cannot match any route, and is not a 404: the
@@ -837,8 +856,9 @@ impl Router[S] {
                 locals: none,
                 errors: self.errors
             };
-            return self.finish(uc, respond(self.errors, "not_implemented",
-                                           request_id));
+            return Served { resp: self.finish(uc, respond(self.errors, "not_implemented",
+                                                          request_id)),
+                            route: "" };
         }
         // A HEAD with no HEAD route is served by the GET one, and the
         // body dropped after the handler and the hooks have run -- so
@@ -894,7 +914,7 @@ impl Router[S] {
             if head_of_get && r.method == Method.GET {
                 resp.body = to_bytes("");
             }
-            return resp;
+            return Served { resp: resp, route: r.pattern };
         }
 
         let c = Ctx[S] {
@@ -915,7 +935,8 @@ impl Router[S] {
                 c.route = p;
                 if method != Method.GET && method != Method.HEAD {
                     let na = respond(self.errors, "method_not_allowed", request_id);
-                    return self.finish(c, http.with_header(na, "allow", "GET, HEAD"));
+                    return Served { resp: self.finish(c, http.with_header(na, "allow", "GET, HEAD")),
+                                    route: c.route };
                 }
                 let hr = live_response();
                 if p == self.ready.ready_path {
@@ -925,9 +946,10 @@ impl Router[S] {
                 if method == Method.HEAD {
                     fr.body = to_bytes("");
                 }
-                return fr;
+                return Served { resp: fr, route: c.route };
             }
-            return self.finish(c, respond(self.errors, "not_found", request_id));
+            return Served { resp: self.finish(c, respond(self.errors, "not_found", request_id)),
+                            route: "" };
         }
         let allow = self.allowed(p);
         if self.auto_options && method == Method.OPTIONS {
@@ -940,11 +962,11 @@ impl Router[S] {
                 extra: none_extra,
                 body: to_bytes("")
             };
-            return self.finish(c, ok_resp);
+            return Served { resp: self.finish(c, ok_resp), route: "" };
         }
         let resp = respond(self.errors, "method_not_allowed", request_id);
         resp = http.with_header(resp, "allow", join_methods(allow));
-        return self.finish(c, resp);
+        return Served { resp: self.finish(c, resp), route: "" };
     }
 
     // Router-wide `before`s, then the route's own, then the handler.

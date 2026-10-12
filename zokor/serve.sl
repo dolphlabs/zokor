@@ -67,7 +67,13 @@ pub gc struct ServerConfig {
     // addresses and CIDRs, and PROXY_HEADER (x-forwarded-for, the
     // default, or forwarded). None by default: the socket's peer is the
     // client.
-    trusted_proxies: TrustedProxies
+    trusted_proxies: TrustedProxies,
+    // Where request records and the server's own lines go (log.sl). On by
+    // default: zokor's console writer, started by listen_and_serve_with.
+    // LOG_FORMAT, LOG_LEVEL, LOG_REQUESTS and NO_COLOR configure it;
+    // no_logger() turns it off; channel_logger hands records to another
+    // package.
+    logger: Logger
 }
 
 // Safe rather than infinite, per the todo item this answers. 60s idle
@@ -100,7 +106,8 @@ pub fn default_server_config() -> ServerConfig {
         // rollout is not left waiting on this one process indefinitely.
         shutdown_timeout: 30000000000,
         request_ids: true,
-        trusted_proxies: no_trusted_proxies()
+        trusted_proxies: no_trusted_proxies(),
+        logger: default_logger()
     };
 }
 
@@ -108,7 +115,8 @@ pub fn default_server_config() -> ServerConfig {
 // READ_HEADER_TIMEOUT, READ_BODY_TIMEOUT, WRITE_TIMEOUT, SHUTDOWN_TIMEOUT
 // (durations, config.duration_or's format, e.g. "30s"), MAX_REQUEST_BYTES,
 // MAX_REQUESTS_PER_CONN (plain integers), REQUEST_IDS (true/false),
-// TRUSTED_PROXIES and PROXY_HEADER (see trusted_proxies_from).
+// TRUSTED_PROXIES and PROXY_HEADER (see trusted_proxies_from), LOG_FORMAT,
+// LOG_LEVEL, LOG_REQUESTS and NO_COLOR (see logger_from).
 pub fn server_config_from(cfg: Config) -> ServerConfig {
     let d = default_server_config();
     return ServerConfig {
@@ -124,7 +132,8 @@ pub fn server_config_from(cfg: Config) -> ServerConfig {
         shutdown_timeout: duration_or(cfg, "SHUTDOWN_TIMEOUT",
                                       d.shutdown_timeout),
         request_ids: bool_or(cfg, "REQUEST_IDS", d.request_ids),
-        trusted_proxies: trusted_proxies_from(cfg)
+        trusted_proxies: trusted_proxies_from(cfg),
+        logger: logger_from(cfg)
     };
 }
 
@@ -221,8 +230,20 @@ fn closing(r: http.Response) -> http.Response {
 // the only reason this exists rather than serve_conn calling
 // `r.serve_frame(f, "")` directly.
 fn dispatch[S](r: Router[S], f: http.WireFrame, request_id: str,
-               client_ip: str) -> http.Response {
-    return r.serve_frame_for(f, request_id, client_ip);
+               client_ip: str) -> Served {
+    return r.serve_frame_routed(f, request_id, client_ip);
+}
+
+// Whether this connection writes request records: decided once per
+// connection, so a server with logging off pays nothing per request.
+fn logs_any_request(lg: Logger) -> bool {
+    return lg.requests && lg.enabled(LogLevel.ERROR);
+}
+
+fn log_request(lg: Logger, method: str, route: str, raw_path: str,
+               status: int, t0: duration, size: int, rid: str, client: str) {
+    lg.record_request(method, route, raw_path, status,
+                      (time.mono() - t0) as int, size, rid, client);
 }
 
 // One connection, until the client goes away or asks to close.
@@ -247,6 +268,8 @@ fn dispatch[S](r: Router[S], f: http.WireFrame, request_id: str,
 pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
     // Once per connection: a connection's peer does not change.
     let peer_ip = peer_ip_of(inspect(c.peer()));
+    let lg = sc.logger;
+    let logging = logs_any_request(lg);
     let ra = arena_new(sc.max_request_bytes);
     let sa = arena_new(response_bytes());
     let buf = ra.wire(sc.max_request_bytes);
@@ -274,6 +297,13 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
             // never terminated), so answering before closing cannot
             // desync anything -- there is no next request on this
             // connection either way, since it closes right after.
+            if logging && (is_headers_too_large(e) || is_body_too_large(e)) {
+                let st = 413;
+                if is_headers_too_large(e) {
+                    st = 431;
+                }
+                log_request(lg, "-", "", "-", st, time.mono(), 0, "", peer_ip);
+            }
             if is_headers_too_large(e) {
                 let resp431 = too_large_response(431,
                     "Request Header Fields Too Large", "headers_too_large");
@@ -288,6 +318,12 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
             return;
         }
         served = served + 1;
+        // Only read when logging: a clock read is a measurable share of a
+        // request on some hosts (see idle_deadline).
+        let t0 = now;
+        if logging {
+            t0 = time.mono();
+        }
         // The request that HITS max_requests_per_conn is still
         // answered normally -- only the one after it would not be.
         // Folded into the same close the client's own request can
@@ -310,7 +346,7 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
             }
             let h = spawn dispatch(r, wf, rid, client);
             let jr = join_wait(h);
-            guard let dyn_resp = jr else {
+            guard let routed = jr else let pe = err_of(jr) {
                 // The handler panicked. spawn/join_wait already
                 // isolated it -- this task, and the process, are
                 // both still fine -- but the client is still owed an
@@ -324,13 +360,24 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
                 }
                 let _w5 = http.write(&mut c, resp500, &mut sa,
                                      write_deadline(sc));
+                if logging {
+                    lg.error("HTTP", "handler panicked: " + pe +
+                             request_suffix(rid));
+                    log_request(lg, wf.method, "", wf.path, 500, t0,
+                                len(resp500.body), rid, client);
+                }
                 return;
             }
+            let dyn_resp = routed.resp;
             let out = dyn_resp;
             if must_close {
                 out = closing(dyn_resp);
             }
             let wr = http.write(&mut c, out, &mut sa, write_deadline(sc));
+            if logging {
+                log_request(lg, wf.method, routed.route, wf.path,
+                            out.status as int, t0, len(out.body), rid, client);
+            }
             guard let _n = wr else {
                 return;
             }
@@ -352,6 +399,14 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
         }
         let sw = http.write_static(&mut c, resp, &mut sa, must_close,
                                    write_deadline(sc));
+        if logging {
+            let sclient = peer_ip;
+            if !sc.trusted_proxies.is_empty() {
+                sclient = client_ip_of(peer_ip, wf.headers, sc.trusted_proxies);
+            }
+            log_request(lg, wf.method, r.routes[si].pattern, wf.path,
+                        resp.status as int, t0, len(resp.body), "", sclient);
+        }
         guard let _n = sw else {
             return;
         }
@@ -365,6 +420,14 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
 
 // Split out so the accept and the spawn are one step the loop below
 // repeats, matching slang's own examples/httpd.
+// " (req_...)" for a line about one request, "" without an id.
+fn request_suffix(rid: str) -> str {
+    if len(rid) == 0 {
+        return "";
+    }
+    return " (" + rid + ")";
+}
+
 fn accept_one[S](r: Router[S], ln: &mut link, sc: ServerConfig) {
     let ar = ln.accept(until_never());
     guard let c = ar else {
@@ -454,6 +517,9 @@ pub fn listen_and_serve[S](r: Router[S], port: int) -> result[int, str] {
 // hand for a test that wants a deliberately short one.
 pub fn listen_and_serve_with[S](r: Router[S], port: int,
                                 sc: ServerConfig) -> result[int, str] {
+    sc.logger.start();
+    r.ready.logger = sc.logger;
+    log_routes(r, sc.logger);
     let n = acceptor_count();
     if n < 1 {
         n = 1;
@@ -464,6 +530,22 @@ pub fn listen_and_serve_with[S](r: Router[S], port: int,
         i = i + 1;
     }
     return accept_first(r, port, sc);
+}
+
+// "Mapped {/users/:id, GET} route" per route, as Nest prints at startup,
+// and the health paths when mounted.
+fn log_routes[S](r: Router[S], lg: Logger) {
+    if !lg.enabled(LogLevel.LOG) {
+        return;
+    }
+    for rt in r.routes {
+        lg.log("Router", "Mapped {" + rt.pattern + ", " +
+               to_str(rt.method) + "} route");
+    }
+    if len(r.ready.live_path) > 0 {
+        lg.log("Router", "Mapped {" + r.ready.live_path + ", GET} liveness");
+        lg.log("Router", "Mapped {" + r.ready.ready_path + ", GET} readiness");
+    }
 }
 
 // A spawned acceptor: its own SO_REUSEPORT listener, its own loop.
@@ -518,9 +600,18 @@ fn accept_first[S](r: Router[S], port: int,
                    sc: ServerConfig) -> result[int, str] {
     let first = listen_reuse(port);
     guard let ln0 = first else let e = err_of(first) {
-        return err("cannot listen on port " + to_str(port) + ": " + to_str(e));
+        let why = "cannot listen on port " + to_str(port) + ": " + to_str(e);
+        sc.logger.error("Server", why);
+        sc.logger.flush(1000000000);
+        return err(why);
     }
+    sc.logger.log("Server", "Listening on :" + to_str(port));
     accept_loop(r, ln0, sc);
-    drain(time.mono() + sc.shutdown_timeout);
+    sc.logger.log("Server", "Shutting down: draining in-flight requests");
+    // The console writer is a task too, and outlives every connection:
+    // waiting for zero would always run out the whole timeout.
+    drain_to(time.mono() + sc.shutdown_timeout, sc.logger.own_tasks());
+    sc.logger.log("Server", "Stopped");
+    sc.logger.flush(1000000000);
     return ok(0);
 }
