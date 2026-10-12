@@ -197,6 +197,7 @@ let sc = zokor.server_config_from(cfg);
 // IDLE_TIMEOUT, READ_HEADER_TIMEOUT, READ_BODY_TIMEOUT, WRITE_TIMEOUT,
 // MAX_REQUEST_BYTES, MAX_REQUESTS_PER_CONN, SHUTDOWN_TIMEOUT, REQUEST_IDS,
 // TRUSTED_PROXIES, PROXY_HEADER, LOG_FORMAT, LOG_LEVEL, LOG_REQUESTS,
+// MAX_CONNECTIONS,
 // TRUSTED_PROXIES, PROXY_HEADER
 spawn zokor.listen_and_serve_with(r, port, sc);
 ```
@@ -236,6 +237,15 @@ declared body is bigger than the buffer -- never a silent drop after
 buffering. `max_requests_per_conn` (default 100,000) closes a
 connection after it, answering the request that hit the limit
 normally first.
+
+`max_connections` (default 10,000, `MAX_CONNECTIONS`) caps open
+connections across every acceptor. A connection past it is answered `503`
+with `Retry-After: 1` and closed at once, so a load balancer retries
+elsewhere instead of waiting in the accept backlog. Refusals are logged at
+most once a second. Raise the process's open-file limit (`ulimit -n`) above
+the cap. If `accept` fails anyway (out of file descriptors), the loop logs
+it once and backs off from 5ms up to 1s instead of spinning. Measured on
+Linux at the limit: a full core spinning before, about 2% after.
 
 On `SIGTERM`/`SIGINT`, `listen_and_serve` stops accepting immediately
 and gives in-flight connections up to `shutdown_timeout` (default 30s)
@@ -777,8 +787,8 @@ The full list, ordered and checkable, is [todo.md](todo.md). In short:
 
 - **The serve loop.** `listen_and_serve` turns the WebSocket state
   machine into a running server; timeouts, body limits, graceful
-  shutdown, and panic recovery are done (see above). Still owed: max
-  concurrent connections.
+  shutdown, panic recovery and a connection cap are done (see above).
+  Still owed: TLS.
 - **Middleware**, none of it blocked: CORS, security headers,
   cookies, JWT and basic auth, ETag/304, compression, static
   files. (A rate limiter and a
