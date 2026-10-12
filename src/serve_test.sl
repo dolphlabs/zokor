@@ -74,7 +74,8 @@ fn short_config() -> ServerConfig {
         max_request_bytes: d.max_request_bytes,
         max_requests_per_conn: d.max_requests_per_conn,
         shutdown_timeout: d.shutdown_timeout,
-        request_ids: d.request_ids
+        request_ids: d.request_ids,
+        trusted_proxies: d.trusted_proxies
     };
 }
 
@@ -169,7 +170,8 @@ fn test_serve_conn_stalled_headers_close_at_header_timeout() {
         max_request_bytes: d.max_request_bytes,
         max_requests_per_conn: d.max_requests_per_conn,
         shutdown_timeout: d.shutdown_timeout,
-        request_ids: d.request_ids
+        request_ids: d.request_ids,
+        trusted_proxies: d.trusted_proxies
     };
     let r = serve_test_router();
     spawn serve_conn(r, server, sc);
@@ -208,7 +210,8 @@ fn tiny_body_config() -> ServerConfig {
         max_request_bytes: 256,
         max_requests_per_conn: d.max_requests_per_conn,
         shutdown_timeout: d.shutdown_timeout,
-        request_ids: d.request_ids
+        request_ids: d.request_ids,
+        trusted_proxies: d.trusted_proxies
     };
 }
 
@@ -454,7 +457,8 @@ fn test_serve_conn_request_ids_can_be_turned_off() {
         max_request_bytes: d.max_request_bytes,
         max_requests_per_conn: d.max_requests_per_conn,
         shutdown_timeout: d.shutdown_timeout,
-        request_ids: false
+        request_ids: false,
+        trusted_proxies: d.trusted_proxies
     };
     let resp = one_exchange(serve_test_router(), sc,
                             "GET /nope HTTP/1.1\r\nHost: t\r\n" +
@@ -478,6 +482,61 @@ fn test_serve_conn_panic_500_carries_the_request_id() {
     println("serve_conn_panic_500_carries_the_request_id ok");
 }
 
+fn h_client_ip(c: Ctx[ServeState]) -> http.Response {
+    return text(200, "client=" + c.client_ip);
+}
+
+fn client_router() -> Router[ServeState] {
+    let r = new_router(ServeState { hits: 0 });
+    r.get("/ip", h_client_ip);
+    return r;
+}
+
+fn ip_request(xff: str) -> str {
+    return "GET /ip HTTP/1.1\r\nHost: t\r\nX-Forwarded-For: " + xff +
+           "\r\nConnection: close\r\n\r\n";
+}
+
+// Without trusted proxies the socket's peer is the client: a header the
+// client wrote changes nothing.
+fn test_serve_conn_client_ip_ignores_headers_by_default() {
+    let resp = one_exchange(client_router(), default_server_config(),
+                            ip_request("6.6.6.6"));
+    if strings.find(resp, "client=127.0.0.1") < 0 {
+        panic("expected the peer, 127.0.0.1: " + resp);
+    }
+    println("serve_conn_client_ip_ignores_headers_by_default ok");
+}
+
+// Behind a trusted proxy (here the test's own loopback peer), the
+// forwarded address is the client.
+fn test_serve_conn_client_ip_behind_a_trusted_proxy() {
+    let c = cfg_of("TRUSTED_PROXIES=127.0.0.1/32\n");
+    let resp = one_exchange(client_router(), server_config_from(c),
+                            ip_request("1.1.1.1, 198.51.100.7"));
+    if strings.find(resp, "client=198.51.100.7") < 0 {
+        panic("expected the forwarded client 198.51.100.7: " + resp);
+    }
+    println("serve_conn_client_ip_behind_a_trusted_proxy ok");
+}
+
+// A bad TRUSTED_PROXIES or PROXY_HEADER is a configuration problem,
+// reported by check() with every other one, not discovered in traffic.
+fn test_server_config_reports_bad_proxy_settings() {
+    let c = cfg_of("TRUSTED_PROXIES=10.0.0.1/8\nPROXY_HEADER=x-real-ip\n");
+    let _sc = server_config_from(c);
+    let r = check(c);
+    guard let _ok = r else let e = err_of(r) {
+        if strings.find(e, "TRUSTED_PROXIES") < 0 ||
+           strings.find(e, "did you mean 10.0.0.0/8") < 0 ||
+           strings.find(e, "PROXY_HEADER") < 0 {
+            panic("check() missed a proxy setting: " + e);
+        }
+        return;
+    }
+    panic("bad proxy settings passed check()");
+}
+
 fn max2_config() -> ServerConfig {
     let d = default_server_config();
     return ServerConfig {
@@ -488,7 +547,8 @@ fn max2_config() -> ServerConfig {
         max_request_bytes: d.max_request_bytes,
         max_requests_per_conn: 2,
         shutdown_timeout: d.shutdown_timeout,
-        request_ids: d.request_ids
+        request_ids: d.request_ids,
+        trusted_proxies: d.trusted_proxies
     };
 }
 
@@ -672,6 +732,8 @@ test_serve_conn_gives_dynamic_requests_ids();
 test_serve_conn_reuses_a_well_formed_client_id();
 test_serve_conn_request_ids_can_be_turned_off();
 test_serve_conn_panic_500_carries_the_request_id();
+test_serve_conn_client_ip_ignores_headers_by_default();
+test_serve_conn_client_ip_behind_a_trusted_proxy();
 test_drain_returns_early_when_idle();
 test_drain_stops_at_deadline();
 test_serve_conn_panicking_handler_answers_500();
