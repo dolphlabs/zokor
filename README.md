@@ -196,6 +196,7 @@ any of them.
 let sc = zokor.server_config_from(cfg);
 // IDLE_TIMEOUT, READ_HEADER_TIMEOUT, READ_BODY_TIMEOUT, WRITE_TIMEOUT,
 // MAX_REQUEST_BYTES, MAX_REQUESTS_PER_CONN, SHUTDOWN_TIMEOUT, REQUEST_IDS,
+// TRUSTED_PROXIES, PROXY_HEADER, LOG_FORMAT, LOG_LEVEL, LOG_REQUESTS,
 // TRUSTED_PROXIES, PROXY_HEADER
 spawn zokor.listen_and_serve_with(r, port, sc);
 ```
@@ -249,6 +250,63 @@ serving more requests on whatever state the panic left behind. The
 static fast path (`GET /`, no handler call) never pays for this
 isolation, since nothing there can panic in the first place.
 
+## Logging
+
+On by default. Every request gets one record, and the server writes its
+own lines too: routes mapped, listening, shutting down, stopped. On a
+terminal they look like NestJS's, in colour:
+
+```
+[zokor] 51734  - 2026-10-12 18:47:01.123Z     LOG [Router] Mapped {/users/:id, GET} route
+[zokor] 51734  - 2026-10-12 18:47:01.124Z     LOG [Server] Listening on :8080 +1ms
+[zokor] 51734  - 2026-10-12 18:47:03.551Z     LOG [HTTP] GET /users/:id 200 28B 10.0.0.4 req_1a2b… +0.41ms
+[zokor] 51734  - 2026-10-12 18:47:04.002Z    WARN [HTTP] GET /nope 404 124B 10.0.0.4 req_9f3c… +0.16ms
+```
+
+Anywhere else, such as a pipe, a file or a container's stdout, each line
+is one JSON object, which is what a log shipper wants:
+
+```
+{"time":"2026-10-12T18:47:03.551Z","level":"log","pid":51734,"context":"HTTP","msg":"GET /users/:id 200 28B 10.0.0.4 req_1a2b…","method":"GET","route":"/users/:id","status":200,"duration_ms":0.412,"bytes":28,"request_id":"req_1a2b…","client_ip":"10.0.0.4"}
+```
+
+| Setting | Values | Default |
+|---|---|---|
+| `LOG_FORMAT` | `pretty`, `json` | pretty on a terminal, json otherwise |
+| `LOG_LEVEL` | `debug`, `log`, `warn`, `error`, `off` | `log` |
+| `LOG_REQUESTS` | `true`, `false` | `true` |
+| `NO_COLOR` | any value | colour on a terminal |
+
+Settings are read by `server_config_from(cfg)`; plain `listen_and_serve`
+uses the defaults. A 4xx is a `warn` record and a 5xx an `error`, so
+`LOG_LEVEL=warn` keeps exactly the requests that went wrong. A panicking
+handler adds an `error` line with the panic and the request id.
+
+**What is never logged:** query strings, bodies or headers. A matched
+request is logged by its route pattern, not its path, so ids in paths stay
+out of the log and a dashboard sees one series per route. An unmatched path
+is cut to 64 bytes, and control characters, `"` and `\` are
+percent-encoded, so a client cannot forge a line or send a terminal
+escape.
+
+**It never slows a request down.** The serve loop hands each record to a
+bounded queue and moves on, and one task formats and writes the records in
+batches. If the queue is ever full, records are dropped and counted, and a
+`WARN [Logger] N log records dropped` line says so.
+
+**What it costs.** About 3 extra allocations per request. At saturation,
+`GET /users/:id` on a laptop with 32 connections went from about 62k to
+about 50k requests per second, with p99 rising from 1.6–3.0ms to
+1.9–3.3ms on the runs not hit by thermal throttling. That's 50k JSON
+lines a second written to a file. `LOG_REQUESTS=false` removes the cost
+and keeps the server's own lines.
+
+**Bring your own.** A `Logger` is a channel plus a level. To ship records
+somewhere else, make one with `channel_logger(ch, level, requests)`, put it
+in `ServerConfig.logger`, and drain `ch` from your own task.
+`new_log_format(pid)` gives you zokor's `json` and `pretty` formats to reuse.
+`no_logger()` turns logging off.
+
 ## Health and readiness
 
 ```slang
@@ -278,8 +336,9 @@ sending traffic before the drain.
   not the probe. A check still running from an earlier probe is joined,
   not started again, so a hung database costs one task, not one per probe.
 - **No leaks.** The body names checks, never errors: a driver's message
-  carries hosts and user names. The reason goes to stderr, once each time
-  a check starts failing, changes reason or recovers.
+  carries hosts and user names. The reason goes to the server's log as a
+  `WARN [Health]` line, once each time a check starts failing, changes
+  reason or recovers.
 - **Out of the way.** The router answers these paths only when no route
   claims them, so your own `/healthz` wins. No `before` runs on them,
   since an auth hook would fail the probes. `r.health_at(live, ready)`
@@ -722,7 +781,7 @@ The full list, ordered and checkable, is [todo.md](todo.md). In short:
   concurrent connections.
 - **Middleware**, none of it blocked: CORS, security headers,
   cookies, JWT and basic auth, ETag/304, compression, static
-  files, request logging. (A rate limiter and a
+  files. (A rate limiter and a
   bearer-token store exist; `RateLimit-*` headers and sharding do not.)
 - **Enterprise**: Postgres helpers with transactions, migrations,
   metrics, tracing, background jobs, pagination, OpenAPI, and

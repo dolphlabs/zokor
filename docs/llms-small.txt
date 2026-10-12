@@ -206,6 +206,41 @@ println("ok");
 One value: `c.query("q")`, `c.query_int("page", 1)`, `c.param("id")`,
 `c.param_int("id", 0)`.
 
+## Logging
+
+```slang
+import "zokor";
+
+// The default needs nothing: the server logs every request, pretty on a
+// terminal and JSON lines otherwise. server_config_from(cfg) reads
+// LOG_FORMAT (pretty|json), LOG_LEVEL (debug|log|warn|error|off),
+// LOG_REQUESTS (true|false) and NO_COLOR.
+//
+// Your own sink: a channel_logger in ServerConfig.logger, drained by your
+// own task, with zokor's formats if you want them.
+let ch: chan[zokor.LogEvent] = make_chan(1024);
+let lg = zokor.channel_logger(ch, zokor.LogLevel.LOG, true);
+let sc = zokor.default_server_config();
+sc.logger = lg;
+lg.warn("Billing", "card declined");
+let got = chan_recv(ch);
+guard let ev = got else {
+    exit(1);
+}
+let f = zokor.new_log_format(1);
+let line = f.json(ev);
+assert(ev.context == "Billing" && ev.message == "card declined");
+assert(zokor.level_name(ev.level) == "warn");
+assert(len(line) > 0);
+println("ok");
+```
+
+Request records: route pattern (never the path), status, duration, bytes,
+request id and client address, at `warn` for 4xx and `error` for 5xx.
+Never logged: query strings, bodies, headers. `zokor.no_logger()` turns
+it off. A full queue drops records and counts them; a request never waits
+on the log.
+
 ## Health and readiness
 
 ```slang
@@ -236,8 +271,9 @@ println("ok");
 `/healthz` never runs checks; `/readyz` runs them concurrently, each
 bounded by `r.ready_timeout(ns)` (default 0.9s), and answers 503 with
 `failing`/`timeout` per check, or `shutting_down` after SIGTERM. A
-check's panic fails the check. The router answers these only when no
-route claims the path, and no `before` runs on them.
+check's panic fails the check, and failures are logged as `WARN [Health]`.
+The router answers these only when no route claims the path, and no
+`before` runs on them.
 
 ## Headers and rate limiting
 

@@ -184,7 +184,14 @@ r.after(count);
 // one task per connection; it returns when the process is asked to stop.
 // A real service calls it and nothing else -- the spawn here is only so
 // this file can also play the client below.
-spawn zokor.listen_and_serve(r, port());
+//
+// It would also log every request (README, "Logging"). The client below
+// prints each exchange itself and the program ends the moment it is done,
+// so this demo turns the log off rather than interleave the two; a real
+// service keeps it.
+let sc = zokor.default_server_config();
+sc.logger = zokor.no_logger();
+spawn zokor.listen_and_serve_with(r, port(), sc);
 
 // ---------------------------------------------------------------- //
 // the demo: a real client, over a real socket                        //

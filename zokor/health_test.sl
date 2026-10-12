@@ -225,3 +225,29 @@ fn test_health_at_refuses_relative_or_identical_paths() {
     assert(r.health_at("/same", "/same") == -1);
     assert(resp_status(hc_get(r, "/readyz")) == 404, "nothing is half-mounted");
 }
+
+fn test_readiness_changes_go_to_the_servers_log() {
+    let s = hc_state();
+    s.up = false;
+    let r = hc_router(s);
+    r.ready_check("db", hc_db);
+    let ch: chan[LogEvent] = make_chan(8);
+    r.ready.logger = channel_logger(ch, LogLevel.LOG, true);
+    assert(resp_status(hc_get(r, "/readyz")) == 503);
+    let got = chan_recv(ch);
+    guard let ev = got else {
+        panic("no log record");
+    }
+    assert(ev.context == "Health" && level_name(ev.level) == "warn", ev.context);
+    assert(ev.message == "readiness check db failing: dial tcp 10.0.0.9:5432: " +
+           "connection refused (user=svc)", ev.message);
+    mutex_lock(s.lock);
+    s.up = true;
+    mutex_unlock(s.lock);
+    assert(resp_status(hc_get(r, "/readyz")) == 200);
+    let back = chan_recv(ch);
+    guard let ev2 = back else {
+        panic("no recovery record");
+    }
+    assert(ev2.message == "readiness check db recovered", ev2.message);
+}

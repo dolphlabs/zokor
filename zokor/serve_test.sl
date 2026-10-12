@@ -1,5 +1,6 @@
 import "http";
 import "proc";
+import "strings";
 import "time";
 
 gc struct ServeState { hits: int }
@@ -75,7 +76,8 @@ fn short_config() -> ServerConfig {
         max_requests_per_conn: d.max_requests_per_conn,
         shutdown_timeout: d.shutdown_timeout,
         request_ids: d.request_ids,
-        trusted_proxies: d.trusted_proxies
+        trusted_proxies: d.trusted_proxies,
+        logger: d.logger
     };
 }
 
@@ -171,7 +173,8 @@ fn test_serve_conn_stalled_headers_close_at_header_timeout() {
         max_requests_per_conn: d.max_requests_per_conn,
         shutdown_timeout: d.shutdown_timeout,
         request_ids: d.request_ids,
-        trusted_proxies: d.trusted_proxies
+        trusted_proxies: d.trusted_proxies,
+        logger: d.logger
     };
     let r = serve_test_router();
     spawn serve_conn(r, server, sc);
@@ -211,7 +214,8 @@ fn tiny_body_config() -> ServerConfig {
         max_requests_per_conn: d.max_requests_per_conn,
         shutdown_timeout: d.shutdown_timeout,
         request_ids: d.request_ids,
-        trusted_proxies: d.trusted_proxies
+        trusted_proxies: d.trusted_proxies,
+        logger: d.logger
     };
 }
 
@@ -478,7 +482,8 @@ fn test_serve_conn_request_ids_can_be_turned_off() {
         max_requests_per_conn: d.max_requests_per_conn,
         shutdown_timeout: d.shutdown_timeout,
         request_ids: false,
-        trusted_proxies: d.trusted_proxies
+        trusted_proxies: d.trusted_proxies,
+        logger: d.logger
     };
     let resp = one_exchange(serve_test_router(), sc,
                             "GET /nope HTTP/1.1\r\nHost: t\r\n" +
@@ -568,7 +573,8 @@ fn max2_config() -> ServerConfig {
         max_requests_per_conn: 2,
         shutdown_timeout: d.shutdown_timeout,
         request_ids: d.request_ids,
-        trusted_proxies: d.trusted_proxies
+        trusted_proxies: d.trusted_proxies,
+        logger: d.logger
     };
 }
 
@@ -758,3 +764,96 @@ test_drain_returns_early_when_idle();
 test_drain_stops_at_deadline();
 test_serve_conn_panicking_handler_answers_500();
 test_serve_conn_static_route_unaffected_by_panic_isolation();
+
+// ---- the request log, from a real connection ----------------------------
+
+fn log_config(ch: chan[LogEvent]) -> ServerConfig {
+    let sc = default_server_config();
+    sc.logger = channel_logger(ch, LogLevel.LOG, true);
+    return sc;
+}
+
+fn next_event(ch: chan[LogEvent]) -> LogEvent {
+    let r = chan_recv(ch);
+    guard let ev = r else {
+        panic("log channel closed");
+    }
+    return ev;
+}
+
+fn s_static(c: Ctx[ServeState]) -> http.Response {
+    return text(200, "fixed");
+}
+
+fn test_serve_conn_logs_matched_unmatched_and_static_requests() {
+    let ch: chan[LogEvent] = make_chan(16);
+    let sc = log_config(ch);
+    let r = serve_test_router();
+    r.static_bytes("/s", 200, "text/plain; charset=utf-8", b"fixed", s_static);
+
+    let _a = one_exchange(r, sc, "GET /hi?token=secret HTTP/1.1\r\nHost: t\r\n" +
+                          "Connection: close\r\n\r\n");
+    let ev = next_event(ch);
+    if !ev.request || ev.method != "GET" || ev.route != "/hi" || ev.status != 200 {
+        panic("matched: " + ev.method + " " + ev.route + " " + to_str(ev.status));
+    }
+    if len(ev.path) != 0 {
+        panic("a matched request carried its path: " + ev.path);
+    }
+    if ev.size != 2 || ev.client_ip != "127.0.0.1" || !is_generated(ev.request_id) {
+        panic("matched fields: " + to_str(ev.size) + " " + ev.client_ip + " " + ev.request_id);
+    }
+    if ev.duration_ns <= 0 {
+        panic("no duration");
+    }
+
+    let _b = one_exchange(r, sc, "GET /nope?x=1 HTTP/1.1\r\nHost: t\r\n" +
+                          "Connection: close\r\n\r\n");
+    let nf = next_event(ch);
+    if nf.route != "" || nf.path != "/nope" || nf.status != 404 {
+        panic("unmatched: " + nf.route + " " + nf.path + " " + to_str(nf.status));
+    }
+    if level_name(nf.level) != "warn" {
+        panic("a 404 is a warning");
+    }
+
+    let _c = one_exchange(r, sc, "GET /s HTTP/1.1\r\nHost: t\r\n" +
+                          "Connection: close\r\n\r\n");
+    let st = next_event(ch);
+    if st.route != "/s" || st.status != 200 || st.size != 5 || st.request_id != "" {
+        panic("static: " + st.route + " " + to_str(st.status) + " " + to_str(st.size));
+    }
+    println("serve_conn_logs_matched_unmatched_and_static_requests ok");
+}
+
+fn test_serve_conn_logs_a_panic_with_its_request_id() {
+    let ch: chan[LogEvent] = make_chan(16);
+    let sc = log_config(ch);
+    let _resp = one_exchange(panic_test_router(), sc,
+                             "GET /boom HTTP/1.1\r\nHost: t\r\nX-Request-Id: abc-1\r\n\r\n");
+    let line = next_event(ch);
+    if line.request || level_name(line.level) != "error" ||
+       !strings.has_prefix(line.message, "handler panicked: boom at ") ||
+       !strings.has_suffix(line.message, " (abc-1)") {
+        panic("panic line: " + line.message);
+    }
+    let rec = next_event(ch);
+    if rec.status != 500 || rec.request_id != "abc-1" || rec.path != "/boom" {
+        panic("panic record: " + to_str(rec.status) + " " + rec.request_id + " " + rec.path);
+    }
+    println("serve_conn_logs_a_panic_with_its_request_id ok");
+}
+
+fn test_serve_conn_logs_an_oversized_request() {
+    let ch: chan[LogEvent] = make_chan(16);
+    let sc = tiny_body_config();
+    sc.logger = channel_logger(ch, LogLevel.LOG, true);
+    let junk = strings.repeat("a", 400);
+    let _resp = one_exchange(serve_test_router(), sc,
+                             "GET /hi HTTP/1.1\r\nHost: t\r\nX-Long: " + junk);
+    let ev = next_event(ch);
+    if ev.status != 431 || ev.method != "-" || ev.client_ip != "127.0.0.1" {
+        panic("431 record: " + to_str(ev.status) + " " + ev.method);
+    }
+    println("serve_conn_logs_an_oversized_request ok");
+}
