@@ -197,7 +197,8 @@ any of them.
 ```slang
 let sc = zokor.server_config_from(cfg);
 // IDLE_TIMEOUT, READ_HEADER_TIMEOUT, READ_BODY_TIMEOUT, WRITE_TIMEOUT,
-// MAX_REQUEST_BYTES, MAX_REQUESTS_PER_CONN, SHUTDOWN_TIMEOUT, REQUEST_IDS
+// MAX_REQUEST_BYTES, MAX_REQUESTS_PER_CONN, SHUTDOWN_TIMEOUT, REQUEST_IDS,
+// TRUSTED_PROXIES, PROXY_HEADER
 spawn zokor.listen_and_serve_with(r, port, sc);
 ```
 
@@ -208,6 +209,17 @@ It comes back as `X-Request-Id` and in every error envelope, the 500 after
 a panicking handler included, and handlers read it as `c.request_id`.
 Static routes are fixed bytes and carry none. `REQUEST_IDS=false` (or
 `request_ids: false`) turns it off.
+
+`c.client_ip` is **who the request came from**. By default that is the
+socket's peer, whatever headers the client sent. Behind a load balancer or
+reverse proxy, list it in `TRUSTED_PROXIES` (comma-separated IPv4 addresses
+and CIDRs, e.g. `10.0.0.0/8,192.168.1.10`): zokor then reads the proxy's
+`X-Forwarded-For` from the right, past every trusted address, and takes the
+first one that is not -- so a hop the client wrote itself never wins.
+`PROXY_HEADER=forwarded` reads RFC 7239 `Forwarded` instead; only one header
+is ever believed, so a client cannot add the one your proxy does not set.
+A bad entry (`10.0.0.1/8` has host bits set: did you mean `10.0.0.0/8`?) is
+reported by `check(cfg)` with every other problem.
 
 Four separate timeouts, not one, because "how long should this wait"
 has different honest answers depending on what a connection is doing:

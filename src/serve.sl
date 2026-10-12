@@ -13,6 +13,7 @@
 
 import "http";
 import "proc";
+import "strings";
 import "time";
 
 // Four deadlines, not one, because "how long should this wait" has
@@ -60,7 +61,13 @@ pub gc struct ServerConfig {
     // X-Request-Id and carried in every error envelope, so a customer
     // quoting it finds the exact request. Static routes are fixed bytes
     // and carry none. On by default; REQUEST_IDS=false turns it off.
-    request_ids: bool
+    request_ids: bool,
+    // Proxies whose forwarding header is believed for the client's
+    // address (client.sl): TRUSTED_PROXIES, comma-separated IPv4
+    // addresses and CIDRs, and PROXY_HEADER (x-forwarded-for, the
+    // default, or forwarded). None by default: the socket's peer is the
+    // client.
+    trusted_proxies: TrustedProxies
 }
 
 // Safe rather than infinite, per the todo item this answers. 60s idle
@@ -92,14 +99,16 @@ pub fn default_server_config() -> ServerConfig {
         // in-flight request to finish, short enough that a deployment's
         // rollout is not left waiting on this one process indefinitely.
         shutdown_timeout: 30000000000,
-        request_ids: true
+        request_ids: true,
+        trusted_proxies: no_trusted_proxies()
     };
 }
 
 // The same defaults, overridable per field from config: IDLE_TIMEOUT,
 // READ_HEADER_TIMEOUT, READ_BODY_TIMEOUT, WRITE_TIMEOUT, SHUTDOWN_TIMEOUT
 // (durations, config.duration_or's format, e.g. "30s"), MAX_REQUEST_BYTES,
-// MAX_REQUESTS_PER_CONN (plain integers), REQUEST_IDS (true/false).
+// MAX_REQUESTS_PER_CONN (plain integers), REQUEST_IDS (true/false),
+// TRUSTED_PROXIES and PROXY_HEADER (see trusted_proxies_from).
 pub fn server_config_from(cfg: Config) -> ServerConfig {
     let d = default_server_config();
     return ServerConfig {
@@ -114,8 +123,35 @@ pub fn server_config_from(cfg: Config) -> ServerConfig {
                                       d.max_requests_per_conn),
         shutdown_timeout: duration_or(cfg, "SHUTDOWN_TIMEOUT",
                                       d.shutdown_timeout),
-        request_ids: bool_or(cfg, "REQUEST_IDS", d.request_ids)
+        request_ids: bool_or(cfg, "REQUEST_IDS", d.request_ids),
+        trusted_proxies: trusted_proxies_from(cfg)
     };
+}
+
+// TRUSTED_PROXIES and PROXY_HEADER, read into a TrustedProxies. A bad
+// entry is recorded on `cfg` like any other configuration problem, so
+// check(cfg) reports it with everything else before the server starts.
+fn trusted_proxies_from(cfg: Config) -> TrustedProxies {
+    let tp = no_trusted_proxies();
+    let list = str_or(cfg, "TRUSTED_PROXIES", "");
+    if len(list) > 0 {
+        let r = parse_trusted_proxies(list);
+        if let parsed = r {
+            tp = parsed;
+        } else let e = err_of(r) {
+            // recorded, then carry on: PROXY_HEADER is checked too, so
+            // check() reports every problem at once
+            record(cfg, "TRUSTED_PROXIES", list, e);
+        }
+    }
+    let header = strings.to_lower(str_or(cfg, "PROXY_HEADER", tp.header));
+    if header != "x-forwarded-for" && header != "forwarded" {
+        record(cfg, "PROXY_HEADER", header,
+               "must be x-forwarded-for or forwarded");
+        return tp;
+    }
+    tp.header = header;
+    return tp;
 }
 
 // The three read deadlines start together, so they share one clock
@@ -184,9 +220,9 @@ fn closing(r: http.Response) -> http.Response {
 // `spawn`'s target has to be a plain function, not a method, which is
 // the only reason this exists rather than serve_conn calling
 // `r.serve_frame(f, "")` directly.
-fn dispatch[S](r: Router[S], f: http.WireFrame,
-               request_id: str) -> http.Response {
-    return r.serve_frame(f, request_id);
+fn dispatch[S](r: Router[S], f: http.WireFrame, request_id: str,
+               client_ip: str) -> http.Response {
+    return r.serve_frame_for(f, request_id, client_ip);
 }
 
 // One connection, until the client goes away or asks to close.
@@ -209,6 +245,8 @@ fn dispatch[S](r: Router[S], f: http.WireFrame,
 // instead of silently ending the connection. `serve_id` stays for
 // callers that already hold a Request.
 pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
+    // Once per connection: a connection's peer does not change.
+    let peer_ip = peer_ip_of(inspect(c.peer()));
     let ra = arena_new(sc.max_request_bytes);
     let sa = arena_new(response_bytes());
     let buf = ra.wire(sc.max_request_bytes);
@@ -266,7 +304,11 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
             if sc.request_ids {
                 rid = request_id_for(wf.headers);
             }
-            let h = spawn dispatch(r, wf, rid);
+            let client = peer_ip;
+            if !sc.trusted_proxies.is_empty() {
+                client = client_ip_of(peer_ip, wf.headers, sc.trusted_proxies);
+            }
+            let h = spawn dispatch(r, wf, rid, client);
             let jr = join_wait(h);
             guard let dyn_resp = jr else {
                 // The handler panicked. spawn/join_wait already
