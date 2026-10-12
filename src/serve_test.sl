@@ -147,6 +147,55 @@ fn test_serve_conn_idle_closes_connection() {
     println("serve_conn_idle_closes_connection ok");
 }
 
+// A slow-loris client: the request starts, then stalls mid-headers.
+// header_timeout governs from there, not the much longer idle_timeout,
+// so the connection closes within the header window. The three read
+// deadlines share one clock read; a header deadline built from the idle
+// window would hold this connection for 60 s.
+fn test_serve_conn_stalled_headers_close_at_header_timeout() {
+    let lr = link_listen(0);
+    guard let ln = lr else { panic("listen"); }
+    let dr = link_dial("127.0.0.1", ln.port(), until_never());
+    guard let client = dr else { panic("dial"); }
+    let ar = ln.accept(until_never());
+    guard let server = ar else { panic("accept"); }
+    let d = default_server_config();
+    let sc = ServerConfig {
+        idle_timeout: d.idle_timeout,
+        header_timeout: 200000000,
+        body_timeout: d.body_timeout,
+        write_timeout: d.write_timeout,
+        max_request_bytes: d.max_request_bytes,
+        max_requests_per_conn: d.max_requests_per_conn,
+        shutdown_timeout: d.shutdown_timeout
+    };
+    let r = serve_test_router();
+    spawn serve_conn(r, server, sc);
+    let partial = to_bytes("GET /hi HTTP/1.1\r\nHost: t\r\n");
+    let a = arena_new(512);
+    let out = a.wire(len(partial));
+    let i = 0;
+    while i < len(partial) {
+        out[i] = partial[i];
+        i = i + 1;
+    }
+    let sr = client.send(out, until_never());
+    guard let _n = sr else { panic("client send"); }
+    let inb = a.wire(256);
+    let t0 = time.mono();
+    let rr = client.recv(inb, until_of(time.mono() + 5000000000));
+    let dt = time.mono() - t0;
+    if dt > 2000000000 {
+        panic("stalled headers held for " + to_str(dt) + " ns");
+    }
+    guard let n = rr else {
+        println("serve_conn_stalled_headers: recv err");
+        return;
+    }
+    if n != 0 { panic("expected the peer to close, got " + to_str(n) + " bytes"); }
+    println("serve_conn_stalled_headers ok");
+}
+
 fn tiny_body_config() -> ServerConfig {
     let d = default_server_config();
     return ServerConfig {
@@ -414,6 +463,7 @@ test_server_config_from_defaults_when_unset();
 test_server_config_from_overrides();
 test_serve_conn_normal_request();
 test_serve_conn_idle_closes_connection();
+test_serve_conn_stalled_headers_close_at_header_timeout();
 test_serve_conn_body_too_large_answers_413();
 test_serve_conn_headers_too_large_answers_431();
 test_serve_conn_closes_after_max_requests();
