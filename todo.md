@@ -13,11 +13,12 @@ library, made and merged there first.
 
 ## 0. Before anything else
 
-- [ ] **CI**: `make check` on Linux (x86_64, arm64) and macOS against
-  slang's `dev`, on every PR and merge, until a slang release carries what
-  zokor needs (generics, `dir` pins, `exclude`), then against that release.
-  Nothing stops a regression landing today: `slang.project`'s `exclude`
-  broke `make example` on every released slangc and nobody was told.
+- [ ] **CI on every platform slang ships for.** `.github/workflows/ci.yml`
+  already runs `make check` (tests, both examples, the guide's programs,
+  `api-check`) against slang's `dev` on every PR and push to `main`/`dev`,
+  but on Linux x86_64 only. Add linux-arm64 and macOS (Apple Silicon), the
+  other two platforms slang's own CI covers, so a platform-specific break
+  in zokor or in slang is caught here rather than by a user.
 
 ## 1. Operability: you cannot run what you cannot see
 
