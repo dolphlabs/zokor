@@ -2,281 +2,113 @@
 
 Work top to bottom, one item at a time, one branch and one PR each. Tick an
 item when it has landed **with its tests**; an item that only has code is not
-done. `make check` must stay green after every one.
+done. `make check` must stay green after every one. Ticked items are cleared
+from this file once landed; their write-ups (what was measured, why each
+design was chosen) are in the PR descriptions and in git history -- the
+file as it stood before this rewrite is `git show e5cdcaaodo.md`.
 
 Every item says what it is, what it depends on, and how we know it is done.
 Anything marked **[slang]** is a change to the language or its standard
 library, made and merged there first.
 
-## Done
+## 0. Before anything else
 
-- [x] Router: every HTTP method, `:params`, `*wildcards`, automatic `HEAD` and
-  `OPTIONS`, `Allow` on a 405, `501` for an unknown verb
-- [x] Groups with nested prefixes and middleware, `guarded` for one route,
-  `before`/`after` hooks, request-scoped `set_local` / `local`
-- [x] Error registry: every HTTP failure status, one envelope, a replaceable
-  renderer, field-level errors
-- [x] Configuration: `.env` or any path, environment wins, per-variable
-  validation, every problem reported at once, secrets masked
-- [x] Uploads: multipart parser, limits, type and extension allowlists, safe
-  filenames
-- [x] WebSocket (RFC 6455) as a sans-io state machine, and Socket.IO
-  (Engine.IO v4 / Socket.IO v5) over it
-- [x] JSON: `snake_keys` / `camel_keys`, `decode_failed`, `checker`, `Json`
-  values and builder
-- [x] Test kit: request builder, response readers; request and session ids
-- [x] **Redis helpers**: `redis_from_config` builds a pool from `REDIS_URL`
-  (optional -- a service with none set opens no connection), plus
-  `optional_dsn` added to the config validators for it. Everything past
-  the pool is slang's own `redis` package (`stdlib/redis`, merged there
-  across 9 phases: RESP2 codec, pooling, transactions/scripting,
-  pub/sub, streams, cluster routing, live tests incl. TLS/cluster) --
-  not re-wrapped here, so there is exactly one place its ~150 commands
-  can drift from what slang ships. `src/redis_test.sl` includes a live
-  round trip against a real server on `127.0.0.1:6379` when one is
-  reachable (its own db, 15, and a namespaced key, so it is safe to run
-  against a developer's own Redis) and skips cleanly when none is --
-  this project's own CI containers have no Redis.
-- [x] slang: generic structs and methods, `dir` pins, exportable enums,
-  `crypto.sha1`
-- [x] **[slang] Generic functions** (generics PR 3): `fn first[T](xs: [T]) -> T`,
-  unification, expected-type inference, return-only inference through an
-  annotated `let`. Merged in slang PR #187 (`dev`). Unblocks
-  `new_router(state)`, `c.dto[T]()`, `c.query_as[T]()`, the serve loop's
-  spawned task, and `Group`'s `copied_*` helpers, below.
+- [ ] **CI**: `make check` on Linux (x86_64, arm64) and macOS against
+  slang's `dev`, on every PR and merge, until a slang release carries what
+  zokor needs (generics, `dir` pins, `exclude`), then against that release.
+  Nothing stops a regression landing today: `slang.project`'s `exclude`
+  broke `make example` on every released slangc and nobody was told.
 
-## 0. First: correctness and speed of what already exists
+## 1. Operability: you cannot run what you cannot see
 
-These come before new features, because a framework that is slow on a large
-body is not one anyone can put in front of the internet.
-
-- [x] **[slang] A growable byte and string builder.** `import "builder"`:
-  `Str` and `Bytes`, plus `strings.join_bytes` for a `[bytes]` already in
-  hand. Merged in slang PR #185. What was 2 seconds for 80 KB is now
-  linear; see slang's `bench/builder/`.
-- [x] **Performance audit of everything on a request path.** Fixed:
-  `errors.quote`, `json.parse_string`/`render`, `json.parse_object`/`rekey`
-  (duplicate-key detection was O(k^2) per object), `internal/path.percent_decode`,
-  `internal/multipart`'s copy, `internal/sio.escape`, `router.match_segs`'s
-  wildcard join, and `ws.Conn.receive` (was re-copying its whole buffer on
-  every small read, and joining fragments with `+`). Every case that was
-  seconds is now single- or double-digit milliseconds; results and method
-  in `bench/audit/RESULTS.md`. Not audited: slang's own `http` package.
-- [x] **Benchmarks against Go.** hello-world, JSON echo, and a parameterised
-  route, the same three in Go's `net/http` and Fiber; `bench/vs-go/`,
-  written up in `docs/benchmarks.md`. Result, honestly: zokor is
-  currently 3-5x behind Go net/http, because there is no accept loop yet
-  (`listen_and_serve`, below) -- not a routing or JSON problem, the same
-  gap shows on a bare `GET /`. Re-run once `listen_and_serve` lands; the
-  goal of edging Go stands.
-- [x] **Dynamic routes and `dto` cost 2-4x a plain slang server.** Measured
-  2026-09-29 against a plain stdlib `http` server doing the same work (same
-  machine, `wrk -t4`): zokor matched it on the static route but ran
-  `/users/:id` at half its rate and `POST /echo` at a quarter. The cost was
-  allocation, not routing: `bench/allocs/` (new) counts it per operation.
-  `dto` ran `snake_keys` on every body -- parse, rebuild every key, render,
-  then `json.decode` parsed again: 79 allocations for a one-field body. It
-  now skips that when `snake_keys_is_identity` proves the rewrite is a no-op
-  (strict JSON, no uppercase or escaped key, no duplicate key, no `\u`
-  escape); the differential test decodes every corpus document both ways.
-  `user_json`/`message_json` went through a builder (20 and 32 allocations);
-  they now `json.encode` a struct (5 and 4), byte-identical to before.
-  `strip_query` and the `:id` slice stopped copying the whole path.
-  Per request: `/users/:id` 52 -> 31 allocations, `/echo` 149 -> 47; the
-  plain server is at 28 and 36. Throughput, alternated A/B: `/users/:id`
-  1.32-1.35x, `/echo` 2.57-2.61x, `/` unchanged (the control). p99 did not
-  move: it is set by slang's scheduler wakeup stalls (slang next-steps,
-  "Tail latency"), which the same runs show on `/` too.
-- [x] **`make check` hangs in `test_drain_stops_at_deadline`.** Found
-  2026-09-29, on `dev` as it stands (not introduced by anything since).
-  Both drain tests hang even run alone (`slangc test src --run drain`):
-  their `wait_idle()` loops until `proc.active_tasks()` is 0, which under
-  the test runner apparently never happens. Every other test passes. Until
-  this is fixed `make check` cannot go green, so CI cannot either.
-  Fixed 2026-10-01: `slangc test` runs each test in a spawned task, which
-  `active_tasks()` counts, so the count never reached 0. The tests now
-  drain to the count they started with (`drain_to`).
-- [ ] **[slang] `builder.new_bytes()` costs 5 allocations and 1.3 KB** before
-  anything is written (its 512-byte chunk is built with `strings.repeat` and
-  `to_bytes`), and every `write_str` copies through `to_bytes`. Every
-  builder user pays it, `http.escape_json_bytes` included.
-- [ ] **[slang] `json.decode` into `int` loses precision above 2^53**:
-  `9007199254740993` decodes as `9007199254740992`, so a 64-bit id in a
-  request body is silently changed. zokor's own `Json` keeps number text and
-  is unaffected; `dto` is not, since it decodes through slang.
-
-- [ ] **Close the gap to plain slang** (measured 2026-10-12, see
-  docs/benchmarks.md "zokor against plain slang"): dynamic routes cost
-  17-37% more server CPU per request than the same routes on stdlib
-  `http`. Remaining, by size: **[slang]** the reactor's timer nudge on
-  every deadline-bearing wait (~1.4-2.3 us); **[slang]** `spawn` +
-  `join_wait` waking idle workers, which per-request panic isolation pays
-  (~1.5 us Linux, ~4 us macOS) -- or slang closing a panicked task's
-  links, which would let isolation move off the request path; zokor's
-  own `Ctx`/routing (~2 us). Done: the three read deadlines share one
-  clock read (four reads per request -> two). Unreproduced: one c=2000 run on Linux collapsed to
-  356 rps with a 9 s p99; six runs after it did not.
-
-- [x] **A connection the server closes says so.** The response before a
-  server-initiated close (`max_requests_per_conn`, a client's own
-  `Connection: close`, 413/431, the 500 after a panic) carried
-  `Connection: keep-alive`, so a keep-alive client could send its next
-  request -- a POST included -- on a connection already closing. Found on
-  a quiet VPS: latgen logged one error per connection at exactly the
-  100,000th request. Each such response now says `Connection: close`.
-
-## 1. Language prerequisites
-
-- [x] `new_router(state)` and `new_group(router, prefix)` constructors,
-  replacing the seven-field `Router[S] { ... }` literal every service
-  wrote by hand. `new_group` is a free-function alias of the existing
-  `router.group(prefix)` method, for services that want constructor-style
-  naming throughout.
-- [x] `zokor.dto[T](c)`: decode a body into `T` and report failure through
-  `decode_failed`, in one call -- `let r: result[T, http.Response] =
-  zokor.dto(c);`. A free function, not a method on `Ctx[S]`: a generic
-  method cannot yet declare a type parameter of its own beyond the
-  struct's. Needed `Ctx[S]` to carry its own `errors: Registry` (from the
-  router, not the app's own state by convention) so the failure response
-  can be built without it.
-- [x] `zokor.query_as[T](c)`: the same for the query string --
-  `internal/path.query_all` plus a value-shape heuristic (`true`/`false`
-  and anything `to_int`/`to_float` accept go in unquoted, everything else
-  quoted) build a JSON object slang's own `json.decode` then fills `T`
-  from, with the same field-level errors as `dto`. Not a full binder --
-  slang has no reflection, so there is no way to ask `T` what type each
-  field wants -- but it covers str/int/float/bool fields, which is most
-  of them.
-
-## 2. The server edge (blocked on generic functions and the serve loop)
-
-Nothing here can be honest until `listen_and_serve` exists, because they are
-properties of the server, not of a handler.
-
-- [x] **`listen_and_serve`**: accept loop that only accepts and spawns, one
-  task per connection, keep-alive, HTTP/1.1 pipelining left off. `src/serve.sl`,
-  on slang's `http.read`/`http.write` over a `link`, so framing (and the
-  request-smuggling refusals that come with it) is the stdlib's, not ours.
-  Stops accepting on SIGTERM and drains before returning. `examples/hello`
-  is now a real server with a real client over a real socket -- the
-  stand-in requests are gone -- and `make check` exercises it end to end.
-  Needed two slang fixes: `spawn` of a generic function (PR #188), and
-  `crypto.rand`'s libcrypto deadlock (PR #189).
-  *Still owed:* `examples/chat`'s stand-in requests, which belong to "wire
-  WebSocket and Socket.IO into the loop" below. (A request id per
-  request has landed: see "Wire `new_request_id` in" below.)
-  ~~The ~0.5% non-2xx rate on the body-reading path~~ was never this
-  repo's bug: root-caused to a codegen bug in slang's `json.decode`
-  (double-evaluating a non-trivial `str` argument, unrooting the first
-  result before it was read -- see `docs/benchmarks.md`), fixed in
-  slang PR #228.
-- [x] **Timeouts**: read header, read body, write, idle -- each its own
-  `ServerConfig` field (`default_server_config()`'s defaults: 60s idle,
-  5s header, 30s body, 10s write), each overridable via
-  `server_config_from(cfg)` (`IDLE_TIMEOUT`/`READ_HEADER_TIMEOUT`/
-  `READ_BODY_TIMEOUT`/`WRITE_TIMEOUT`). `listen_and_serve` keeps its
-  existing signature (defaults); `listen_and_serve_with(r, port, sc)`
-  takes a config. Needed **[slang]** `read_frame` to take three
-  deadlines instead of one, since one deadline can't honestly answer
-  "how long should this wait" for idle-vs-slow-loris -- merged in
-  slang PR #229, along with that function's first-ever test coverage
-  (it had none at all before).
-- [x] **Limits (per-connection)**: `ServerConfig.max_request_bytes`
-  (default 16KB, the number the read buffer always used, now a
-  setting) refuses an oversized request at read time -- `431` if the
-  headers alone never complete before the buffer fills, `413` if a
-  declared `Content-Length` alone is bigger than the buffer, never a
-  silent drop after buffering. Needed **[slang]** `read_frame` to say
-  which of the two happened, not one message for both (RFC 9110 gives
-  them different codes) -- slang PR #230.
-  `ServerConfig.max_requests_per_conn` (default 100,000) closes a
-  connection after it, answering the request that hit the limit
-  normally first. *Still owed:* max connections (a server-wide cap,
-  not a per-connection one -- needs a shared, concurrency-safe
-  counter across every accept loop, which the other three didn't; a
-  separate item until that's designed).
-- [x] **Graceful shutdown**: on `SIGTERM`/`SIGINT`, `accept_loop` stops
-  accepting (`proc.shutdown_requested()`, unchanged from `listen_and_serve`'s
-  original landing), then `accept_first` drains in-flight connections
-  with a new `drain(deadline)` helper -- `proc.active_tasks() > 0` polled
-  against a real deadline (`time.mono() + sc.shutdown_timeout`) instead
-  of waited on unconditionally, so one stuck connection cannot hang a
-  shutdown forever. `ServerConfig.shutdown_timeout` (default 30s,
-  overridable via `SHUTDOWN_TIMEOUT`) is the bound. Tests exercise
-  `drain` directly against a spawned task that outlives its deadline
-  (returns at the deadline, not the task's own finish) and one that
-  doesn't (returns as soon as idle, not at the deadline).
-- [x] **Panic recovery per request**: a panicking handler answers `500`
-  (`errors.respond(r.errors, "internal", "")` -- "" until request ids
-  land, same placeholder every response on this path already uses)
-  instead of silently dropping the connection. `Router.serve_static`
-  split into `match_static` (the static check alone, `opt[StaticBody]`,
-  no handler call, cannot panic) and the unchanged `serve_static`
-  wrapper, so `serve_conn` can run the static fast path with zero
-  isolation cost and only spawn+`join_wait` around `dispatch` (a
-  plain-function wrapper `serve_frame` needs, since `spawn`'s target
-  can't be a method) on the dynamic path, where a handler actually
-  runs. A panicking connection is closed after answering, not kept
-  open for more requests. That 500 now carries the request's id (see
-  "Wire `new_request_id` in" below).
-- [ ] TLS termination through slang's `net.tls_*`, or a documented decision to
-  leave it to a proxy.
-- [ ] Wire WebSocket and Socket.IO into the loop: upgrade a connection in
-  place, hand it to `receive`, and run the Engine.IO ping timer.
-- [ ] Socket.IO over HTTP long-polling, so a client works without
-  `transports: ["websocket"]`; and binary attachment frames.
-
-## 3. Middleware every API needs (none of these is blocked)
-
-All are `before` / `after` hooks that attach to a group, so they can be built
-now and tested with the test kit.
-
+- [ ] **Structured request logging, pluggable.** One record per request:
+  time, request id, method, route *pattern* (not the path), status,
+  duration, bytes, client address. Decided (2026-10-12):
+  - **On by default, off from config** (`LOG_REQUESTS=false`, and a
+    `ServerConfig` field).
+  - **Beautiful by default, NestJS-style**: `[zokor] <pid>  - <time>
+    LOG [Router] GET /users/:id 200 +3ms`, coloured on a TTY, plain
+    otherwise; **JSON lines** for production (`LOG_FORMAT=json`). Levels
+    (`debug`/`log`/`warn`/`error`), with `LOG_LEVEL`.
+  - **Not coupled to one implementation**: the router holds a logger value
+    -- a struct of `fn` values (slang has no interfaces or closures), so
+    a separate logging package can be injected in its place. zokor ships
+    the console logger and a no-op one. Startup lines too (routes mapped,
+    listening), as Nest prints.
+  - Redaction of configured headers; never a secret, token or body.
+  Depends on: client address (below), for the address field.
 - [ ] **Client address and trusted proxies.** `X-Forwarded-For` and
-  `Forwarded` are only believed from a proxy you name. Rate limiting and
-  logging both need this to be right, so it comes first.
+  `Forwarded` are believed only from proxies listed in
+  `TRUSTED_PROXIES` (comma-separated addresses and CIDRs); otherwise the
+  socket's peer is the client. `c.client_ip()`. Logging and the rate
+  limiter both use it, so a spoofed header can neither hide a client nor
+  frame one.
+- [ ] **Health and readiness**: `/healthz` (the process is up) and
+  `/readyz` (dependencies reachable, through checks a service
+  registers), with readiness turning false as graceful shutdown starts so
+  a load balancer stops sending traffic before the drain.
+- [ ] **Server-wide connection cap**: a `ServerConfig` limit on open
+  connections across every acceptor (a shared, concurrency-safe count);
+  past it, accept and close at once rather than let idle connections
+  exhaust file descriptors.
+
+## 2. Browser-facing APIs
+
 - [ ] **CORS**: allowed origins, methods, headers, credentials, max-age,
   correct `Vary: Origin`, and a real preflight answer.
 - [ ] **Security headers**: HSTS, `X-Content-Type-Options`, frame options,
   referrer policy, a configurable CSP; on by default, off by choice.
-- [ ] **Rate limiter**: token bucket, per key (address, token, tenant),
-  sharded so it does not serialise on one mutex, time injected so it is
-  testable, `429` with `Retry-After` and `RateLimit-*` headers. Was in the
-  v0.1 scope. Started: `RateLimiter`/`rate_limit` (sliding window, per
-  key, time injected via `take_at`, `429` + `Retry-After` through the
-  registry). Still owed: sharding, `RateLimit-*` headers.
-- [ ] **Cookies**: parse, set with every attribute, and signed cookies with a
-  rotating key.
+- [ ] **Cookies**: parse, set with every attribute (`Secure`,
+  `HttpOnly`, `SameSite`, `Max-Age`, `Domain`, `Path`), and signed
+  cookies with a rotating key.
+- [ ] **Input sanitisation against injection**, opt-in and configurable:
+  - **NoSQL (Mongo-style operator injection)**, like `express-mongo-sanitize`:
+    object keys starting with `$` or containing `.` in JSON bodies and
+    query parameters are rejected (400, the default) or stripped. Useful
+    before zokor has a Mongo driver: it protects whatever the body is
+    forwarded to.
+  - **SQL**: pattern-blacklisting is not a defence -- it rejects
+    `O'Brien` and still misses real attacks. The defence is parameterised
+    queries only: the Postgres helpers (section 3) expose no string-built
+    SQL, and `zokor check` flags SQL assembled by concatenation.
+  - **[slang]** A MongoDB driver (BSON, the OP_MSG wire protocol, a pool)
+    does not exist yet; it is its own project, scoped separately.
 - [ ] **Auth helpers**: Bearer extraction (exists), opaque bearer
   tokens (`TokenStore`, exists, in memory), Basic, API keys with
   constant-time comparison, and JWT HS256 sign and verify with `exp` /
   `nbf` / `aud` checks. RS256 once slang can verify it.
-- [ ] **Conditional requests**: `ETag`, `Last-Modified`, `If-None-Match`,
-  `If-Modified-Since`, `304`.
-- [ ] **Compression**: gzip through slang's `compress`, honouring
-  `Accept-Encoding`, with a size floor and a content-type allowlist so it is
-  never applied to something already compressed.
-- [ ] **Static files**: traversal-safe (`..`, symlinks, encoded separators),
-  `Range` requests, content types, cache headers, index files.
-- [ ] **Structured request logging**: one line per request, JSON, with the
-  request id, route *pattern* (not path), status, duration and bytes; sampling
-  and redaction of configured headers.
-- [ ] **Health**: `/healthz` (process is up) and `/readyz` (dependencies are
-  reachable), with a way for a service to register its own checks.
-- [x] Wire `new_request_id` in: the serve loop gives every dynamic
-  request an id (`ServerConfig.request_ids`, on by default), reusing an
-  incoming `X-Request-Id` of 1-64 `[A-Za-z0-9._-]` and generating one
-  otherwise; it is in the response header and every error envelope,
-  including the 500 after a panic. Not middleware: the panic 500 is built
-  outside the router. The "crypto.rand is unsafe from a parking task" note
-  this was blocked on was stale (810k requests under forced preemption,
-  macOS and Linux, 0 errors).
-- [ ] Content negotiation (`Accept`) and redirect helpers.
+- [ ] **Rate limiter, finished**: `RateLimiter`/`rate_limit` exist
+  (sliding window, per key, time injected via `take_at`, `429` +
+  `Retry-After`). Still owed: sharding, `RateLimit-*` headers, and keying
+  on the trusted client address.
 
-## 4. What makes it enterprise
+## 3. Building real services
 
 - [ ] **Postgres helpers**: pool setup from config, transactions
   (`tx.run(fn)` that commits or rolls back), rows into structs, and the
-  error shape for a unique violation. Only one package imports `pg`.
+  error shape for a unique violation. Parameterised queries only; only one
+  package imports `pg`.
+- [ ] **[slang] A sufficient `time` package.** Today it has a monotonic
+  clock, wall time and sleep. Missing for real services: calendar time
+  (date and time of day, time zones from the system tz database), parsing
+  and formatting (RFC 3339 / ISO 8601, RFC 1123 for HTTP dates, custom
+  layouts), durations with units, date arithmetic (add months, start of
+  day) and comparisons. Built on the existing package, with C interop
+  (`localtime_r`, `timegm`, `strftime`) where libc already does it
+  right. Scoped and agreed in slang before code; several items below need
+  it (HTTP dates for conditional requests, cookie expiry, pagination
+  cursors, idempotency TTLs).
+- [ ] **Pagination**: offset and cursor forms, with the `Link` header and a
+  response envelope that does not change shape between them.
+- [ ] **Idempotency keys** for unsafe methods, stored so a retried `POST`
+  returns the first answer (in memory, or Redis through `redis_from_config`).
+- [ ] **Compression**: gzip through slang's `compress`, honouring
+  `Accept-Encoding`, with a size floor and a content-type allowlist so it is
+  never applied to something already compressed.
+- [ ] **Conditional requests**: `ETag`, `Last-Modified`, `If-None-Match`,
+  `If-Modified-Since`, `304`.
+- [ ] **Static files**: traversal-safe (`..`, symlinks, encoded separators),
+  `Range` requests, content types, cache headers, index files.
 - [ ] **Migrations**: ordered, checksummed, applied in a transaction, with an
   advisory lock so two instances do not race, and a `zokor migrate` command.
 - [ ] **Metrics**: Prometheus text format at `/metrics`; request count and
@@ -286,41 +118,55 @@ now and tested with the test kit.
   trace id on every log line and error envelope.
 - [ ] **Background work**: a scheduler for periodic jobs and a channel-backed
   queue with retry and backoff, on slang's tasks.
-- [ ] **Pagination**: offset and cursor forms, with the `Link` header and a
-  response envelope that does not change shape between them.
-- [ ] **Idempotency keys** for unsafe methods, stored so a retried `POST`
-  returns the first answer.
 - [ ] **OpenAPI**: generate a document from `routes_list` plus the declared
   DTOs and the error registry.
 - [ ] **Config profiles** (`dev`, `test`, `prod`), and `.env.test` selection
   from the profile.
+- [ ] Content negotiation (`Accept`) and redirect helpers.
 - [ ] **`zokor check`**: the layout checker. Import direction, only the
-  database adapter imports `pg`, every package has tests, routes private by
-  default, tenant id an explicit parameter. `tyto`'s `AGENTS.md` is the seed
-  and the reason this exists.
+  database adapter imports `pg`, no SQL built by concatenation, every
+  package has tests, routes private by default, tenant id an explicit
+  parameter. `tyto`'s `AGENTS.md` is the seed and the reason this exists.
 - [ ] **Ports and fakes**, documented as *the* dependency pattern: a struct of
   `fn` values wired at startup, and a fake for tests. slang has no reflection
   or closures, so this is the answer to what Spring and Nest do with a
-  container; it needs a guide and a worked example, not a framework.
+  container; it needs a guide and a worked example, not a framework. The
+  logger (section 1) is its first instance.
+
+## 4. Realtime and transport
+
+- [ ] TLS termination through slang's `net.tls_*`, or a documented decision to
+  leave it to a proxy.
+- [ ] Wire WebSocket and Socket.IO into the loop: upgrade a connection in
+  place, hand it to `receive`, and run the Engine.IO ping timer. Also
+  replaces `examples/chat`'s stand-in requests.
+- [ ] Socket.IO over HTTP long-polling, so a client works without
+  `transports: ["websocket"]`; and binary attachment frames.
 
 ## 5. Shipping it
 
+- [ ] `LICENSE` (MIT, Dolph Tech Limited, matching slang), `CONTRIBUTING.md`,
+  `SECURITY.md` and a code of conduct.
 - [ ] **Docs site**, generated from the README, the `src/` signatures and the
   examples, the way slang's `www/build.py` does. Uses `assets/zokor.png`:
   the header, the social card, and a favicon. The source image is 1024 x 1024
   and 358 KB, so produce sized variants (a 64 px favicon, a ~256 px header,
   a 1200 x 630 card) instead of shipping the original everywhere.
-- [ ] `LICENSE` (MIT, Dolph Tech Limited, matching slang), `CONTRIBUTING.md`,
-  `SECURITY.md` and a code of conduct.
-- [ ] CI: `make check` on Linux and macOS against slang's `dev`, until a
-  release has generics, then against that release.
-- [ ] First tagged release, `v0.1.0`, once slang has a release that includes
-  generic structs, methods and `dir` pins. Until then the README's
-  Requirements section is the truth.
 - [ ] A `slangc new`-style scaffold: `zokor new <name>` producing a service
   with the layout, config, one route and one test.
-- [x] **Agent guide `docs/llms-small.txt`**: one page (under 2,000 tokens)
-  that lets an agent write a correct service without reading anything else
-  -- example-first, the one way for errors/config/validation/routing/tests,
-  every snippet compile-checked by `make snippets` (new `docs/check_snippets.sh`,
-  wired into `make check`), so the guide cannot drift from the code.
+- [ ] First tagged release, `v0.1.0`, once a slang release includes what
+  zokor needs (generics, `dir` pins, `exclude`, and this year's fixes).
+  Until then the README's Requirements section is the truth.
+
+## Performance
+
+- [ ] **The rest of the gap to plain slang** (docs/benchmarks.md, "zokor
+  against plain slang"). Landed since it was measured: slang's reactor no
+  longer nudges on deadline waits (slang #386, ~2 us a request), joined
+  spawns wake no idle worker (#387, -14% to -17% CPU at 1-4 clients), the
+  read deadlines share one clock read (#35), and extra response headers
+  cost 2 allocations instead of 52 (slang #396). Left, by size: the
+  per-request task that isolates handler panics (~1.5 us on Linux), and
+  `Ctx`/routing (~1-2 us). Needs a fresh measurement on a quiet host
+  before more work. Unreproduced: one c=2000 run on Linux collapsed to
+  356 rps with a 9 s p99; six runs after it did not.
