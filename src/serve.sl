@@ -54,7 +54,13 @@ pub gc struct ServerConfig {
     // this point goes away when the process exits, the same as it
     // would under a hard kill, just later and with everything else
     // given a real chance to finish first.
-    shutdown_timeout: int
+    shutdown_timeout: int,
+    // Whether each dynamic request gets an id: reused from a well-formed
+    // X-Request-Id, else generated (request_id_for). It is sent back as
+    // X-Request-Id and carried in every error envelope, so a customer
+    // quoting it finds the exact request. Static routes are fixed bytes
+    // and carry none. On by default; REQUEST_IDS=false turns it off.
+    request_ids: bool
 }
 
 // Safe rather than infinite, per the todo item this answers. 60s idle
@@ -85,14 +91,15 @@ pub fn default_server_config() -> ServerConfig {
         // worker_shutdown_timeout choice -- long enough for an ordinary
         // in-flight request to finish, short enough that a deployment's
         // rollout is not left waiting on this one process indefinitely.
-        shutdown_timeout: 30000000000
+        shutdown_timeout: 30000000000,
+        request_ids: true
     };
 }
 
 // The same defaults, overridable per field from config: IDLE_TIMEOUT,
 // READ_HEADER_TIMEOUT, READ_BODY_TIMEOUT, WRITE_TIMEOUT, SHUTDOWN_TIMEOUT
 // (durations, config.duration_or's format, e.g. "30s"), MAX_REQUEST_BYTES,
-// MAX_REQUESTS_PER_CONN (plain integers).
+// MAX_REQUESTS_PER_CONN (plain integers), REQUEST_IDS (true/false).
 pub fn server_config_from(cfg: Config) -> ServerConfig {
     let d = default_server_config();
     return ServerConfig {
@@ -106,7 +113,8 @@ pub fn server_config_from(cfg: Config) -> ServerConfig {
         max_requests_per_conn: int_or(cfg, "MAX_REQUESTS_PER_CONN",
                                       d.max_requests_per_conn),
         shutdown_timeout: duration_or(cfg, "SHUTDOWN_TIMEOUT",
-                                      d.shutdown_timeout)
+                                      d.shutdown_timeout),
+        request_ids: bool_or(cfg, "REQUEST_IDS", d.request_ids)
     };
 }
 
@@ -176,8 +184,9 @@ fn closing(r: http.Response) -> http.Response {
 // `spawn`'s target has to be a plain function, not a method, which is
 // the only reason this exists rather than serve_conn calling
 // `r.serve_frame(f, "")` directly.
-fn dispatch[S](r: Router[S], f: http.WireFrame) -> http.Response {
-    return r.serve_frame(f, "");
+fn dispatch[S](r: Router[S], f: http.WireFrame,
+               request_id: str) -> http.Response {
+    return r.serve_frame(f, request_id);
 }
 
 // One connection, until the client goes away or asks to close.
@@ -240,13 +249,6 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
             }
             return;
         }
-        // No request id yet, and not because one is unwanted: slang's
-        // crypto.rand is unsafe from a task that also parks on socket
-        // I/O -- a serve loop calling it dies under two concurrent
-        // connections, in slang's own httpd shape as much as this one
-        // (slang PR #189 fixes the CPU-bound half; the parking half is
-        // still open). `serve_id` takes "" for exactly this case, and
-        // wiring ids in is its own todo item anyway.
         served = served + 1;
         // The request that HITS max_requests_per_conn is still
         // answered normally -- only the one after it would not be.
@@ -257,20 +259,27 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
         let si = r.static_index(wf);
         if si < 0 {
             // Not a static route: the handler runs here, isolated in
-            // its own task -- see `dispatch`'s own doc comment.
-            let h = spawn dispatch(r, wf);
+            // its own task -- see `dispatch`'s own doc comment. Its id
+            // is made here, not in the router, so the 500 below carries
+            // the same one if the handler panics.
+            let rid = "";
+            if sc.request_ids {
+                rid = request_id_for(wf.headers);
+            }
+            let h = spawn dispatch(r, wf, rid);
             let jr = join_wait(h);
             guard let dyn_resp = jr else {
                 // The handler panicked. spawn/join_wait already
                 // isolated it -- this task, and the process, are
                 // both still fine -- but the client is still owed an
-                // answer. "" for the request id, the same placeholder
-                // every response on this path uses today (wiring a
-                // real one is a separate, already-tracked item).
-                // Closed afterward rather than trusted to keep
-                // serving more requests on whatever state the panic
-                // left behind.
-                let resp500 = closing(respond(r.errors, "internal", ""));
+                // answer, under the request's id, in the envelope and
+                // the X-Request-Id header alike. Closed afterward rather
+                // than trusted to keep serving more requests on whatever
+                // state the panic left behind.
+                let resp500 = closing(respond(r.errors, "internal", rid));
+                if len(rid) > 0 {
+                    resp500 = http.with_header(resp500, "x-request-id", rid);
+                }
                 let _w5 = http.write(&mut c, resp500, &mut sa,
                                      write_deadline(sc));
                 return;
