@@ -217,8 +217,12 @@ fn send(rq: httpc.Request) -> httpc.Response {
     return resp;
 }
 
+// Every request carries its own X-Request-Id, which the server reuses
+// (it is well-formed): the ids in the envelopes below are this one, so
+// the output is the same on every run instead of a fresh random id each.
 fn call(method: str, p: str, token: str, body: str, ctype: str) -> httpc.Response {
     let rq = httpc.new_request(method, base() + p);
+    rq.headers["x-request-id"] = "example-req-1";
     if len(token) > 0 {
         rq.headers["authorization"] = "Bearer " + token;
     }
