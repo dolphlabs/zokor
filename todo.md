@@ -73,9 +73,13 @@ library, made and merged there first.
   Applied by the router and baked into static renderings (both the
   keep-alive and the close variant); COOP/CORP opt-in. +10 allocations per
   dynamic response (2 per line in http.write's emit, slang-side).
-- [ ] **Cookies**: parse, set with every attribute (`Secure`,
+- [x] **Cookies**: parse, set with every attribute (`Secure`,
   `HttpOnly`, `SameSite`, `Max-Age`, `Domain`, `Path`), and signed
-  cookies with a rotating key.
+  cookies with a rotating key. Safe defaults, every attribute checked
+  (`set_cookie` returns err), `Partitioned`, `__Host-`/`__Secure-` rules,
+  HMAC-SHA256 over name and value with `COOKIE_KEYS` rotation and a
+  constant-time compare. Not done: `Expires` (needs an HTTP date from the
+  time package; `Max-Age` covers every browser in use).
 - [ ] **Input sanitisation against injection**, opt-in and configurable:
   - **NoSQL (Mongo-style operator injection)**, like `express-mongo-sanitize`:
     object keys starting with `$` or containing `.` in JSON bodies and

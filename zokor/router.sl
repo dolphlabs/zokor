@@ -1334,6 +1334,24 @@ impl Ctx[S] {
         return http.header(self.req, name) ?? "";
     }
 
+    // The value of cookie `name`, "" when the request carried none.
+    pub fn cookie(self: Ctx[S], name: str) -> str {
+        let h = http.header(self.req, "cookie") ?? "";
+        if len(h) == 0 {
+            return "";
+        }
+        let all = parse_cookies(h);
+        if has(all, name) {
+            return all[name];
+        }
+        return "";
+    }
+
+    // Every cookie the request carried.
+    pub fn cookies(self: Ctx[S]) -> map[str]str {
+        return parse_cookies(http.header(self.req, "cookie") ?? "");
+    }
+
     // What a `before` resolved, read by the handler: the user a token
     // belongs to, the tenant a subdomain names, the plan a customer is
     // on. The lookup happens once, at the edge, not in every handler.

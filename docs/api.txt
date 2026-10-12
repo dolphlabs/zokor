@@ -61,6 +61,33 @@ is_valid(c: Config) -> bool
 check(c: Config) -> result[bool, str]
     Every problem, one per line, named and explained.
 
+## cookies.sl -- Cookies.
+enum SameSite { LAX, STRICT, NONE }
+gc struct Cookie { name: str, value: str, path: str, domain: str, max_age: int, secure: bool, http_only: bool, same_site: SameSite, partitioned: bool }
+new_cookie(name: str, value: str) -> Cookie
+cookie_problem(c: Cookie) -> str
+    What is wrong with `c`, or "".
+cookie_string(c: Cookie) -> str
+    The Set-Cookie value for `c`, unchecked: callers check first.
+set_cookie(resp: http.Response, c: Cookie) -> result[http.Response, str]
+    `resp` with a Set-Cookie header for `c`, or why `c` cannot be sent.
+clear_cookie(resp: http.Response, name: str, path: str, domain: str) -> result[http.Response, str]
+    Tells the browser to delete `name`.
+parse_cookies(header: str) -> map[str]str
+    Every well-formed name=value pair in a Cookie header, in order; a pair without `=`, with a bad name or with bytes a cookie...
+gc struct CookieKeys { keys: [bytes] }
+cookie_keys(keys: [str]) -> result[CookieKeys, str]
+    Keys of at least 32 bytes each, newest first.
+cookie_keys_from(cfg: Config) -> CookieKeys
+    COOKIE_KEYS, comma-separated, newest first.
+constant_time_equal(a: bytes, b: bytes) -> bool
+    Compares in time that depends only on the lengths, so a forged signature cannot be found a byte at a time by timing the answer.
+signed_cookie(name: str, value: str, keys: CookieKeys) -> result[Cookie, str]
+    A cookie whose value is `value.signature`.
+signed_value[S](c: Ctx[S], name: str, keys: CookieKeys) -> opt[str]
+    The value of signed cookie `name` when its signature matches any key, none when it is missing, unsigned or forged.
+verify_signed(name: str, raw: str, keys: CookieKeys) -> opt[str]
+
 ## cors.sl -- CORS.
 gc struct CorsPolicy { origins: [str], methods: [str], headers: [str], expose: [str], credentials: bool, max_age: int }
 no_cors() -> CorsPolicy
@@ -408,6 +435,10 @@ Group.options(p: str, h: fn(Ctx[S]) -> http.Response) -> int
 Ctx.param(name: str) -> str
 Ctx.param_int(name: str, fallback: int) -> int
 Ctx.header(name: str) -> str
+Ctx.cookie(name: str) -> str
+    The value of cookie `name`, "" when the request carried none.
+Ctx.cookies() -> map[str]str
+    Every cookie the request carried.
 Ctx.set_local(key: str, v: str) -> int
     What a `before` resolved, read by the handler: the user a token belongs to, the tenant a subdomain names, the plan a customer...
 Ctx.local(key: str) -> str
