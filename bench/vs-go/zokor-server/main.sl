@@ -9,7 +9,7 @@
 import "http";
 import "json";
 import "proc";
-import "../../../src" as zokor;
+import "../../../zokor" as zokor;
 
 gc struct Bench {
     started: int,

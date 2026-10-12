@@ -11,8 +11,8 @@ import "builder";
 import "json";
 import "proc";
 import "strings";
-import "../../src" as zokor;
-import "../../src/internal/path" as path;
+import "../../zokor" as zokor;
+import "../../zokor/internal/path" as path;
 
 gc struct User {
     id: str,
