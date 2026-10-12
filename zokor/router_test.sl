@@ -396,9 +396,10 @@ fn test_static_bytes_serves_without_a_handler_call() {
     assert(b.status == 200);
     assert(b.content_type == "text/plain; charset=utf-8");
     assert(b.body == b"Hello, World!");
-    // the prebuilt rendering is byte-identical to the dynamic emit
-    assert(b.keep_alive == http.serialize(http.text_response_bytes(
-        200, "OK", "text/plain; charset=utf-8", b"Hello, World!")));
+    // the prebuilt rendering is byte-identical to the dynamic emit,
+    // security headers included
+    assert(b.keep_alive == http.serialize(r.security.apply(http.text_response_bytes(
+        200, "OK", "text/plain; charset=utf-8", b"Hello, World!"))));
     // a dynamic route alongside still works through the same entry
     r.get("/users/:id", h_param);
     let one = frame_req("GET", "/users/42");

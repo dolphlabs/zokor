@@ -132,6 +132,9 @@ pub gc struct Route[S] {
     // per-request some() or none costs an allocation; these are
     // never mutated, so every request can share them.
     static_hit: opt[http.StaticBody],
+    // The same answer for a connection that is closing: its prebuilt
+    // bytes say `Connection: close`, and are sent the same way.
+    static_close_hit: opt[http.StaticBody],
     // A none to start a Ctx's params and locals from, for the same
     // reason. Safe to share: nothing writes into an opt in place --
     // set_local replaces the field with a fresh some().
@@ -158,6 +161,8 @@ pub gc struct Router[S] {
     ready: Readiness[S],
     // Off until `r.cors(policy)`; see cors.sl.
     cors: Cors,
+    // On by default; see security.sl.
+    security: Security,
 }
 
 // An application builds its router from its state alone; everything else
@@ -178,7 +183,8 @@ pub fn new_router[S](state: S) -> Router[S] {
         auto_options: true,
         auto_head: true,
         ready: Readiness[S] { live_path: "", ready_path: "", checks: [], timeout: default_ready_timeout(), logger: no_logger() },
-        cors: cors_off()
+        cors: cors_off(),
+        security: security_compile(default_security_headers())
     };
 }
 
@@ -284,6 +290,7 @@ impl Router[S] {
             static_body: sb,
             static_rendered: b"",
             static_hit: none,
+            static_close_hit: none,
             no_map: none
         });
         return len(self.routes);
@@ -336,7 +343,8 @@ impl Router[S] {
         }
         let no_befores: [fn(Ctx[S]) -> opt[http.Response]] = [];
         let no_afters: [fn(Ctx[S], http.Response) -> http.Response] = [];
-        let rendered = http.static_render(status, content_type, body);
+        let rendered = static_render_with(status, content_type, self.security.lines, body, true);
+        let closing_bytes = static_render_with(status, content_type, self.security.lines, body, false);
         push(self.routes, Route[S] {
             method: Method.GET,
             pattern: p,
@@ -358,6 +366,12 @@ impl Router[S] {
                 content_type: content_type,
                 body: body,
                 keep_alive: rendered
+            }),
+            static_close_hit: some(http.StaticBody {
+                status: status,
+                content_type: content_type,
+                body: body,
+                keep_alive: closing_bytes
             }),
             no_map: none
         });
@@ -432,6 +446,31 @@ impl Router[S] {
     pub fn after(self: Router[S], f: fn(Ctx[S], http.Response) -> http.Response) -> int {
         push(self.afters, f);
         return len(self.afters);
+    }
+
+    // Replaces the security headers (see security.sl);
+    // no_security_headers() turns them off. -1, changing nothing, when `h`
+    // has a problem; security_problem(h) says what. Static routes already
+    // registered are re-rendered with the new set.
+    pub fn security_headers(self: Router[S], h: SecurityHeaders) -> int {
+        if len(security_problem(h)) > 0 {
+            return -1;
+        }
+        self.security = security_compile(h);
+        for rt in self.routes {
+            if rt.has_static {
+                let ka = static_render_with(rt.static_status, rt.static_ctype,
+                                            self.security.lines, rt.static_body, true);
+                let cl = static_render_with(rt.static_status, rt.static_ctype,
+                                            self.security.lines, rt.static_body, false);
+                rt.static_rendered = ka;
+                rt.static_hit = some(http.StaticBody { status: rt.static_status,
+                    content_type: rt.static_ctype, body: rt.static_body, keep_alive: ka });
+                rt.static_close_hit = some(http.StaticBody { status: rt.static_status,
+                    content_type: rt.static_ctype, body: rt.static_body, keep_alive: cl });
+            }
+        }
+        return len(self.security.lines);
     }
 
     // Turns CORS on with `p` (see cors.sl). -1, leaving CORS off, when the
@@ -891,7 +930,7 @@ impl Router[S] {
             if len(request_id) > 0 {
                 pf = http.with_header(pf, "x-request-id", request_id);
             }
-            return Served { resp: pf, route: "" };
+            return Served { resp: self.security.apply(pf), route: "" };
         }
         // A HEAD with no HEAD route is served by the GET one, and the
         // body dropped after the handler and the hooks have run -- so
@@ -1073,7 +1112,7 @@ impl Router[S] {
         if self.cors.on && !http.has_resp_header(out, "access-control-allow-origin") {
             out = self.cors.apply(out, c.header("origin"));
         }
-        return out;
+        return self.security.apply(out);
     }
 
     // The registry's codes, rendered with this request's id. A handler
