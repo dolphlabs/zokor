@@ -9,6 +9,12 @@
 #
 # slang `dev`, not a release: zokor tracks the compiler it is developed
 # against, and a break here is something to report upstream early.
+#
+# Every platform slang's own CI covers: Linux x86_64, Linux arm64 and
+# macOS on Apple Silicon. slang's runtime has platform-specific code
+# (assembly trampolines, kqueue vs epoll, GCC vs clang), so a server
+# framework that only ever ran on one of them would meet its first
+# arm64 or macOS bug in a user's hands.
 
 name: CI
 
@@ -23,7 +29,18 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-24.04
+    name: check (${{ matrix.name }})
+    strategy:
+      fail-fast: false        # one platform failing must not hide the others
+      matrix:
+        include:
+          - name: linux-x86_64
+            runner: ubuntu-24.04
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+          - name: macos-arm64
+            runner: macos-14
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -35,12 +52,24 @@ jobs:
           ref: dev
           path: .slang
 
-      - name: Install build dependencies
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config libssl-dev libsqlite3-dev \
             zlib1g-dev git curl
+
+      # slangc finds Homebrew's keg-only OpenSSL itself, as slang's CI
+      # relies on; sqlite3 and zlib ship with macOS.
+      - name: Install build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install pkg-config openssl@3
+
+      - name: Toolchain
+        run: |
+          uname -sm
+          cc --version | head -1
 
       # GCC 14 makes incompatible-pointer-types an error and slang's C
       # does not build clean under it yet; demote it so a newer runner
