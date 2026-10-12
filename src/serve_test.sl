@@ -73,7 +73,8 @@ fn short_config() -> ServerConfig {
         write_timeout: 200000000,
         max_request_bytes: d.max_request_bytes,
         max_requests_per_conn: d.max_requests_per_conn,
-        shutdown_timeout: d.shutdown_timeout
+        shutdown_timeout: d.shutdown_timeout,
+        request_ids: d.request_ids
     };
 }
 
@@ -167,7 +168,8 @@ fn test_serve_conn_stalled_headers_close_at_header_timeout() {
         write_timeout: d.write_timeout,
         max_request_bytes: d.max_request_bytes,
         max_requests_per_conn: d.max_requests_per_conn,
-        shutdown_timeout: d.shutdown_timeout
+        shutdown_timeout: d.shutdown_timeout,
+        request_ids: d.request_ids
     };
     let r = serve_test_router();
     spawn serve_conn(r, server, sc);
@@ -205,7 +207,8 @@ fn tiny_body_config() -> ServerConfig {
         write_timeout: d.write_timeout,
         max_request_bytes: 256,
         max_requests_per_conn: d.max_requests_per_conn,
-        shutdown_timeout: d.shutdown_timeout
+        shutdown_timeout: d.shutdown_timeout,
+        request_ids: d.request_ids
     };
 }
 
@@ -372,6 +375,109 @@ fn test_serve_conn_answers_close_when_client_asks() {
     println("serve_conn_answers_close_when_client_asks ok");
 }
 
+// One request over a real connection, through serve_conn; the raw
+// response text, or "" if none came back.
+fn one_exchange(r: Router[ServeState], sc: ServerConfig, request: str) -> str {
+    let lr = link_listen(0);
+    guard let ln = lr else { panic("listen"); }
+    let dr = link_dial("127.0.0.1", ln.port(), until_never());
+    guard let client = dr else { panic("dial"); }
+    let ar = ln.accept(until_never());
+    guard let server = ar else { panic("accept"); }
+    spawn serve_conn(r, server, sc);
+    let a = arena_new(2048);
+    let out = req_wire(request, &mut a);
+    let sr = client.send(out, until_never());
+    guard let _n = sr else { panic("client send"); }
+    let inb = a.wire(1024);
+    let rr = client.recv(inb, until_of(time.mono() + 2000000000));
+    guard let n = rr else { return ""; }
+    return to_str(inb[0..n]);
+}
+
+// The X-Request-Id header's value in a raw response, or "".
+fn id_header(resp: str) -> str {
+    let at = strings.find(resp, "x-request-id: ");
+    if at < 0 {
+        return "";
+    }
+    let rest = strings.slice(resp, at + 14, len(resp));
+    return strings.slice(rest, 0, strings.find(rest, "\r\n"));
+}
+
+// Every dynamic request is answered under an id: generated when the
+// client sent none, the same one in the X-Request-Id header and in the
+// error envelope, so a customer quoting it finds the exact request.
+fn test_serve_conn_gives_dynamic_requests_ids() {
+    let r = serve_test_router();
+    let sc = default_server_config();
+    let ok_resp = one_exchange(r, sc, "GET /hi HTTP/1.1\r\nHost: t\r\n" +
+                               "Connection: close\r\n\r\n");
+    if !is_generated(id_header(ok_resp)) {
+        panic("200 without a generated id: " + ok_resp);
+    }
+    let nf = one_exchange(r, sc, "GET /nope HTTP/1.1\r\nHost: t\r\n" +
+                          "Connection: close\r\n\r\n");
+    let id = id_header(nf);
+    if !is_generated(id) {
+        panic("404 without a generated id: " + nf);
+    }
+    if strings.find(nf, "\"request_id\":\"" + id + "\"") < 0 {
+        panic("the envelope does not carry the header's id: " + nf);
+    }
+    if id == id_header(ok_resp) {
+        panic("two requests shared an id");
+    }
+    println("serve_conn_gives_dynamic_requests_ids ok");
+}
+
+fn test_serve_conn_reuses_a_well_formed_client_id() {
+    let r = serve_test_router();
+    let nf = one_exchange(r, default_server_config(),
+                          "GET /nope HTTP/1.1\r\nHost: t\r\n" +
+                          "X-Request-Id: client-7.A_b\r\n" +
+                          "Connection: close\r\n\r\n");
+    if id_header(nf) != "client-7.A_b" ||
+       strings.find(nf, "\"request_id\":\"client-7.A_b\"") < 0 {
+        panic("a well-formed client id was not reused: " + nf);
+    }
+    println("serve_conn_reuses_a_well_formed_client_id ok");
+}
+
+fn test_serve_conn_request_ids_can_be_turned_off() {
+    let d = default_server_config();
+    let sc = ServerConfig {
+        idle_timeout: d.idle_timeout,
+        header_timeout: d.header_timeout,
+        body_timeout: d.body_timeout,
+        write_timeout: d.write_timeout,
+        max_request_bytes: d.max_request_bytes,
+        max_requests_per_conn: d.max_requests_per_conn,
+        shutdown_timeout: d.shutdown_timeout,
+        request_ids: false
+    };
+    let resp = one_exchange(serve_test_router(), sc,
+                            "GET /nope HTTP/1.1\r\nHost: t\r\n" +
+                            "Connection: close\r\n\r\n");
+    if strings.find(resp, "x-request-id") >= 0 {
+        panic("request_ids = false still sent an id: " + resp);
+    }
+    println("serve_conn_request_ids_can_be_turned_off ok");
+}
+
+// The 500 a panicking handler leaves behind is answered under the
+// request's id too, in the header and the envelope.
+fn test_serve_conn_panic_500_carries_the_request_id() {
+    let resp = one_exchange(panic_test_router(), default_server_config(),
+                            "GET /boom HTTP/1.1\r\nHost: t\r\n" +
+                            "X-Request-Id: boom-1\r\n\r\n");
+    if id_header(resp) != "boom-1" ||
+       strings.find(resp, "\"request_id\":\"boom-1\"") < 0 {
+        panic("the 500 lost the request id: " + resp);
+    }
+    println("serve_conn_panic_500_carries_the_request_id ok");
+}
+
 fn max2_config() -> ServerConfig {
     let d = default_server_config();
     return ServerConfig {
@@ -381,7 +487,8 @@ fn max2_config() -> ServerConfig {
         write_timeout: d.write_timeout,
         max_request_bytes: d.max_request_bytes,
         max_requests_per_conn: 2,
-        shutdown_timeout: d.shutdown_timeout
+        shutdown_timeout: d.shutdown_timeout,
+        request_ids: d.request_ids
     };
 }
 
@@ -561,6 +668,10 @@ test_serve_conn_headers_too_large_answers_431();
 test_serve_conn_closes_after_max_requests();
 test_serve_conn_last_response_before_limit_says_close();
 test_serve_conn_answers_close_when_client_asks();
+test_serve_conn_gives_dynamic_requests_ids();
+test_serve_conn_reuses_a_well_formed_client_id();
+test_serve_conn_request_ids_can_be_turned_off();
+test_serve_conn_panic_500_carries_the_request_id();
 test_drain_returns_early_when_idle();
 test_drain_stops_at_deadline();
 test_serve_conn_panicking_handler_answers_500();
