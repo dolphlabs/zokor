@@ -317,6 +317,54 @@ in `ServerConfig.logger`, and drain `ch` from your own task.
 `new_log_format(pid)` gives you zokor's `json` and `pretty` formats to reuse.
 `no_logger()` turns logging off.
 
+## Authentication
+
+Three helpers. Each answers "who is this?" and leaves the policy to you.
+There are no closures, so keys live in your state and a short `before`
+hook passes them in:
+
+```slang
+gc struct App { jwt: zokor.JwtAuth, keys: zokor.ApiKeys }
+struct Claims { sub: str, role: str, exp: int }
+
+fn require_user(c: zokor.Ctx[App]) -> opt[http.Response] {
+    let r: result[Claims, http.Response] = zokor.bearer_claims(c, c.state.jwt);
+    guard let claims = r else let deny = err_of(r) { return some(deny); }
+    c.set_local("user_id", claims.sub);
+    return none;
+}
+```
+
+**JWTs**, HS256 through [dolphlabs/jwt](https://github.com/dolphlabs/jwt):
+- **Configuration.** `jwt_auth_from(cfg)` reads `JWT_SECRETS`
+  (comma-separated, newest first, 32+ bytes each), `JWT_AUDIENCE`,
+  `JWT_ISSUER` and `JWT_LEEWAY` (seconds of clock skew, default 30).
+- **Checks.** `bearer_claims` checks the signature, algorithm and duplicate
+  claims, then `exp` (required), `nbf`, and `aud` and `iss` when
+  configured. Only then does it decode the payload into your own claims
+  type.
+- **Failures.** Every failure gets the same `401` with
+  `WWW-Authenticate: Bearer error="invalid_token"`.
+  `token_problem(token, auth, now)` gives the reason for your logs.
+- **Signing and rotation.** `sign_token(claims, auth)` signs with the
+  newest secret. A token signed with an older listed secret still
+  verifies, so rotation logs nobody out.
+
+**Basic auth:**
+- `basic_credentials(c)` returns the user and password, keeping a colon
+  inside the password.
+- `basic_matches(creds, user, pass)` compares SHA-256 digests in constant
+  time, so neither content nor length leaks through timing.
+- `basic_denied(c, realm)` asks the browser to log in.
+
+**API keys:**
+- `API_KEYS=billing:key1,search:key2`, 24+ bytes each, is read by
+  `api_keys_from(cfg)`.
+- `api_key_client(c, keys)` reads `X-Api-Key` and returns the client's
+  name, so a request can be traced to who sent it.
+- Only SHA-256 digests are kept in memory. Every key is compared, in
+  constant time.
+
 ## Operator injection (MongoDB)
 
 MongoDB reads a key starting with `$` as an operator. A login handler that

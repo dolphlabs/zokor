@@ -94,13 +94,17 @@ library, made and merged there first.
   ahead of every hook. Form bodies are not checked: zokor reads them as
   flat strings, never as objects a `$` key could reach. The SQL side
   lands with the Postgres helpers and `zokor check`.
-- [ ] **Auth helpers**: Bearer extraction (exists), opaque bearer
+- [x] **Auth helpers**: Bearer extraction (exists), opaque bearer
   tokens (`TokenStore`, exists, in memory), Basic, API keys with
   constant-time comparison, and JWT through the `dolphlabs/jwt` package
   (HS256, typed claims) rather than a second implementation here: a
   `before` hook that verifies and puts the claims on the request, with
   `exp` / `nbf` / `aud` checks. Password hashing points at
   `dolphlabs/argon` (Argon2id). RS256 once slang can verify it.
+  Done: `bearer_claims` (jwt v0.1.0, pinned), `jwt_auth_from` (secret
+  rotation, aud/iss, leeway), `basic_credentials`/`basic_matches`,
+  `api_keys_from`/`api_key_client`. Password hashing is still a pointer to
+  dolphlabs/argon, not a helper here.
 - [ ] **Rate limiter, finished**: `RateLimiter`/`rate_limit` exist
   (sliding window, per key, time injected via `take_at`, `429` +
   `Retry-After`). Still owed: sharding, `RateLimit-*` headers, and keying

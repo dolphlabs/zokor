@@ -4,6 +4,33 @@
 # `self` is omitted. Times are int nanoseconds, statuses i32.
 # Recipes: docs/llms-small.txt.
 
+## auth.sl -- Authentication helpers: bearer JWTs, Basic credentials and API keys.
+gc struct JwtAuth { keys: [bytes], audience: str, issuer: str, leeway: int }
+jwt_auth(secrets: [str]) -> result[JwtAuth, str]
+    Secrets of at least 32 bytes each, newest first.
+jwt_auth_from(cfg: Config) -> JwtAuth
+    JWT_SECRETS (comma-separated, newest first), JWT_AUDIENCE, JWT_ISSUER and JWT_LEEWAY (seconds, default 30).
+sign_token[T](claims: T, a: JwtAuth) -> result[str, str]
+    A token for `claims`, signed with the newest key.
+token_problem(token: str, a: JwtAuth, now: int) -> str
+    Why `token` is not acceptable at `now`, or "" when it is.
+bearer_claims[S, T](c: Ctx[S], a: JwtAuth) -> result[T, http.Response]
+    The token's claims as your own type, once the token has passed every check; otherwise the 401 to send.
+gc struct BasicCredentials { user: str, password: str }
+basic_credentials[S](c: Ctx[S]) -> opt[BasicCredentials]
+    The credentials of an `Authorization: Basic` header, or none when there is no such header or it does not decode to...
+basic_matches(got: BasicCredentials, user: str, password: str) -> bool
+    Whether `got` is `user` / `password`.
+basic_denied[S](c: Ctx[S], realm: str) -> http.Response
+    The 401 that asks a browser for Basic credentials for `realm`.
+gc struct ApiKeys { names: [str], digests: [bytes] }
+api_keys(entries: [str]) -> result[ApiKeys, str]
+    `name:key` entries; each key at least 24 bytes.
+api_keys_from(cfg: Config) -> ApiKeys
+    API_KEYS: comma-separated `name:key` entries.
+api_key_client[S](c: Ctx[S], keys: ApiKeys) -> opt[str]
+    The name of the client whose key is in the X-Api-Key header, or none.
+
 ## client.sl -- The client's address: who is actually on the other end of a request.
 gc struct TrustedProxies { nets: [int], header: str }
 no_trusted_proxies() -> TrustedProxies
