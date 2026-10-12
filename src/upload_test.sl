@@ -254,6 +254,7 @@ fn test_ctx_form_and_upload() {
         param1_value: "",
         route: "/upload",
         request_id: "r1",
+        client_ip: "",
         locals: none,
         errors: new_registry()
     };
@@ -272,6 +273,7 @@ fn test_ctx_form_and_upload() {
         param1_value: "",
         route: "/upload",
         request_id: "r2",
+        client_ip: "",
         locals: none,
         errors: new_registry()
     };

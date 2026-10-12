@@ -4,6 +4,21 @@
 # `self` is omitted. Times are int nanoseconds, statuses i32.
 # Recipes: docs/llms-small.txt.
 
+## client.sl -- The client's address: who is actually on the other end of a request.
+gc struct TrustedProxies { nets: [int], header: str }
+no_trusted_proxies() -> TrustedProxies
+parse_ipv4(s: str) -> int
+    "a.b.c.d" as an unsigned 32-bit value, or -1.
+parse_trusted_proxies(list: str) -> result[TrustedProxies, str]
+    TRUSTED_PROXIES's value: comma-separated IPv4 addresses and CIDRs ("10.0.0.0/8, 192.168.1.10").
+ipv4_str(v: int) -> str
+TrustedProxies.trusts(ip: int) -> bool
+TrustedProxies.is_empty() -> bool
+peer_ip_of(rendered: str) -> str
+    The address part of `inspect(link.peer())`, "a.b.c.d:port" -> "a.b.c.d".
+client_ip_of(peer_ip: str, headers: bytes, tp: TrustedProxies) -> str
+    Who the request came from.
+
 ## config.sl -- Configuration: read once, validated once, then held as a value.
 gc struct Problem { key: str, reason: str, shown: str }
 gc struct Config { values: map[str]str, problems: [Problem], source: str }
@@ -220,7 +235,7 @@ cache_for(r: http.Response, seconds: int) -> http.Response
 ## router.sl -- The router: a request goes in, a response comes out, and the application's own state comes with it.
 enum Method { GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, TRACE, CONNECT }
     The HTTP methods, as a closed set.
-gc struct Ctx[S] { state: S, req: http.Request, params: opt[map[str]str], param1_name: str, param1_value: str, route: str, request_id: str, locals: opt[map[str]str], errors: Registry }
+gc struct Ctx[S] { state: S, req: http.Request, params: opt[map[str]str], param1_name: str, param1_value: str, route: str, request_id: str, client_ip: str, locals: opt[map[str]str], errors: Registry }
 gc struct Route[S] { method: Method, pattern: str, befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], segs: [str], names: [str], wild: int, fkind: int, fpath: str, handler: fn(Ctx[S]) -> http.Response, has_static: bool, static_status: i32, static_ctype: str, static_body: bytes, static_rendered: bytes, static_hit: opt[http.StaticBody], no_map: opt[map[str]str] }
 gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool }
     A `before` runs ahead of the handler and may end the request by returning a response; `none` carries on.
@@ -262,7 +277,10 @@ Router.match_static(f: http.WireFrame) -> opt[http.StaticBody]
 Router.serve_static(f: http.WireFrame) -> result[http.StaticBody, http.Response]
 Router.serve_frame(f: http.WireFrame, request_id: str) -> http.Response
     serve() stays for callers that already hold a Request (tests, middleware fixtures); serve_conn uses this via serve_static.
+Router.serve_frame_for(f: http.WireFrame, request_id: str, client_ip: str) -> http.Response
+    serve_frame, with the client's address for Ctx.client_ip: what the serve loop calls.
 Router.serve_id(req: http.Request, request_id: str) -> http.Response
+Router.serve_id_for(req: http.Request, request_id: str, client_ip: str) -> http.Response
 Router.fail(c: Ctx[S], code: str) -> http.Response
     The registry's codes, rendered with this request's id.
 Router.fail_with(c: Ctx[S], code: str, detail: str) -> http.Response
@@ -315,7 +333,7 @@ query_as[S, T](c: Ctx[S]) -> result[T, http.Response]
     The query string bound into a declared shape, in one call, with the same field-level errors a bad body gets --      let r:...
 
 ## serve.sl -- The server edge: the accept loop that turns a Router into a running server.
-gc struct ServerConfig { idle_timeout: int, header_timeout: int, body_timeout: int, write_timeout: int, max_request_bytes: int, max_requests_per_conn: int, shutdown_timeout: int, request_ids: bool }
+gc struct ServerConfig { idle_timeout: int, header_timeout: int, body_timeout: int, write_timeout: int, max_request_bytes: int, max_requests_per_conn: int, shutdown_timeout: int, request_ids: bool, trusted_proxies: TrustedProxies }
     Four deadlines, not one, because "how long should this wait" has different honest answers depending on what a connection is...
 default_server_config() -> ServerConfig
     Safe rather than infinite, per the todo item this answers.

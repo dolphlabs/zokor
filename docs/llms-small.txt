@@ -481,10 +481,13 @@ nanoseconds / bytes): `idle_timeout` 60s, `header_timeout` 5s,
 or 431 above it), `max_requests_per_conn` 100000, `shutdown_timeout` 30s,
 `request_ids` true (each dynamic request gets `X-Request-Id`: a valid
 incoming one, 1-64 of `[A-Za-z0-9._-]`, is reused; it is also in every
-error envelope and `c.request_id`).
+error envelope and `c.request_id`), `trusted_proxies` none (`c.client_ip` is
+the socket's peer; behind a proxy set `TRUSTED_PROXIES=10.0.0.0/8,...` and
+optionally `PROXY_HEADER=forwarded`, X-Forwarded-For by default).
 `server_config_from(cfg)` reads `IDLE_TIMEOUT`, `READ_HEADER_TIMEOUT`,
 `READ_BODY_TIMEOUT`, `WRITE_TIMEOUT`, `SHUTDOWN_TIMEOUT` ("30s"),
-`MAX_REQUEST_BYTES`, `MAX_REQUESTS_PER_CONN`, `REQUEST_IDS`. `listen_and_serve(r, port)`
+`MAX_REQUEST_BYTES`, `MAX_REQUESTS_PER_CONN`, `REQUEST_IDS`, `TRUSTED_PROXIES`,
+`PROXY_HEADER`. `listen_and_serve(r, port)`
 uses the defaults. A start script: `slangc main.sl -o app && exec ./app`
 (builds take ~10 s); to test by hand, run `./app > app.log 2>&1 &`,
 poll `/health`, then `kill $!`.
