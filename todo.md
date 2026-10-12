@@ -105,6 +105,18 @@ body is not one anyone can put in front of the internet.
   request body is silently changed. zokor's own `Json` keeps number text and
   is unaffected; `dto` is not, since it decodes through slang.
 
+- [ ] **Close the gap to plain slang** (measured 2026-10-12, see
+  docs/benchmarks.md "zokor against plain slang"): dynamic routes cost
+  17-37% more server CPU per request than the same routes on stdlib
+  `http`. Remaining, by size: **[slang]** the reactor's timer nudge on
+  every deadline-bearing wait (~1.4-2.3 us); **[slang]** `spawn` +
+  `join_wait` waking idle workers, which per-request panic isolation pays
+  (~1.5 us Linux, ~4 us macOS) -- or slang closing a panicked task's
+  links, which would let isolation move off the request path; zokor's
+  own `Ctx`/routing (~2 us), and four clock reads per request where one
+  per phase would do. Unreproduced: one c=2000 run on Linux collapsed to
+  356 rps with a 9 s p99; six runs after it did not.
+
 ## 1. Language prerequisites
 
 - [x] `new_router(state)` and `new_group(router, prefix)` constructors,
