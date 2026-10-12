@@ -77,7 +77,8 @@ fn short_config() -> ServerConfig {
         shutdown_timeout: d.shutdown_timeout,
         request_ids: d.request_ids,
         trusted_proxies: d.trusted_proxies,
-        logger: d.logger
+        logger: d.logger,
+        max_connections: d.max_connections
     };
 }
 
@@ -174,7 +175,8 @@ fn test_serve_conn_stalled_headers_close_at_header_timeout() {
         shutdown_timeout: d.shutdown_timeout,
         request_ids: d.request_ids,
         trusted_proxies: d.trusted_proxies,
-        logger: d.logger
+        logger: d.logger,
+        max_connections: d.max_connections
     };
     let r = serve_test_router();
     spawn serve_conn(r, server, sc);
@@ -215,7 +217,8 @@ fn tiny_body_config() -> ServerConfig {
         shutdown_timeout: d.shutdown_timeout,
         request_ids: d.request_ids,
         trusted_proxies: d.trusted_proxies,
-        logger: d.logger
+        logger: d.logger,
+        max_connections: d.max_connections
     };
 }
 
@@ -483,7 +486,8 @@ fn test_serve_conn_request_ids_can_be_turned_off() {
         shutdown_timeout: d.shutdown_timeout,
         request_ids: false,
         trusted_proxies: d.trusted_proxies,
-        logger: d.logger
+        logger: d.logger,
+        max_connections: d.max_connections
     };
     let resp = one_exchange(serve_test_router(), sc,
                             "GET /nope HTTP/1.1\r\nHost: t\r\n" +
@@ -574,7 +578,8 @@ fn max2_config() -> ServerConfig {
         shutdown_timeout: d.shutdown_timeout,
         request_ids: d.request_ids,
         trusted_proxies: d.trusted_proxies,
-        logger: d.logger
+        logger: d.logger,
+        max_connections: d.max_connections
     };
 }
 
@@ -856,4 +861,118 @@ fn test_serve_conn_logs_an_oversized_request() {
         panic("431 record: " + to_str(ev.status) + " " + ev.method);
     }
     println("serve_conn_logs_an_oversized_request ok");
+}
+
+// ---- the connection cap ---------------------------------------------------
+
+fn test_conn_gate_counts_and_refuses_past_its_max() {
+    let g = new_conn_gate(2);
+    assert(g.enter() && g.enter());
+    assert(!g.enter(), "a third connection past a max of 2");
+    assert(g.open_now() == 2);
+    g.leave();
+    assert(g.enter(), "a slot freed is a slot");
+    assert(new_conn_gate(0).max == 1, "a max below 1 is 1");
+}
+
+fn test_refusals_are_reported_at_most_once_a_second() {
+    let g = new_conn_gate(1);
+    g.enter();
+    g.enter();
+    g.enter();
+    assert(g.refusals_to_report(5000000000) == 2);
+    g.enter();
+    assert(g.refusals_to_report(5500000000) == 0, "half a second later: held back");
+    assert(g.refusals_to_report(6000000000) == 1);
+    assert(g.refusals_to_report(9000000000) == 0, "nothing new to report");
+}
+
+fn test_accept_backoff_doubles_to_a_ceiling() {
+    assert(accept_backoff(0) == 5000000);
+    assert(accept_backoff(5000000) == 10000000);
+    let b = 5000000;
+    let i = 0;
+    while i < 20 {
+        b = accept_backoff(b);
+        i = i + 1;
+    }
+    assert(b == 1000000000, to_str(b));
+}
+
+fn test_max_connections_from_config() {
+    assert(server_config_from(cfg_of("MAX_CONNECTIONS=250\n")).max_connections == 250);
+    assert(server_config_from(cfg_of("")).max_connections == 10000);
+    let c = cfg_of("MAX_CONNECTIONS=lots\n");
+    assert(server_config_from(c).max_connections == 10000);
+    let r = check(c);
+    guard let _ok = r else let e = err_of(r) {
+        assert(strings.contains(e, "MAX_CONNECTIONS"), e);
+        return;
+    }
+    panic("a bad MAX_CONNECTIONS was not reported");
+}
+
+// One keep-alive exchange on a fresh connection to `port`; the
+// connection closes when this returns.
+fn cap_exchange(port: int) -> str {
+    let dr = link_dial("127.0.0.1", port, until_never());
+    guard let client = dr else { panic("dial"); }
+    let a = arena_new(2048);
+    let out = req_wire("GET /hi HTTP/1.1\r\nHost: t\r\n\r\n", &mut a);
+    let sr = client.send(out, until_never());
+    guard let _n = sr else { panic("send"); }
+    let inb = a.wire(1024);
+    let rr = client.recv(inb, until_of(time.mono() + 2000000000));
+    guard let n = rr else { return ""; }
+    return to_str(inb[0..n]);
+}
+
+fn hold_one(port: int, gate: ConnGate, release: chan[int]) {
+    let dr = link_dial("127.0.0.1", port, until_never());
+    guard let client = dr else { panic("dial"); }
+    let a = arena_new(2048);
+    let out = req_wire("GET /hi HTTP/1.1\r\nHost: t\r\n\r\n", &mut a);
+    let _s = client.send(out, until_never());
+    let inb = a.wire(1024);
+    let _r = client.recv(inb, until_of(time.mono() + 2000000000));
+    // the connection stays open, and counted, until told to go
+    let _go = chan_recv(release);
+}
+
+fn test_serve_refuses_past_max_connections_with_503() {
+    let lr = link_listen(0);
+    guard let ln = lr else { panic("listen"); }
+    let port = ln.port();
+    let sc = default_server_config();
+    sc.logger = no_logger();
+    let gate = new_conn_gate(1);
+    spawn accept_loop(serve_test_router(), ln, sc, gate);
+
+    let release: chan[int] = make_chan(1);
+    spawn hold_one(port, gate, release);
+    let waited = 0;
+    while gate.open_now() < 1 && waited < 200 {
+        time.sleep(5000000);
+        waited = waited + 1;
+    }
+    if gate.open_now() != 1 {
+        panic("the first connection was never counted");
+    }
+    let refused = cap_exchange(port);
+    if !strings.has_prefix(refused, "HTTP/1.1 503") ||
+       strings.find(refused, "retry-after: 1") < 0 ||
+       strings.find(refused, "Connection: close") < 0 {
+        panic("over the cap: " + refused);
+    }
+    chan_send(release, 1);
+    waited = 0;
+    while gate.open_now() > 0 && waited < 200 {
+        time.sleep(5000000);
+        waited = waited + 1;
+    }
+    let served = cap_exchange(port);
+    if !strings.has_prefix(served, "HTTP/1.1 200") {
+        panic("a freed slot was not reused: " + served);
+    }
+    println("serve_refuses_past_max_connections_with_503 ok");
 }
