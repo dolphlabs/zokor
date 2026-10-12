@@ -23,23 +23,20 @@ library, made and merged there first.
 
 ## 1. Operability: you cannot run what you cannot see
 
-- [ ] **Structured request logging, pluggable.** One record per request:
+- [x] **Structured request logging, pluggable.** One record per request:
   time, request id, method, route *pattern* (not the path), status,
-  duration, bytes, client address. Decided (2026-10-12):
-  - **On by default, off from config** (`LOG_REQUESTS=false`, and a
-    `ServerConfig` field).
-  - **Beautiful by default, NestJS-style**: `[zokor] <pid>  - <time>
-    LOG [Router] GET /users/:id 200 +3ms`, coloured on a TTY, plain
-    otherwise; **JSON lines** for production (`LOG_FORMAT=json`). Levels
-    (`debug`/`log`/`warn`/`error`), with `LOG_LEVEL`.
-  - **Not coupled to one implementation**: the router holds a logger value
-    -- a struct of `fn` values (slang has no interfaces or closures), so
-    a separate logging package can be injected in its place. zokor ships
-    the console logger and a no-op one. Startup lines too (routes mapped,
-    listening), as Nest prints.
-  - Redaction of configured headers; never a secret, token or body.
-  Depends on: client address (below), for the address field.
-- [ ] **Client address and trusted proxies.** `X-Forwarded-For` and
+  duration, bytes, client address; plus the server's own lines (routes
+  mapped, listening, shutting down, stopped, panics, readiness changes).
+  On by default; NestJS-style colour on a TTY, JSON lines otherwise;
+  `LOG_FORMAT`, `LOG_LEVEL` (`off` included), `LOG_REQUESTS`, `NO_COLOR`.
+  A `Logger` is a channel plus a level: `channel_logger` hands records to
+  another package, `new_log_format` lends it zokor's formats. The serve
+  loop never waits: a full queue drops and counts. Cost measured at ~3
+  allocations per request, after slang's channel fix (fix/chan-stale-slots:
+  an old channel used to promote every value sent through it). Not done:
+  redaction of configured headers -- no header is logged at all, so there
+  is nothing to redact until one is.
+- [x] **Client address and trusted proxies.** `X-Forwarded-For` and
   `Forwarded` are believed only from proxies listed in
   `TRUSTED_PROXIES` (comma-separated addresses and CIDRs); otherwise the
   socket's peer is the client. `c.client_ip()`. Logging and the rate

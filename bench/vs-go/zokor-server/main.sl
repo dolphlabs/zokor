@@ -60,7 +60,13 @@ guard let port = pr else {
     exit(1);
 }
 println("zokor bench listening on :" + to_str(port));
-let sr = zokor.listen_and_serve(rt, port);
+// The Go servers it is compared with log nothing (Fiber's logger is
+// opt-in middleware), so zokor's request log is off here too: this
+// measures the framework, not log I/O. The log's own cost is measured
+// on its own (README, "Logging").
+let sc = zokor.default_server_config();
+sc.logger = zokor.no_logger();
+let sr = zokor.listen_and_serve_with(rt, port, sc);
 guard let _n = sr else let e = err_of(sr) {
     println(e);
     exit(1);

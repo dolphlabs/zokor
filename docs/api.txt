@@ -93,7 +93,7 @@ status_text(status: i32) -> str
 
 ## health.sl -- Health and readiness.
 gc struct ReadyCheck[S] { name: str, check: fn(S) -> result[int, str], lock: mutex, started: int, finished: int, passed: bool, reported: str }
-gc struct Readiness[S] { live_path: str, ready_path: str, checks: [ReadyCheck[S]], timeout: int }
+gc struct Readiness[S] { live_path: str, ready_path: str, checks: [ReadyCheck[S]], timeout: int, logger: Logger }
 default_ready_timeout() -> int
     0.9s: inside Kubernetes' default 1s probe timeout, so a slow dependency is answered as a 503 naming it rather than as a probe...
 check_name_ok(name: str) -> bool
@@ -189,6 +189,64 @@ Checker.req_obj(j: Json, key: str) -> Json
 Checker.under(prefix: str, other: Checker) -> int
     Everything found so far, re-reported under a prefix: for a nested object checked by its own function.
 
+## log.sl -- Logging.
+enum LogLevel { DEBUG, LOG, WARN, ERROR, OFF }
+level_rank(l: LogLevel) -> int
+level_name(l: LogLevel) -> str
+parse_level(s: str) -> opt[LogLevel]
+gc struct LogEvent { time: int, level: LogLevel, context: str, message: str, request: bool, method: str, route: str, path: str, status: int, duration_ns: int, size: int, request_id: str, client_ip: str, ack: opt[chan[int]] }
+gc struct Logger { events: opt[chan[LogEvent]], level: LogLevel, requests: bool, console: bool, json: bool, color: bool, capacity: int, lock: mutex, dropped: int, no_ack: opt[chan[int]] }
+default_log_capacity() -> int
+    How many events may wait for the writer: enough to absorb a burst of a few thousand requests between two wake-ups.
+no_logger() -> Logger
+    Logs nothing.
+console_logger(json: bool, color: bool, level: LogLevel, requests: bool) -> Logger
+    zokor's own writer, to stdout, configured but not started: `start` (which listen_and_serve_with calls) makes the channel and...
+channel_logger(ch: chan[LogEvent], level: LogLevel, requests: bool) -> Logger
+    A logger whose events go to `ch`, drained by the caller's own task.
+default_logger() -> Logger
+    The default: pretty and coloured on a terminal, JSON otherwise, level LOG, request lines on.
+logger_from(cfg: Config) -> Logger
+    LOG_FORMAT, LOG_LEVEL, LOG_REQUESTS and NO_COLOR over the default.
+Logger.start()
+    Starts the console writer if this is an unstarted console logger; otherwise does nothing.
+Logger.own_tasks() -> int
+    Tasks this logger runs for itself: 1 once the console writer is started.
+Logger.enabled(l: LogLevel) -> bool
+    Whether an event at `l` would be sent at all: lets a caller skip building one.
+Logger.emit(ev: LogEvent)
+    Offers `ev` without waiting: dropped and counted when the channel is full or below the level.
+Logger.record_request(method: str, route: str, raw_path: str, status: int, duration_ns: int, size: int, request_id: str, client_ip: str)
+    The serve loop's call: one request's record, if requests are logged at its level.
+Logger.debug(context: str, message: str)
+Logger.log(context: str, message: str)
+Logger.warn(context: str, message: str)
+Logger.error(context: str, message: str)
+Logger.take_dropped() -> int
+    Events dropped and not yet reported; resets the count.
+Logger.flush(timeout_ns: int)
+    Waits until everything emitted before this call is written, or `timeout_ns` passes.
+request_event(method: str, route: str, raw_path: str, status: int, duration_ns: int, size: int, request_id: str, client_ip: str) -> LogEvent
+    A request's record.
+logs_requests(lg: Logger, status: int) -> bool
+    Whether the serve loop should build a request record at all.
+safe_path(raw: str) -> str
+    A client-supplied path made safe to print: the query dropped, at most 64 bytes kept, and every byte outside printable ASCII --...
+utc_parts(unix_ns: int) -> [int]
+    Unix nanoseconds as UTC civil time: [year, month, day, hour, minute, second, millisecond].
+gc struct LogFormat { pid: str, three: [str], plain: [str], sec: int, stamp_t: str, stamp_sp: str, quoted: map[str]str }
+    Formatting state, made once and reused for every line: tables of the numbers a line needs (so a status, a size or a...
+new_log_format(pid: int) -> LogFormat
+LogFormat.stamp(unix_ns: int, t: bool) -> str
+    "2026-10-12T18:47:01.123Z" (t) or "2026-10-12 18:47:01.123Z".
+LogFormat.json_into(sb: builder.Str, ev: LogEvent) -> builder.Str
+    One JSON object and a newline, appended to `sb`.
+LogFormat.pretty_into(sb: builder.Str, ev: LogEvent, color: bool, since_ns: int) -> builder.Str
+    The NestJS layout and a newline, appended to `sb`:   [zokor] <pid>  - <utc time>     LOG [Context] message +3.21ms The...
+LogFormat.json(ev: LogEvent) -> str
+    The same as single strings, without the newline: for a consumer that wants one line at a time.
+LogFormat.pretty(ev: LogEvent, color: bool, since_ns: int) -> str
+
 ## ratelimit.sl -- Rate limiting.
 gc struct RateLimiter { limit: int, window: int, hits: map[str][int], lock: mutex, since_sweep: int, sweep_every: int }
 new_rate_limiter(limit: int, window_ns: int) -> RateLimiter
@@ -244,6 +302,8 @@ cache_for(r: http.Response, seconds: int) -> http.Response
 enum Method { GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, TRACE, CONNECT }
     The HTTP methods, as a closed set.
 gc struct Ctx[S] { state: S, req: http.Request, params: opt[map[str]str], param1_name: str, param1_value: str, route: str, request_id: str, client_ip: str, locals: opt[map[str]str], errors: Registry }
+struct Served { resp: http.Response, route: str }
+    A response and the route pattern that produced it, for the request log.
 gc struct Route[S] { method: Method, pattern: str, befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], segs: [str], names: [str], wild: int, fkind: int, fpath: str, handler: fn(Ctx[S]) -> http.Response, has_static: bool, static_status: i32, static_ctype: str, static_body: bytes, static_rendered: bytes, static_hit: opt[http.StaticBody], no_map: opt[map[str]str] }
 gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S] }
     A `before` runs ahead of the handler and may end the request by returning a response; `none` carries on.
@@ -294,9 +354,12 @@ Router.serve_static(f: http.WireFrame) -> result[http.StaticBody, http.Response]
 Router.serve_frame(f: http.WireFrame, request_id: str) -> http.Response
     serve() stays for callers that already hold a Request (tests, middleware fixtures); serve_conn uses this via serve_static.
 Router.serve_frame_for(f: http.WireFrame, request_id: str, client_ip: str) -> http.Response
-    serve_frame, with the client's address for Ctx.client_ip: what the serve loop calls.
+    serve_frame, with the client's address for Ctx.client_ip.
+Router.serve_frame_routed(f: http.WireFrame, request_id: str, client_ip: str) -> Served
+    What the serve loop calls: the response, and the route pattern that answered it for the request log ("" when none did).
 Router.serve_id(req: http.Request, request_id: str) -> http.Response
 Router.serve_id_for(req: http.Request, request_id: str, client_ip: str) -> http.Response
+Router.serve_id_routed(req: http.Request, request_id: str, client_ip: str) -> Served
 Router.fail(c: Ctx[S], code: str) -> http.Response
     The registry's codes, rendered with this request's id.
 Router.fail_with(c: Ctx[S], code: str, detail: str) -> http.Response
@@ -349,7 +412,7 @@ query_as[S, T](c: Ctx[S]) -> result[T, http.Response]
     The query string bound into a declared shape, in one call, with the same field-level errors a bad body gets --      let r:...
 
 ## serve.sl -- The server edge: the accept loop that turns a Router into a running server.
-gc struct ServerConfig { idle_timeout: int, header_timeout: int, body_timeout: int, write_timeout: int, max_request_bytes: int, max_requests_per_conn: int, shutdown_timeout: int, request_ids: bool, trusted_proxies: TrustedProxies }
+gc struct ServerConfig { idle_timeout: int, header_timeout: int, body_timeout: int, write_timeout: int, max_request_bytes: int, max_requests_per_conn: int, shutdown_timeout: int, request_ids: bool, trusted_proxies: TrustedProxies, logger: Logger }
     Four deadlines, not one, because "how long should this wait" has different honest answers depending on what a connection is...
 default_server_config() -> ServerConfig
     Safe rather than infinite, per the todo item this answers.
