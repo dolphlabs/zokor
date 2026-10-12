@@ -976,3 +976,49 @@ fn test_serve_refuses_past_max_connections_with_503() {
     }
     println("serve_refuses_past_max_connections_with_503 ok");
 }
+
+// ---- CORS over a real connection ------------------------------------------
+
+fn test_serve_conn_cors_on_static_routes_and_after_a_panic() {
+    let r = panic_test_router();
+    r.static_bytes("/s", 200, "text/plain; charset=utf-8", b"fixed", s_static);
+    if r.cors(cors_policy(["https://app.example.com"])) < 0 {
+        panic("policy refused");
+    }
+    let sc = default_server_config();
+    sc.logger = no_logger();
+    let st = one_exchange(r, sc, "GET /s HTTP/1.1\r\nHost: t\r\n" +
+                          "Origin: https://app.example.com\r\nConnection: close\r\n\r\n");
+    if strings.find(st, "access-control-allow-origin: https://app.example.com") < 0 ||
+       strings.find(st, "\r\n\r\nfixed") < 0 {
+        panic("static route from an allowed origin: " + st);
+    }
+    let plain = one_exchange(r, sc, "GET /s HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n");
+    if strings.find(plain, "access-control") >= 0 || strings.find(plain, "fixed") < 0 {
+        panic("static route without an Origin: " + plain);
+    }
+    let boom = one_exchange(r, sc, "GET /boom HTTP/1.1\r\nHost: t\r\n" +
+                            "Origin: https://app.example.com\r\n\r\n");
+    if !strings.has_prefix(boom, "HTTP/1.1 500") ||
+       strings.find(boom, "access-control-allow-origin: https://app.example.com") < 0 {
+        panic("the 500 after a panic: " + boom);
+    }
+    println("serve_conn_cors_on_static_routes_and_after_a_panic ok");
+}
+
+fn st_frame(headers: bytes) -> http.WireFrame {
+    return http.WireFrame {
+        line_end: 0, head_end: 0, body_start: 0, body_end: 0, end: 0, version: 1,
+        close: false, filled: 0, method: "GET", path: "/s", headers: headers, body: b""
+    };
+}
+
+fn test_static_fast_path_is_kept_without_an_origin() {
+    let r = serve_test_router();
+    r.static_bytes("/s", 200, "text/plain; charset=utf-8", b"fixed", s_static);
+    r.cors(cors_policy(["https://app.example.com"]));
+    let without = st_frame(b"host: t\r\n");
+    assert(r.static_index(without) >= 0, "no Origin: still static");
+    let with = st_frame(b"host: t\r\norigin: https://x.com\r\n");
+    assert(r.static_index(with) < 0, "an Origin needs per-request headers");
+}

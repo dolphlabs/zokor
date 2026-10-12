@@ -61,6 +61,28 @@ is_valid(c: Config) -> bool
 check(c: Config) -> result[bool, str]
     Every problem, one per line, named and explained.
 
+## cors.sl -- CORS.
+gc struct CorsPolicy { origins: [str], methods: [str], headers: [str], expose: [str], credentials: bool, max_age: int }
+no_cors() -> CorsPolicy
+    Off: no origins.
+cors_policy(origins: [str]) -> CorsPolicy
+    The defaults, for these origins.
+cors_problem(p: CorsPolicy) -> str
+    What is wrong with `p`, or "" when it is usable.
+cors_from(cfg: Config) -> CorsPolicy
+    CORS_ORIGINS (comma-separated), CORS_METHODS, CORS_HEADERS, CORS_EXPOSE (comma-separated, replacing the defaults),...
+gc struct Cors { on: bool, any: bool, credentials: bool, origins: [str], allow_methods: str, allow_headers: str, allow_headers_lower: [str], expose: str, max_age: str }
+    What the router keeps: the policy, and the header values built once.
+cors_off() -> Cors
+Cors.allows(origin: str) -> bool
+    Whether `origin` (an Origin header's value) is allowed.
+Cors.apply(resp: http.Response, origin: str) -> http.Response
+    The headers for an ordinary response to a request with this Origin ("" when it had none).
+Cors.preflight(origin: str) -> http.Response
+    The answer to a preflight from `origin`.
+is_preflight(method: str, raw_headers: bytes) -> bool
+    Whether a request is a CORS preflight: OPTIONS, with an Origin and the method the real request will use.
+
 ## errors.sl -- Failure, as one shape.
 gc struct Code { name: str, status: i32, message: str }
 gc struct FieldError { field: str, reason: str }
@@ -305,7 +327,7 @@ gc struct Ctx[S] { state: S, req: http.Request, params: opt[map[str]str], param1
 struct Served { resp: http.Response, route: str }
     A response and the route pattern that produced it, for the request log.
 gc struct Route[S] { method: Method, pattern: str, befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], segs: [str], names: [str], wild: int, fkind: int, fpath: str, handler: fn(Ctx[S]) -> http.Response, has_static: bool, static_status: i32, static_ctype: str, static_body: bytes, static_rendered: bytes, static_hit: opt[http.StaticBody], no_map: opt[map[str]str] }
-gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S] }
+gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors }
     A `before` runs ahead of the handler and may end the request by returning a response; `none` carries on.
 new_router[S](state: S) -> Router[S]
     An application builds its router from its state alone; everything else starts empty or at the default a correct server should...
@@ -334,6 +356,8 @@ Router.guarded(method: Method, pattern: str, h: fn(Ctx[S]) -> http.Response, bef
     Middleware for one route, which is the other half of the same need: `r.guarded(Method.DELETE, "/orgs/:id", drop,...
 Router.before(f: fn(Ctx[S]) -> opt[http.Response]) -> int
 Router.after(f: fn(Ctx[S], http.Response) -> http.Response) -> int
+Router.cors(p: CorsPolicy) -> int
+    Turns CORS on with `p` (see cors.sl).
 Router.health() -> int
     Answers GET /healthz (liveness) and GET /readyz (the checks below).
 Router.health_at(live_path: str, ready_path: str) -> int
