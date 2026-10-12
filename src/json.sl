@@ -1074,18 +1074,22 @@ fn dto_text(body: bytes) -> str {
 //   - no key twice in one object: rekey keeps the LAST value and
 //     json.decode the FIRST, so a duplicate changes the result;
 //   - no \u escape anywhere: the render could re-spell it.
-// One pass, no copy of the body; the only allocations are the small
-// bookkeeping lists, and an object's key list is dropped when it closes.
+// One pass, no copy of the body. Container kinds are a bitmask, not a
+// list, and every open object's keys share one list behind a -1
+// marker, so a body costs one small list rather than three: on a
+// request path each list is two allocations.
 fn snake_keys_is_identity(b: bytes) -> bool {
     let n = len(b);
     let i = 0;
-    // Per open container, 1 = object, 2 = array.
-    let kinds: [int] = [];
-    // [start, end) byte ranges of the keys seen so far in every open
-    // object, flattened; key_base[k] is where the k-th open object's
-    // keys begin in it.
+    let depth = 0;
+    // Bit d set: the container open at depth d (0 = outermost) is an
+    // array. 64 bits, so deeper than 64 answers false (the full rewrite,
+    // always correct) even if max_depth() is ever raised past it.
+    let arrays = 0;
+    // Per open object: a -1 marker, then the [start, end) byte range of
+    // each key seen in it so far. Offsets are never negative, so the
+    // marker cannot be mistaken for a key.
     let ranges: [int] = [];
-    let key_base: [int] = [];
     // 0 = a value, 1 = a key (or `}` just after `{`), 2 = the colon,
     // 3 = after a value: `,`, a close, or the end.
     let expect = 0;
@@ -1099,25 +1103,28 @@ fn snake_keys_is_identity(b: bytes) -> bool {
             break;
         }
         let ch = b[i];
+        let top_array = depth > 0 && ((arrays >> (depth - 1)) & 1) == 1;
         if expect == 0 {
             if ch == 123 {
-                if len(kinds) >= max_depth() {
+                if depth >= max_depth() || depth >= 64 {
                     return false;
                 }
-                push(kinds, 1);
-                push(key_base, len(ranges));
+                arrays = arrays & ~(1 << depth);
+                depth = depth + 1;
+                push(ranges, -1);
                 expect = 1;
                 just_opened = true;
                 i = i + 1;
             } else if ch == 91 {
-                if len(kinds) >= max_depth() {
+                if depth >= max_depth() || depth >= 64 {
                     return false;
                 }
-                push(kinds, 2);
+                arrays = arrays | (1 << depth);
+                depth = depth + 1;
                 just_opened = true;
                 i = i + 1;
-            } else if ch == 93 && just_opened && kinds[len(kinds) - 1] == 2 {
-                pop(kinds);
+            } else if ch == 93 && just_opened && top_array {
+                depth = depth - 1;
                 i = i + 1;
                 expect = 3;
                 just_opened = false;
@@ -1132,8 +1139,8 @@ fn snake_keys_is_identity(b: bytes) -> bool {
             }
         } else if expect == 1 {
             if ch == 125 && just_opened {
-                pop(kinds);
-                pop(key_base);
+                depth = depth - 1;
+                pop(ranges);
                 i = i + 1;
                 expect = 3;
                 just_opened = false;
@@ -1145,12 +1152,12 @@ fn snake_keys_is_identity(b: bytes) -> bool {
                 if j < 0 {
                     return false;
                 }
-                let k = key_base[len(key_base) - 1];
-                while k < len(ranges) {
-                    if same_bytes(b, ranges[k], ranges[k + 1], i + 1, j - 1) {
+                let k = len(ranges) - 1;
+                while ranges[k] != -1 {
+                    if same_bytes(b, ranges[k - 1], ranges[k], i + 1, j - 1) {
                         return false;
                     }
-                    k = k + 2;
+                    k = k - 2;
                 }
                 push(ranges, i + 1);
                 push(ranges, j - 1);
@@ -1165,36 +1172,33 @@ fn snake_keys_is_identity(b: bytes) -> bool {
             expect = 0;
             just_opened = false;
         } else {
-            if len(kinds) == 0 {
+            if depth == 0 {
                 return false;   // something after the top-level value
             }
-            let top = kinds[len(kinds) - 1];
             if ch == 44 {
                 i = i + 1;
                 expect = 0;
-                if top == 1 {
+                if !top_array {
                     expect = 1;
                 }
                 just_opened = false;
-            } else if ch == 125 && top == 1 {
-                pop(kinds);
-                let base = pop(key_base);
-                while len(ranges) > base {
-                    pop(ranges);
+            } else if ch == 125 && !top_array {
+                depth = depth - 1;
+                while pop(ranges) != -1 {
                 }
                 i = i + 1;
-            } else if ch == 93 && top == 2 {
-                pop(kinds);
+            } else if ch == 93 && top_array {
+                depth = depth - 1;
                 i = i + 1;
             } else {
                 return false;
             }
         }
-        if expect == 3 && len(kinds) == 0 {
+        if expect == 3 && depth == 0 {
             done = true;
         }
     }
-    return done && len(kinds) == 0;
+    return done && depth == 0;
 }
 
 // End (one past) of the string, number or literal starting at b[i], or
