@@ -115,6 +115,16 @@ pub gc struct Route[S] {
     static_ctype: str,
     static_body: bytes,
     static_rendered: bytes,
+    // The answer match_static gives for this route, built once at
+    // registration: some(StaticBody) for a static route, none
+    // otherwise. A slang opt is a heap object even when none, so a
+    // per-request some() or none costs an allocation; these are
+    // never mutated, so every request can share them.
+    static_hit: opt[http.StaticBody],
+    // A none to start a Ctx's params and locals from, for the same
+    // reason. Safe to share: nothing writes into an opt in place --
+    // set_local replaces the field with a fresh some().
+    no_map: opt[map[str]str],
 }
 
 // A `before` runs ahead of the handler and may end the request by
@@ -256,7 +266,9 @@ impl Router[S] {
             static_status: ss,
             static_ctype: sc,
             static_body: sb,
-            static_rendered: b""
+            static_rendered: b"",
+            static_hit: none,
+            no_map: none
         });
         return len(self.routes);
     }
@@ -308,6 +320,7 @@ impl Router[S] {
         }
         let no_befores: [fn(Ctx[S]) -> opt[http.Response]] = [];
         let no_afters: [fn(Ctx[S], http.Response) -> http.Response] = [];
+        let rendered = http.static_render(status, content_type, body);
         push(self.routes, Route[S] {
             method: Method.GET,
             pattern: p,
@@ -323,8 +336,14 @@ impl Router[S] {
             static_status: status,
             static_ctype: content_type,
             static_body: body,
-            static_rendered: http.static_render(status, content_type,
-                                                body)
+            static_rendered: rendered,
+            static_hit: some(http.StaticBody {
+                status: status,
+                content_type: content_type,
+                body: body,
+                keep_alive: rendered
+            }),
+            no_map: none
         });
         return len(self.routes);
     }
@@ -555,29 +574,34 @@ impl Router[S] {
     // first without paying for that isolation on every request --
     // see serve_conn's own use of it.
     pub fn match_static(self: Router[S], f: http.WireFrame) -> opt[http.StaticBody] {
-        // Static routes are exact GETs, so the check is str compares
-        // on the already-parsed method/path -- no raw bytes, no
-        // offsets, no from_str chain. Anything that is not exactly
-        // ("GET", <static-path>) falls to the dynamic path, which
-        // parses properly (501s, 405s, 404s all live there).
+        let i = self.static_index(f);
+        if i < 0 {
+            return none;
+        }
+        return self.routes[i].static_hit;
+    }
+
+    // The index of the static route answering `f`, or -1. serve_conn
+    // asks this rather than match_static so a dynamic request -- the
+    // common miss -- costs no opt allocation.
+    //
+    // Static routes are exact GETs, so the check is str compares
+    // on the already-parsed method/path -- no raw bytes, no
+    // offsets, no from_str chain. Anything that is not exactly
+    // ("GET", <static-path>) falls to the dynamic path, which
+    // parses properly (501s, 405s, 404s all live there).
+    fn static_index(self: Router[S], f: http.WireFrame) -> int {
         if f.method == "GET" {
             let i = 0;
             while i < len(self.routes) {
                 let r = self.routes[i];
-                if r.fkind == 1 && r.has_static {
-                    if f.path == r.fpath {
-                        return some(http.StaticBody {
-                            status: r.static_status,
-                            content_type: r.static_ctype,
-                            body: r.static_body,
-                            keep_alive: r.static_rendered
-                        });
-                    }
+                if r.fkind == 1 && r.has_static && f.path == r.fpath {
+                    return i;
                 }
                 i = i + 1;
             }
         }
-        return none;
+        return -1;
     }
 
     pub fn serve_static(self: Router[S], f: http.WireFrame) -> result[http.StaticBody, http.Response] {
@@ -639,20 +663,17 @@ impl Router[S] {
                 // No maps: exact routes bind nothing, and locals
                 // starts none -- set_local materialises on first
                 // write. A map here cost 5 allocs (header + 4
-                // buffers); none costs one opt wrapper... which is
-                // itself an alloc. So: NO wrapper either. Ctx
-                // params/locals are opt, and none needs no
-                // allocation at all -- it is the null case of the
-                // opt, not a value. Zero allocs for both maps.
+                // buffers). A `none` is itself a heap object in
+                // slang, so both fields share the route's.
                 let c = Ctx[S] {
                     state: self.state,
                     req: req,
-                    params: none,
+                    params: r.no_map,
                     param1_name: "",
                     param1_value: "",
                     route: r.pattern,
                     request_id: request_id,
-                    locals: none,
+                    locals: r.no_map,
                     errors: self.errors
                 };
                 let resp = self.run(c, r);
@@ -698,12 +719,12 @@ impl Router[S] {
                 let c = Ctx[S] {
                     state: self.state,
                     req: req,
-                    params: none,
+                    params: r.no_map,
                     param1_name: r.names[len(r.names) - 1],
                     param1_value: id,
                     route: r.pattern,
                     request_id: request_id,
-                    locals: none,
+                    locals: r.no_map,
                     errors: self.errors
                 };
                 let resp = self.run(c, r);
@@ -772,11 +793,10 @@ impl Router[S] {
             }
             let pmap: map[str]str = {};
             self.match_segs(r, segs, pmap);
-            // some() iff the route bound something: exact routes
-            // bind nothing, so no map AND no wrapper -- none is the
-            // null case, zero allocs. A bound route pays one map +
-            // one wrapper, earned.
-            let popt: opt[map[str]str] = none;
+            // some() iff the route bound something; otherwise the
+            // route's shared none. A bound route pays one map + one
+            // wrapper, earned.
+            let popt = r.no_map;
             if len(pmap) > 0 {
                 popt = some(pmap);
             }
@@ -788,7 +808,7 @@ impl Router[S] {
                 param1_value: "",
                 route: r.pattern,
                 request_id: request_id,
-                locals: none,
+                locals: r.no_map,
                 errors: self.errors
             };
             let resp = self.run(c, r);

@@ -489,6 +489,37 @@ fn test_locals_materialise_on_first_write() {
     assert(to_str(r3.serve(req("GET", "/who2")).body) == "ada|acme|2");
 }
 
+// Reports what the request's locals held on arrival, then writes one.
+fn h_mark(c: Ctx[TestState]) -> http.Response {
+    let before = c.local("mark");
+    c.set_local("mark", "x");
+    return text(200, "before=" + before);
+}
+
+fn test_shared_none_does_not_carry_locals_between_requests() {
+    // Every Ctx a route builds starts from the same `none` (Route.no_map:
+    // a slang opt is a heap object, so a fresh none per request was an
+    // allocation). A write on one request must never be visible to the
+    // next on the same route -- exact, single-:id and general routes
+    // each build their Ctx on a different path.
+    let r = new_test_router();
+    r.get("/m", h_mark);
+    r.get("/m/:id", h_mark);
+    r.get("/m/:a/:b", h_mark);
+    for p in ["/m", "/m/7", "/m/1/2"] {
+        let i = 0;
+        while i < 2 {
+            let body = to_str(r.serve_frame(frame_req("GET", p), "").body);
+            if body != "before=" {
+                panic("locals leaked into a later request on " + p + ": " +
+                      body);
+            }
+            assert(to_str(r.serve(req("GET", p)).body) == "before=");
+            i = i + 1;
+        }
+    }
+}
+
 fn set_tenant(c: Ctx[TestState]) -> opt[http.Response] {
     c.set_local("tenant", "acme");
     return none;

@@ -6,6 +6,54 @@ loses." This is that measurement, today, and zokor still loses it -- but
 by half what it used to. Read past the headline number for why, and what
 closes the rest of the gap.
 
+## zokor against plain slang (2026-10-12)
+
+The framework's own cost, isolated: `bench/vs-slang/plain` serves the
+same three routes as `bench/vs-go/zokor-server` with stdlib `http` and no
+framework, byte-identical responses. `bench/vs-slang/run.sh` runs both in
+ABBA order under `latgen` (every request timed), a fresh server per
+sample, and records peak RSS and the server's CPU time per request. On a
+busy laptop rps swung 2-4x between samples, so the ratios below use CPU
+per request, which held within about 5%.
+
+macOS (i5-8279U, c=50, 6 samples each, medians):
+
+| server CPU per request | plain slang | zokor before | zokor after |
+|---|---:|---:|---:|
+| `GET /` (static) | 29.3 us | 29.4 us | 29.4 us |
+| `GET /users/:id` | 30.2 us | 38.2 us | 38.1 us |
+| `POST /echo` | 32.0 us | 47.1 us | **43.8 us** |
+
+Allocations per request (exact, `SLANG_GC_STAT` over 20,000 requests):
+`/users/:id` plain 13, zokor 20 -> **17**; `/echo` plain 16, zokor 30 ->
+**23**. Peak RSS: zokor 5-9 MiB, plain slang 4-8 MiB.
+
+Where the rest goes, from `perf` on Linux (Ubuntu 24.04 container, server
+on 4 cores, `/users/:id`, c=50; plain 30 us, zokor 35-36 us):
+
+- **Deadlines, ~1.4-2.3 us.** Every `recv` with a deadline can nudge
+  slang's reactor (an eventfd `write` and a reactor wakeup); plain slang
+  waits with `until_never()` and never does. Measured by ablation: the
+  same build with every deadline `until_never()` saved 2.3 us at c=50 and
+  1.4 us at c=500 and c=2000. The deadlines are zokor's slow-loris
+  defence and stay; the fix is in slang's reactor.
+- **Panic isolation, ~1.5 us** (about 4 us on macOS). Each dynamic
+  request runs its handler in a spawned task so a panic answers `500`.
+  It cannot simply go: without it a panicking handler's connection task
+  dies with its socket open (measured: 20 panics, 20 leaked descriptors
+  and 20 hung clients), because slang does not unwind a panicked task.
+  `spawn` + `join_wait` alone costs ~2 us of work but up to 5x that in
+  kernel time on an 8-worker pool, from waking idle workers.
+- **zokor's own path, ~2 us**: `Ctx`, routing, response helpers.
+
+What changed here: a slang `opt` is a heap object even when `none`, so
+the `none`s every dynamic request built (its `Ctx` params and locals, and
+`match_static`'s miss) are now one shared value per route, and the static
+path answers from a `StaticBody` built at registration. `dto`'s key check
+keeps container kinds in a bitmask and every open object's keys in one
+list instead of three. The `/users/:id` allocations saved did not move
+its CPU measurably; the `/echo` saving did (7%).
+
 ## Latest: four servers, and the dynamic-route fix (wrk, 2026-09-29)
 
 Same machine (i5-8279U, 8 logical cores), `wrk -t4 --latency`, 10 s runs
