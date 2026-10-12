@@ -244,6 +244,10 @@ fn test_serve_conn_body_too_large_answers_413() {
     if resp_status_bytes(inb) != "413" {
         panic("expected 413, got " + resp_status_bytes(inb));
     }
+    // the connection is closed after this answer, so it must say so
+    if strings.find(conn_resp_text(inb, n), "connection: close") < 0 {
+        panic("the 413 before closing must say Connection: close");
+    }
     println("serve_conn_body_too_large_answers_413 ok");
 }
 
@@ -282,6 +286,90 @@ fn test_serve_conn_headers_too_large_answers_431() {
         panic("expected 431, got " + resp_status_bytes(inb));
     }
     println("serve_conn_headers_too_large_answers_431 ok");
+}
+
+// The first n bytes of a response, lowercased, for header checks.
+fn conn_resp_text(inb: wire, n: int) -> str {
+    return strings.to_lower(to_str(inb[0..n]));
+}
+
+fn req_wire(s: str, a: &mut arena) -> wire {
+    let b = to_bytes(s);
+    let w = a.wire(len(b));
+    let i = 0;
+    while i < len(b) {
+        w[i] = b[i];
+        i = i + 1;
+    }
+    return w;
+}
+
+// The response before a server-initiated close must say so: RFC 9112
+// 9.6. A client told keep-alive may already be sending its next request
+// on a connection that is closing, and a POST on it cannot safely be
+// retried. The request that hits max_requests_per_conn closes the
+// connection; its response used to carry "Connection: keep-alive".
+fn test_serve_conn_last_response_before_limit_says_close() {
+    let lr = link_listen(0);
+    guard let ln = lr else { panic("listen"); }
+    let dr = link_dial("127.0.0.1", ln.port(), until_never());
+    guard let client = dr else { panic("dial"); }
+    let ar = ln.accept(until_never());
+    guard let server = ar else { panic("accept"); }
+    let r = serve_test_router();
+    spawn serve_conn(r, server, max2_config());
+    let a = arena_new(512);
+    let out = req_wire("GET /hi HTTP/1.1\r\nHost: t\r\n\r\n", &mut a);
+    let inb = a.wire(256);
+    let round = 0;
+    while round < 2 {
+        let sr = client.send(out, until_never());
+        guard let _n = sr else { panic("client send " + to_str(round)); }
+        let rr = client.recv(inb, until_of(time.mono() + 2000000000));
+        guard let n = rr else { panic("client recv " + to_str(round)); }
+        let text = conn_resp_text(inb, n);
+        let want = "connection: keep-alive";
+        if round == 1 {
+            want = "connection: close";
+        }
+        if strings.find(text, want) < 0 {
+            panic("response " + to_str(round + 1) + " of 2 lacks '" + want +
+                  "': " + text);
+        }
+        round = round + 1;
+    }
+    println("serve_conn_last_response_before_limit_says_close ok");
+}
+
+// A client that asks to close gets a response that says it is closing,
+// on a dynamic route and on a static one (write_static's own close
+// variant).
+fn test_serve_conn_answers_close_when_client_asks() {
+    let r = serve_test_router();
+    r.static_bytes("/s", 200, "text/plain", b"static", ok_hi);
+    for p in ["/hi", "/s"] {
+        let lr = link_listen(0);
+        guard let ln = lr else { panic("listen"); }
+        let dr = link_dial("127.0.0.1", ln.port(), until_never());
+        guard let client = dr else { panic("dial"); }
+        let ar = ln.accept(until_never());
+        guard let server = ar else { panic("accept"); }
+        spawn serve_conn(r, server, default_server_config());
+        let a = arena_new(512);
+        let out = req_wire("GET " + p + " HTTP/1.1\r\nHost: t\r\n" +
+                          "Connection: close\r\n\r\n", &mut a);
+        let sr = client.send(out, until_never());
+        guard let _n = sr else { panic("client send"); }
+        let inb = a.wire(256);
+        let rr = client.recv(inb, until_of(time.mono() + 2000000000));
+        guard let n = rr else { panic("client recv"); }
+        let text = conn_resp_text(inb, n);
+        if strings.find(text, "connection: close") < 0 ||
+           strings.find(text, "keep-alive") >= 0 {
+            panic(p + ": a closing response must say close, once: " + text);
+        }
+    }
+    println("serve_conn_answers_close_when_client_asks ok");
 }
 
 fn max2_config() -> ServerConfig {
@@ -379,6 +467,10 @@ fn test_serve_conn_panicking_handler_answers_500() {
     if resp_status_bytes(inb) != "500" {
         panic("expected 500, got " + resp_status_bytes(inb));
     }
+    // the connection is closed after this answer, so it must say so
+    if strings.find(conn_resp_text(inb, n), "connection: close") < 0 {
+        panic("the 500 before closing must say Connection: close");
+    }
     println("serve_conn_panicking_handler_answers_500 ok");
 }
 
@@ -467,6 +559,8 @@ test_serve_conn_stalled_headers_close_at_header_timeout();
 test_serve_conn_body_too_large_answers_413();
 test_serve_conn_headers_too_large_answers_431();
 test_serve_conn_closes_after_max_requests();
+test_serve_conn_last_response_before_limit_says_close();
+test_serve_conn_answers_close_when_client_asks();
 test_drain_returns_early_when_idle();
 test_drain_stops_at_deadline();
 test_serve_conn_panicking_handler_answers_500();
