@@ -156,6 +156,8 @@ pub gc struct Router[S] {
     auto_options: bool,
     auto_head: bool,
     ready: Readiness[S],
+    // Off until `r.cors(policy)`; see cors.sl.
+    cors: Cors,
 }
 
 // An application builds its router from its state alone; everything else
@@ -175,7 +177,8 @@ pub fn new_router[S](state: S) -> Router[S] {
         errors: new_registry(),
         auto_options: true,
         auto_head: true,
-        ready: Readiness[S] { live_path: "", ready_path: "", checks: [], timeout: default_ready_timeout(), logger: no_logger() }
+        ready: Readiness[S] { live_path: "", ready_path: "", checks: [], timeout: default_ready_timeout(), logger: no_logger() },
+        cors: cors_off()
     };
 }
 
@@ -431,6 +434,16 @@ impl Router[S] {
         return len(self.afters);
     }
 
+    // Turns CORS on with `p` (see cors.sl). -1, leaving CORS off, when the
+    // policy has a problem; cors_problem(p) says what.
+    pub fn cors(self: Router[S], p: CorsPolicy) -> int {
+        if len(cors_problem(p)) > 0 {
+            return -1;
+        }
+        self.cors = cors_compile(p);
+        return len(p.origins);
+    }
+
     // Answers GET /healthz (liveness) and GET /readyz (the checks
     // below). See health.sl for what each one says. The router answers
     // them itself, only for a path no route claims, so a service's own
@@ -661,6 +674,11 @@ impl Router[S] {
     // ("GET", <static-path>) falls to the dynamic path, which
     // parses properly (501s, 405s, 404s all live there).
     fn static_index(self: Router[S], f: http.WireFrame) -> int {
+        // A static answer is fixed bytes, and a cross-origin request needs
+        // headers that depend on its Origin: it takes the dynamic path.
+        if self.cors.on && strings.find_field(f.headers, "origin") >= 0 {
+            return -1;
+        }
         if f.method == "GET" {
             let i = 0;
             while i < len(self.routes) {
@@ -719,6 +737,10 @@ impl Router[S] {
                 return self.serve_id_routed(http.wire_request(f), request_id, client_ip);
             }
             method = m;
+            if self.cors.on && method == Method.OPTIONS {
+                // A preflight is answered before routing, in serve_id.
+                return self.serve_id_routed(http.wire_request(f), request_id, client_ip);
+            }
         }
         let head_of_get = self.auto_head && method == Method.HEAD;
         let req = http.wire_request(f);
@@ -860,6 +882,17 @@ impl Router[S] {
                                                           request_id)),
                             route: "" };
         }
+        if self.cors.on && method == Method.OPTIONS &&
+           is_preflight(req.method, req.raw_headers) && self.path_exists(segs, p) {
+            // Before routing, so a route's own OPTIONS handler or a `before`
+            // demanding a token cannot turn a preflight away: browsers send
+            // preflights without credentials.
+            let pf = self.cors.preflight(http.header(req, "origin") ?? "");
+            if len(request_id) > 0 {
+                pf = http.with_header(pf, "x-request-id", request_id);
+            }
+            return Served { resp: pf, route: "" };
+        }
         // A HEAD with no HEAD route is served by the GET one, and the
         // body dropped after the handler and the hooks have run -- so
         // the headers a client gets are the ones it would get from GET.
@@ -969,6 +1002,17 @@ impl Router[S] {
         return Served { resp: self.finish(c, resp), route: "" };
     }
 
+    // Whether any route, or a mounted health path, answers `p`.
+    fn path_exists(self: Router[S], segs: [str], p: str) -> bool {
+        for r in self.routes {
+            if self.match_only(r, segs) {
+                return true;
+            }
+        }
+        return len(self.ready.live_path) > 0 &&
+               (p == self.ready.live_path || p == self.ready.ready_path);
+    }
+
     // Router-wide `before`s, then the route's own, then the handler.
     // A `before` that returns a response stops the rest -- but the
     // `after`s still run, so a logging or header hook cannot be skipped
@@ -1023,6 +1067,11 @@ impl Router[S] {
             let a = self.afters[i];
             out = a(c, out);
             i = i + 1;
+        }
+        // Last, so every answer carries it -- a 404, a 422, a `before`'s
+        // 401 -- unless an `after` already wrote its own.
+        if self.cors.on && !http.has_resp_header(out, "access-control-allow-origin") {
+            out = self.cors.apply(out, c.header("origin"));
         }
         return out;
     }
