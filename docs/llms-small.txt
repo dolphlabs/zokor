@@ -241,6 +241,51 @@ Never logged: query strings, bodies, headers. `zokor.no_logger()` turns
 it off. A full queue drops records and counts them; a request never waits
 on the log.
 
+## Authentication
+
+```slang
+import "http";
+import "time";
+import "zokor";
+
+struct Claims {
+    sub: str,
+    exp: int,
+}
+
+gc struct App {
+    jwt: zokor.JwtAuth,
+}
+
+fn me(c: zokor.Ctx[App]) -> http.Response {
+    let r: result[Claims, http.Response] = zokor.bearer_claims(c, c.state.jwt);
+    guard let claims = r else let deny = err_of(r) {
+        return deny;                 // 401, WWW-Authenticate: Bearer error="invalid_token"
+    }
+    return zokor.text(200, claims.sub);
+}
+
+// From config: zokor.jwt_auth_from(cfg) reads JWT_SECRETS (32+ bytes, newest
+// first), JWT_AUDIENCE, JWT_ISSUER, JWT_LEEWAY.
+let ar = zokor.jwt_auth(["0123456789abcdef0123456789abcdef"]);
+guard let auth = ar else { exit(1); }
+let r = zokor.new_router(App { jwt: auth });
+r.get("/me", me);
+let now = (time.wall() as int) / 1000000000;
+let tr = zokor.sign_token(Claims { sub: "u_1", exp: now + 3600 }, auth);
+guard let token = tr else { exit(1); }
+let resp = r.serve(zokor.get_request("/me").bearer(token).build());
+assert(zokor.resp_text(resp) == "u_1");
+assert(zokor.resp_status(r.serve(zokor.get_request("/me").build())) == 401);
+println("ok");
+```
+
+Claims structs need `exp` (Unix seconds). Also: `zokor.basic_credentials(c)` +
+`zokor.basic_matches(creds, user, pass)` + `zokor.basic_denied(c, realm)`;
+`zokor.api_keys_from(cfg)` (`API_KEYS=name:key,...`, 24+ bytes) +
+`zokor.api_key_client(c, keys)` (reads `X-Api-Key`, returns the client name).
+All comparisons are constant-time.
+
 ## Operator injection (MongoDB)
 
 `r.mongo_sanitize(zokor.SanitizeMode.REJECT)` (or `zokor.sanitize_from(cfg)`,
