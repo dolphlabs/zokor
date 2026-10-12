@@ -247,15 +247,8 @@ fn show_written(label: str, written: bytes) {
 let reg = zokor.new_registry();
 let app = App { name: "zokor chat", history: [], errors: reg };
 
-let r = zokor.Router[App] {
-    routes: [],
-    befores: [],
-    afters: [],
-    state: app,
-    errors: reg,
-    auto_options: true,
-    auto_head: true
-};
+let r = zokor.new_router(app);
+r.errors = reg;
 r.get("/ws", ws_route);
 
 // 1. the handshake, over the ordinary router

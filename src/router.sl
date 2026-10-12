@@ -148,6 +148,7 @@ pub gc struct Router[S] {
     // them. On by default; both are what a correct HTTP server does.
     auto_options: bool,
     auto_head: bool,
+    ready: Readiness[S],
 }
 
 // An application builds its router from its state alone; everything else
@@ -166,7 +167,8 @@ pub fn new_router[S](state: S) -> Router[S] {
         state: state,
         errors: new_registry(),
         auto_options: true,
-        auto_head: true
+        auto_head: true,
+        ready: Readiness[S] { live_path: "", ready_path: "", checks: [], timeout: default_ready_timeout() }
     };
 }
 
@@ -420,6 +422,63 @@ impl Router[S] {
     pub fn after(self: Router[S], f: fn(Ctx[S], http.Response) -> http.Response) -> int {
         push(self.afters, f);
         return len(self.afters);
+    }
+
+    // Answers GET /healthz (liveness) and GET /readyz (the checks
+    // below). See health.sl for what each one says. The router answers
+    // them itself, only for a path no route claims, so a service's own
+    // route at the same path wins, and they run no `before`: an auth
+    // hook that refused the orchestrator would restart healthy pods.
+    pub fn health(self: Router[S]) -> int {
+        return self.health_at("/healthz", "/readyz");
+    }
+
+    // The same at paths of the service's choosing. -1 when either is
+    // not an absolute path or both are the same.
+    pub fn health_at(self: Router[S], live_path: str, ready_path: str) -> int {
+        if !strings.has_prefix(live_path, "/") || !strings.has_prefix(ready_path, "/") ||
+           live_path == ready_path {
+            return -1;
+        }
+        self.ready.live_path = live_path;
+        self.ready.ready_path = ready_path;
+        return 2;
+    }
+
+    // Registers a dependency /readyz waits on. `f` returns err with
+    // the reason when the dependency is unusable. -1 when the name is
+    // not 1-64 of [A-Za-z0-9_.-] or is already registered.
+    pub fn ready_check(self: Router[S], name: str,
+                       f: fn(S) -> result[int, str]) -> int {
+        if !check_name_ok(name) {
+            return -1;
+        }
+        for ch in self.ready.checks {
+            if ch.name == name {
+                return -1;
+            }
+        }
+        push(self.ready.checks, ReadyCheck[S] {
+            name: name,
+            check: f,
+            lock: make_mutex(),
+            started: 0,
+            finished: 0,
+            passed: false,
+            reported: ""
+        });
+        return len(self.ready.checks);
+    }
+
+    // How long /readyz waits for its checks, in nanoseconds; below 1ms
+    // is raised to 1ms. Default 0.9s (default_ready_timeout).
+    pub fn ready_timeout(self: Router[S], ns: int) -> int {
+        let t = ns;
+        if t < 1000000 {
+            t = 1000000;
+        }
+        self.ready.timeout = t;
+        return t;
     }
 
     // "METHOD /pattern" per route, in registration order: for a boot
@@ -851,6 +910,23 @@ impl Router[S] {
             errors: self.errors
         };
         if !path_seen {
+            if len(self.ready.live_path) > 0 &&
+               (p == self.ready.live_path || p == self.ready.ready_path) {
+                c.route = p;
+                if method != Method.GET && method != Method.HEAD {
+                    let na = respond(self.errors, "method_not_allowed", request_id);
+                    return self.finish(c, http.with_header(na, "allow", "GET, HEAD"));
+                }
+                let hr = live_response();
+                if p == self.ready.ready_path {
+                    hr = ready_response(self.ready, self.state);
+                }
+                let fr = self.finish(c, hr);
+                if method == Method.HEAD {
+                    fr.body = to_bytes("");
+                }
+                return fr;
+            }
             return self.finish(c, respond(self.errors, "not_found", request_id));
         }
         let allow = self.allowed(p);

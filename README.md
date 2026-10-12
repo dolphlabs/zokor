@@ -34,10 +34,8 @@ fn show_org(c: zokor.Ctx[App]) -> http.Response {
     return zokor.ok_json(encode(org));
 }
 
-let r = zokor.Router[App] {
-    routes: [], befores: [], afters: [], state: app,
-    errors: reg, auto_options: true, auto_head: true
-};
+let r = zokor.new_router(app);
+r.errors = reg;
 r.get("/orgs/:id", show_org);
 r.post("/orgs", create_org);
 ```
@@ -250,6 +248,42 @@ own task, and the connection closes right after answering rather than
 serving more requests on whatever state the panic left behind. The
 static fast path (`GET /`, no handler call) never pays for this
 isolation, since nothing there can panic in the first place.
+
+## Health and readiness
+
+```slang
+r.health();                      // GET /healthz and GET /readyz
+r.ready_check("db", db_ready);   // what /readyz waits on
+
+fn db_ready(s: App) -> result[int, str] {
+    let q = s.db.query("select 1");
+    guard let _rows = q else let e = err_of(q) {
+        return err(to_str(e));
+    }
+    return ok(0);
+}
+```
+
+`/healthz` is liveness: `200 {"status":"ok"}` whenever the process is
+serving, and it never touches a dependency, so a database outage cannot
+make the orchestrator restart every replica. `/readyz` runs every check at
+once and answers `200 {"status":"ok","checks":{"db":"ok"}}`, or `503` with
+`"failing"` or `"timeout"` against each check that did not pass. It also
+answers `503 shutting_down` once `SIGTERM` arrives, so a load balancer stops
+sending traffic before the drain.
+
+- **Bounded.** A probe waits at most 0.9s (`r.ready_timeout(ns)`), inside
+  Kubernetes' default 1s probe timeout.
+- **Isolated.** A check runs in its own task, so a panic fails that check,
+  not the probe. A check still running from an earlier probe is joined,
+  not started again, so a hung database costs one task, not one per probe.
+- **No leaks.** The body names checks, never errors: a driver's message
+  carries hosts and user names. The reason goes to stderr, once each time
+  a check starts failing, changes reason or recovers.
+- **Out of the way.** The router answers these paths only when no route
+  claims them, so your own `/healthz` wins. No `before` runs on them,
+  since an auth hook would fail the probes. `r.health_at(live, ready)`
+  mounts them elsewhere.
 
 ## Errors
 
@@ -685,7 +719,7 @@ The full list, ordered and checkable, is [todo.md](todo.md). In short:
   concurrent connections.
 - **Middleware**, none of it blocked: CORS, security headers,
   cookies, JWT and basic auth, ETag/304, compression, static
-  files, request logging, health endpoints. (A rate limiter and a
+  files, request logging. (A rate limiter and a
   bearer-token store exist; `RateLimit-*` headers and sharding do not.)
 - **Enterprise**: Postgres helpers with transactions, migrations,
   metrics, tracing, background jobs, pagination, OpenAPI, and
