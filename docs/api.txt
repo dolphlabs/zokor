@@ -76,6 +76,14 @@ quote_into(sb: builder.Str, s: str) -> builder.Str
     The same, appended to a builder, which is what every renderer wants: a response is many quoted strings, and joining them here...
 status_text(status: i32) -> str
 
+## health.sl -- Health and readiness.
+gc struct ReadyCheck[S] { name: str, check: fn(S) -> result[int, str], lock: mutex, started: int, finished: int, passed: bool, reported: str }
+gc struct Readiness[S] { live_path: str, ready_path: str, checks: [ReadyCheck[S]], timeout: int }
+default_ready_timeout() -> int
+    0.9s: inside Kubernetes' default 1s probe timeout, so a slow dependency is answered as a 503 naming it rather than as a probe...
+check_name_ok(name: str) -> bool
+    A check name is 1-64 of [A-Za-z0-9_.-]: it is written into the JSON body and to stderr as is.
+
 ## ids.sl -- Identifiers.
 new_request_id() -> str
     128 bits of randomness, hex, prefixed so it is recognisable in a log that carries other people's ids too.
@@ -222,7 +230,7 @@ enum Method { GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, TRACE, CONNECT }
     The HTTP methods, as a closed set.
 gc struct Ctx[S] { state: S, req: http.Request, params: opt[map[str]str], param1_name: str, param1_value: str, route: str, request_id: str, locals: opt[map[str]str], errors: Registry }
 gc struct Route[S] { method: Method, pattern: str, befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], segs: [str], names: [str], wild: int, fkind: int, fpath: str, handler: fn(Ctx[S]) -> http.Response, has_static: bool, static_status: i32, static_ctype: str, static_body: bytes, static_rendered: bytes, static_hit: opt[http.StaticBody], no_map: opt[map[str]str] }
-gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool }
+gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S] }
     A `before` runs ahead of the handler and may end the request by returning a response; `none` carries on.
 new_router[S](state: S) -> Router[S]
     An application builds its router from its state alone; everything else starts empty or at the default a correct server should...
@@ -251,6 +259,14 @@ Router.guarded(method: Method, pattern: str, h: fn(Ctx[S]) -> http.Response, bef
     Middleware for one route, which is the other half of the same need: `r.guarded(Method.DELETE, "/orgs/:id", drop,...
 Router.before(f: fn(Ctx[S]) -> opt[http.Response]) -> int
 Router.after(f: fn(Ctx[S], http.Response) -> http.Response) -> int
+Router.health() -> int
+    Answers GET /healthz (liveness) and GET /readyz (the checks below).
+Router.health_at(live_path: str, ready_path: str) -> int
+    The same at paths of the service's choosing.
+Router.ready_check(name: str, f: fn(S) -> result[int, str]) -> int
+    Registers a dependency /readyz waits on.
+Router.ready_timeout(ns: int) -> int
+    How long /readyz waits for its checks, in nanoseconds; below 1ms is raised to 1ms.
 Router.routes_list() -> [str]
     "METHOD /pattern" per route, in registration order: for a boot log, for `zokor check`, and for a test that pins down the...
 Router.allowed(p: str) -> [Method]

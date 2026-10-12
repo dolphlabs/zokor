@@ -204,6 +204,39 @@ println("ok");
 One value: `c.query("q")`, `c.query_int("page", 1)`, `c.param("id")`,
 `c.param_int("id", 0)`.
 
+## Health and readiness
+
+```slang
+import "zokor";
+
+gc struct App {
+    db_up: bool,
+}
+
+// err(reason) when the dependency is unusable; the reason goes to
+// stderr, never into the response.
+fn db_ready(s: App) -> result[int, str] {
+    if !s.db_up {
+        return err("connection refused");
+    }
+    return ok(0);
+}
+
+let r = zokor.new_router(App { db_up: true });
+r.health();
+r.ready_check("db", db_ready);
+assert(zokor.resp_status(r.serve(zokor.get_request("/healthz").build())) == 200);
+let ready = r.serve(zokor.get_request("/readyz").build());
+assert(zokor.resp_text(ready) == "{\"status\":\"ok\",\"checks\":{\"db\":\"ok\"}}");
+println("ok");
+```
+
+`/healthz` never runs checks; `/readyz` runs them concurrently, each
+bounded by `r.ready_timeout(ns)` (default 0.9s), and answers 503 with
+`failing`/`timeout` per check, or `shutting_down` after SIGTERM. A
+check's panic fails the check. The router answers these only when no
+route claims the path, and no `before` runs on them.
+
 ## Headers and rate limiting
 
 ```slang

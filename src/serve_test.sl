@@ -431,6 +431,26 @@ fn test_serve_conn_gives_dynamic_requests_ids() {
     println("serve_conn_gives_dynamic_requests_ids ok");
 }
 
+// The probes over a real connection: the frame path misses (no route),
+// falls through to serve_id, and the router answers them there.
+fn test_serve_conn_answers_health_probes() {
+    let r = serve_test_router();
+    r.health();
+    let sc = default_server_config();
+    let live = one_exchange(r, sc, "GET /healthz HTTP/1.1\r\nHost: t\r\n" +
+                            "Connection: close\r\n\r\n");
+    if !strings.has_prefix(live, "HTTP/1.1 200") || strings.find(live, "{\"status\":\"ok\"}") < 0 {
+        panic("healthz: " + live);
+    }
+    let ready = one_exchange(r, sc, "GET /readyz HTTP/1.1\r\nHost: t\r\n" +
+                             "Connection: close\r\n\r\n");
+    if !strings.has_prefix(ready, "HTTP/1.1 200") ||
+       strings.find(ready, "{\"status\":\"ok\",\"checks\":{}}") < 0 {
+        panic("readyz: " + ready);
+    }
+    println("serve_conn_answers_health_probes ok");
+}
+
 fn test_serve_conn_reuses_a_well_formed_client_id() {
     let r = serve_test_router();
     let nf = one_exchange(r, default_server_config(),
