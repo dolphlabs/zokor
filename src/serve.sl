@@ -110,14 +110,18 @@ pub fn server_config_from(cfg: Config) -> ServerConfig {
     };
 }
 
-fn idle_deadline(sc: ServerConfig) -> until {
-    return until_of(time.mono() + sc.idle_timeout);
+// The three read deadlines start together, so they share one clock
+// read (`now`, from time.mono()) instead of taking one each: a clock
+// read is a measurable share of a request on some hosts (~0.17 us in a
+// Linux VM, per docs/benchmarks.md).
+fn idle_deadline(sc: ServerConfig, now: duration) -> until {
+    return until_of(now + sc.idle_timeout);
 }
-fn header_deadline(sc: ServerConfig) -> until {
-    return until_of(time.mono() + sc.header_timeout);
+fn header_deadline(sc: ServerConfig, now: duration) -> until {
+    return until_of(now + sc.header_timeout);
 }
-fn body_deadline(sc: ServerConfig) -> until {
-    return until_of(time.mono() + sc.body_timeout);
+fn body_deadline(sc: ServerConfig, now: duration) -> until {
+    return until_of(now + sc.body_timeout);
 }
 fn write_deadline(sc: ServerConfig) -> until {
     return until_of(time.mono() + sc.write_timeout);
@@ -196,8 +200,10 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
         // time: a connection that has already served ten requests
         // still gets the full idle window before an eleventh, the
         // same as its first ever request did.
-        let rr = http.read_frame(&mut c, buf, filled, idle_deadline(sc),
-                                 header_deadline(sc), body_deadline(sc));
+        let now = time.mono();
+        let rr = http.read_frame(&mut c, buf, filled, idle_deadline(sc, now),
+                                 header_deadline(sc, now),
+                                 body_deadline(sc, now));
         guard let wf = rr else let e = err_of(rr) {
             // A read error other than "too large" closes the
             // connection rather than answering: it means this server
