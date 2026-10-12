@@ -103,7 +103,7 @@ fn test_serve_conn_normal_request() {
     let r = serve_test_router();
     spawn serve_conn(r, server, default_server_config());
     let req = to_bytes("GET /hi HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n");
-    let a = arena_new(512);
+    let a = arena_new(4096);
     let out = a.wire(len(req));
     let i = 0;
     while i < len(req) {
@@ -112,7 +112,7 @@ fn test_serve_conn_normal_request() {
     }
     let sr = client.send(out, until_never());
     guard let _n = sr else { panic("client send"); }
-    let inb = a.wire(256);
+    let inb = a.wire(2048);
     let rr = client.recv(inb, until_of(time.mono() + 2000000000));
     guard let n = rr else { panic("client recv"); }
     if n < 12 { panic("response too short"); }
@@ -133,8 +133,8 @@ fn test_serve_conn_idle_closes_connection() {
     guard let server = ar else { panic("accept"); }
     let r = serve_test_router();
     spawn serve_conn(r, server, short_config());
-    let a = arena_new(256);
-    let inb = a.wire(256);
+    let a = arena_new(4096);
+    let inb = a.wire(2048);
     let t0 = time.mono();
     let rr = client.recv(inb, until_of(time.mono() + 2000000000));
     let dt = time.mono() - t0;
@@ -181,7 +181,7 @@ fn test_serve_conn_stalled_headers_close_at_header_timeout() {
     let r = serve_test_router();
     spawn serve_conn(r, server, sc);
     let partial = to_bytes("GET /hi HTTP/1.1\r\nHost: t\r\n");
-    let a = arena_new(512);
+    let a = arena_new(4096);
     let out = a.wire(len(partial));
     let i = 0;
     while i < len(partial) {
@@ -190,7 +190,7 @@ fn test_serve_conn_stalled_headers_close_at_header_timeout() {
     }
     let sr = client.send(out, until_never());
     guard let _n = sr else { panic("client send"); }
-    let inb = a.wire(256);
+    let inb = a.wire(2048);
     let t0 = time.mono();
     let rr = client.recv(inb, until_of(time.mono() + 5000000000));
     let dt = time.mono() - t0;
@@ -241,7 +241,7 @@ fn test_serve_conn_body_too_large_answers_413() {
     spawn serve_conn(r, server, tiny_body_config());
     let req = to_bytes(
         "POST /hi HTTP/1.1\r\nHost: t\r\nContent-Length: 10000\r\n\r\n");
-    let a = arena_new(512);
+    let a = arena_new(4096);
     let out = a.wire(len(req));
     let i = 0;
     while i < len(req) {
@@ -250,7 +250,7 @@ fn test_serve_conn_body_too_large_answers_413() {
     }
     let sr = client.send(out, until_never());
     guard let _n = sr else { panic("client send"); }
-    let inb = a.wire(256);
+    let inb = a.wire(2048);
     let rr = client.recv(inb, until_of(time.mono() + 2000000000));
     guard let n = rr else { panic("client recv"); }
     if n < 12 { panic("response too short"); }
@@ -282,7 +282,7 @@ fn test_serve_conn_headers_too_large_answers_431() {
         j = j + 1;
     }
     let req = to_bytes("GET /hi HTTP/1.1\r\nHost: t\r\nX-Long: " + junk);
-    let a = arena_new(1024);
+    let a = arena_new(4096);
     let out = a.wire(len(req));
     let i = 0;
     while i < len(req) {
@@ -291,7 +291,7 @@ fn test_serve_conn_headers_too_large_answers_431() {
     }
     let sr = client.send(out, until_never());
     guard let _n = sr else { panic("client send"); }
-    let inb = a.wire(256);
+    let inb = a.wire(2048);
     let rr = client.recv(inb, until_of(time.mono() + 2000000000));
     guard let n = rr else { panic("client recv"); }
     if n < 12 { panic("response too short"); }
@@ -331,9 +331,9 @@ fn test_serve_conn_last_response_before_limit_says_close() {
     guard let server = ar else { panic("accept"); }
     let r = serve_test_router();
     spawn serve_conn(r, server, max2_config());
-    let a = arena_new(512);
+    let a = arena_new(4096);
     let out = req_wire("GET /hi HTTP/1.1\r\nHost: t\r\n\r\n", &mut a);
-    let inb = a.wire(256);
+    let inb = a.wire(2048);
     let round = 0;
     while round < 2 {
         let sr = client.send(out, until_never());
@@ -368,12 +368,12 @@ fn test_serve_conn_answers_close_when_client_asks() {
         let ar = ln.accept(until_never());
         guard let server = ar else { panic("accept"); }
         spawn serve_conn(r, server, default_server_config());
-        let a = arena_new(512);
+        let a = arena_new(4096);
         let out = req_wire("GET " + p + " HTTP/1.1\r\nHost: t\r\n" +
                           "Connection: close\r\n\r\n", &mut a);
         let sr = client.send(out, until_never());
         guard let _n = sr else { panic("client send"); }
-        let inb = a.wire(256);
+        let inb = a.wire(2048);
         let rr = client.recv(inb, until_of(time.mono() + 2000000000));
         guard let n = rr else { panic("client recv"); }
         let text = conn_resp_text(inb, n);
@@ -395,11 +395,11 @@ fn one_exchange(r: Router[ServeState], sc: ServerConfig, request: str) -> str {
     let ar = ln.accept(until_never());
     guard let server = ar else { panic("accept"); }
     spawn serve_conn(r, server, sc);
-    let a = arena_new(2048);
+    let a = arena_new(4096);
     let out = req_wire(request, &mut a);
     let sr = client.send(out, until_never());
     guard let _n = sr else { panic("client send"); }
-    let inb = a.wire(1024);
+    let inb = a.wire(2048);
     let rr = client.recv(inb, until_of(time.mono() + 2000000000));
     guard let n = rr else { return ""; }
     return to_str(inb[0..n]);
@@ -596,15 +596,15 @@ fn test_serve_conn_closes_after_max_requests() {
     let r = serve_test_router();
     spawn serve_conn(r, server, max2_config());
     let req = to_bytes("GET /hi HTTP/1.1\r\nHost: t\r\n\r\n");
-    let a = arena_new(512);
+    let a = arena_new(4096);
     let out = a.wire(len(req));
     let i = 0;
     while i < len(req) {
         out[i] = req[i];
         i = i + 1;
     }
-    let b = arena_new(256);
-    let inb = b.wire(256);
+    let b = arena_new(4096);
+    let inb = b.wire(2048);
     let round = 0;
     while round < 2 {
         let sr = client.send(out, until_never());
@@ -649,7 +649,7 @@ fn test_serve_conn_panicking_handler_answers_500() {
     let r = panic_test_router();
     spawn serve_conn(r, server, default_server_config());
     let req = to_bytes("GET /boom HTTP/1.1\r\nHost: t\r\n\r\n");
-    let a = arena_new(512);
+    let a = arena_new(4096);
     let out = a.wire(len(req));
     let i = 0;
     while i < len(req) {
@@ -658,7 +658,7 @@ fn test_serve_conn_panicking_handler_answers_500() {
     }
     let sr = client.send(out, until_never());
     guard let _n = sr else { panic("client send"); }
-    let inb = a.wire(256);
+    let inb = a.wire(2048);
     let rr = client.recv(inb, until_of(time.mono() + 2000000000));
     guard let n = rr else { panic("client recv"); }
     if n < 12 { panic("response too short"); }
@@ -688,7 +688,7 @@ fn test_serve_conn_static_route_unaffected_by_panic_isolation() {
     let r = panic_test_router();
     spawn serve_conn(r, server, default_server_config());
     let req = to_bytes("GET /hi HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n");
-    let a = arena_new(512);
+    let a = arena_new(4096);
     let out = a.wire(len(req));
     let i = 0;
     while i < len(req) {
@@ -697,7 +697,7 @@ fn test_serve_conn_static_route_unaffected_by_panic_isolation() {
     }
     let sr = client.send(out, until_never());
     guard let _n = sr else { panic("client send"); }
-    let inb = a.wire(256);
+    let inb = a.wire(2048);
     let rr = client.recv(inb, until_of(time.mono() + 2000000000));
     guard let n = rr else { panic("client recv"); }
     if n < 12 { panic("response too short"); }
@@ -917,11 +917,11 @@ fn test_max_connections_from_config() {
 fn cap_exchange(port: int) -> str {
     let dr = link_dial("127.0.0.1", port, until_never());
     guard let client = dr else { panic("dial"); }
-    let a = arena_new(2048);
+    let a = arena_new(4096);
     let out = req_wire("GET /hi HTTP/1.1\r\nHost: t\r\n\r\n", &mut a);
     let sr = client.send(out, until_never());
     guard let _n = sr else { panic("send"); }
-    let inb = a.wire(1024);
+    let inb = a.wire(2048);
     let rr = client.recv(inb, until_of(time.mono() + 2000000000));
     guard let n = rr else { return ""; }
     return to_str(inb[0..n]);
@@ -930,10 +930,10 @@ fn cap_exchange(port: int) -> str {
 fn hold_one(port: int, gate: ConnGate, release: chan[int]) {
     let dr = link_dial("127.0.0.1", port, until_never());
     guard let client = dr else { panic("dial"); }
-    let a = arena_new(2048);
+    let a = arena_new(4096);
     let out = req_wire("GET /hi HTTP/1.1\r\nHost: t\r\n\r\n", &mut a);
     let _s = client.send(out, until_never());
-    let inb = a.wire(1024);
+    let inb = a.wire(2048);
     let _r = client.recv(inb, until_of(time.mono() + 2000000000));
     // the connection stays open, and counted, until told to go
     let _go = chan_recv(release);
@@ -1021,4 +1021,21 @@ fn test_static_fast_path_is_kept_without_an_origin() {
     assert(r.static_index(without) >= 0, "no Origin: still static");
     let with = st_frame(b"host: t\r\norigin: https://x.com\r\n");
     assert(r.static_index(with) < 0, "an Origin needs per-request headers");
+}
+
+fn test_serve_conn_errors_built_outside_the_router_carry_security_headers() {
+    let sc = default_server_config();
+    sc.logger = no_logger();
+    let boom = one_exchange(panic_test_router(), sc, "GET /boom HTTP/1.1\r\nHost: t\r\n\r\n");
+    if !strings.has_prefix(boom, "HTTP/1.1 500") || strings.find(boom, "x-content-type-options: nosniff") < 0 {
+        panic("panic 500: " + boom);
+    }
+    let tiny = tiny_body_config();
+    tiny.logger = no_logger();
+    let big = one_exchange(serve_test_router(), tiny,
+                           "GET /hi HTTP/1.1\r\nHost: t\r\nX-Long: " + strings.repeat("a", 400));
+    if !strings.has_prefix(big, "HTTP/1.1 431") || strings.find(big, "x-content-type-options: nosniff") < 0 {
+        panic("431: " + big);
+    }
+    println("serve_conn_errors_built_outside_the_router_carry_security_headers ok");
 }

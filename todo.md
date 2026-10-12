@@ -68,8 +68,11 @@ library, made and merged there first.
   `cors_from(cfg)` (`CORS_*`); applied by the router, so preflights skip
   `before`s and every answer, errors and the panic 500 included, carries
   the headers. Static routes stay static for requests without an Origin.
-- [ ] **Security headers**: HSTS, `X-Content-Type-Options`, frame options,
+- [x] **Security headers**: HSTS, `X-Content-Type-Options`, frame options,
   referrer policy, a configurable CSP; on by default, off by choice.
+  Applied by the router and baked into static renderings (both the
+  keep-alive and the close variant); COOP/CORP opt-in. +10 allocations per
+  dynamic response (2 per line in http.write's emit, slang-side).
 - [ ] **Cookies**: parse, set with every attribute (`Secure`,
   `HttpOnly`, `SameSite`, `Max-Age`, `Domain`, `Path`), and signed
   cookies with a rotating key.

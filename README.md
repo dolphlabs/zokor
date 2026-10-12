@@ -317,6 +317,45 @@ in `ServerConfig.logger`, and drain `ch` from your own task.
 `new_log_format(pid)` gives you zokor's `json` and `pretty` formats to reuse.
 `no_logger()` turns logging off.
 
+## Security headers
+
+On by default, on every response: dynamic, static, errors, and the 500
+after a panic.
+
+```
+content-security-policy: default-src 'none'; frame-ancestors 'none'
+strict-transport-security: max-age=31536000; includeSubDomains
+x-content-type-options: nosniff
+x-frame-options: DENY
+referrer-policy: no-referrer
+```
+
+- **CSP.** An API answers JSON, so its CSP allows nothing: a response
+  opened in a browser runs no script and can't be framed.
+- **HSTS.** Browsers ignore HSTS on plain HTTP, so it's harmless behind a
+  proxy that ends TLS, and right when the proxy doesn't.
+- **COOP and CORP** are opt-in: `same-origin` CORP breaks legitimate
+  cross-origin embeds.
+- **Handlers win.** A handler that sets one of these headers with
+  `with_header` keeps its own value.
+
+| Setting | Values |
+|---|---|
+| `SECURITY_HEADERS` | `false` turns them all off |
+| `CONTENT_SECURITY_POLICY` | a policy, or `off` |
+| `HSTS_MAX_AGE` | seconds; `0` is off |
+| `HSTS_INCLUDE_SUBDOMAINS`, `HSTS_PRELOAD` | `true` / `false` |
+| `FRAME_OPTIONS` | `DENY`, `SAMEORIGIN`, `off` |
+| `REFERRER_POLICY` | any standard policy, or `off` |
+| `CROSS_ORIGIN_OPENER_POLICY`, `CROSS_ORIGIN_RESOURCE_POLICY` | the standard values |
+
+`r.security_headers(zokor.security_from(cfg))` applies the settings, and
+`zokor.no_security_headers()` turns them off. Bad values are refused with
+the fix: an unknown frame option or referrer policy, preload without a
+year and subdomains, or a CSP containing a line break. Static routes are
+pre-rendered with the headers, so they cost nothing per request there. On
+a dynamic response, the five lines add about 10 allocations.
+
 ## CORS
 
 Off by default. One call turns it on:
@@ -832,7 +871,7 @@ The full list, ordered and checkable, is [todo.md](todo.md). In short:
   machine into a running server; timeouts, body limits, graceful
   shutdown, panic recovery and a connection cap are done (see above).
   Still owed: TLS.
-- **Middleware**, none of it blocked: security headers,
+- **Middleware**, none of it blocked:
   cookies, JWT and basic auth, ETag/304, compression, static
   files. (A rate limiter and a
   bearer-token store exist; `RateLimit-*` headers and sharding do not.)

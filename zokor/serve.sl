@@ -332,13 +332,13 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
                 log_request(lg, "-", "", "-", st, time.mono(), 0, "", peer_ip);
             }
             if is_headers_too_large(e) {
-                let resp431 = too_large_response(431,
-                    "Request Header Fields Too Large", "headers_too_large");
+                let resp431 = r.security.apply(too_large_response(431,
+                    "Request Header Fields Too Large", "headers_too_large"));
                 let _w = http.write(&mut c, resp431, &mut sa,
                                     write_deadline(sc));
             } else if is_body_too_large(e) {
-                let resp413 = too_large_response(413, "Content Too Large",
-                                                 "payload_too_large");
+                let resp413 = r.security.apply(too_large_response(413,
+                    "Content Too Large", "payload_too_large"));
                 let _w = http.write(&mut c, resp413, &mut sa,
                                     write_deadline(sc));
             }
@@ -396,6 +396,7 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
                     }
                     resp500 = r.cors.apply(resp500, origin);
                 }
+                resp500 = r.security.apply(resp500);
                 let _w5 = http.write(&mut c, resp500, &mut sa,
                                      write_deadline(sc));
                 if logging {
@@ -432,11 +433,17 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
         // 130-byte memcpy. The send arena stays (dynamic responses
         // size into it); shrinking the static-only case is a
         // follow-up, not this diff.
-        guard let resp = r.routes[si].static_hit else {
+        // Both variants are prebuilt with the security headers in them,
+        // and either is sent as written: `false` here means "send the
+        // prebuilt bytes", not "keep the connection open".
+        let hit = r.routes[si].static_hit;
+        if must_close {
+            hit = r.routes[si].static_close_hit;
+        }
+        guard let resp = hit else {
             return;
         }
-        let sw = http.write_static(&mut c, resp, &mut sa, must_close,
-                                   write_deadline(sc));
+        let sw = http.write_static(&mut c, resp, &mut sa, false, write_deadline(sc));
         if logging {
             let sclient = peer_ip;
             if !sc.trusted_proxies.is_empty() {
@@ -542,13 +549,14 @@ fn serve_counted[S](r: Router[S], c: link, sc: ServerConfig, gate: ConnGate) {
 // the accept backlog. Nothing is read, so the connection closes right
 // after; the short deadline keeps a client that is not reading from
 // holding up the accept loop.
-fn refuse_conn(c: link) {
+fn refuse_conn(c: link, sec: Security) {
     let a = arena_new(512);
     let mut_c = c;
     let resp = http.with_header(closing(http.text_response(503, "Service Unavailable",
         "application/json; charset=utf-8",
         "{\"error\":{\"code\":\"unavailable\",\"message\":\"the server is at its connection limit\",\"status\":503}}")),
         "retry-after", "1");
+    resp = sec.apply(resp);
     let _w = http.write(&mut mut_c, resp, &mut a, until_of(time.mono() + 100000000));
 }
 
@@ -564,7 +572,7 @@ fn accept_one[S](r: Router[S], ln: &mut link, sc: ServerConfig,
     if gate.enter() {
         spawn serve_counted(r, c, sc, gate);
     } else {
-        refuse_conn(c);
+        refuse_conn(c, r.security);
         let n = gate.refusals_to_report(time.mono() as int);
         if n > 0 {
             sc.logger.warn("Server", to_str(n) + " connections refused: at MAX_CONNECTIONS (" +
