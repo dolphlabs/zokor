@@ -81,6 +81,8 @@ new_request_id() -> str
     128 bits of randomness, hex, prefixed so it is recognisable in a log that carries other people's ids too.
 new_session_id() -> str
     A longer one, for a session or a socket.io sid, where a collision matters more than the length does.
+request_id_for(headers: bytes) -> str
+    The id a request is answered and logged under: the client's own X-Request-Id when it is 1-64 characters of [A-Za-z0-9._-], so...
 
 ## json.sl -- JSON, for the shapes you know and the ones you do not.
 enum JsonKind { Null, Bool, Number, String, Array, Object }
@@ -313,7 +315,7 @@ query_as[S, T](c: Ctx[S]) -> result[T, http.Response]
     The query string bound into a declared shape, in one call, with the same field-level errors a bad body gets --      let r:...
 
 ## serve.sl -- The server edge: the accept loop that turns a Router into a running server.
-gc struct ServerConfig { idle_timeout: int, header_timeout: int, body_timeout: int, write_timeout: int, max_request_bytes: int, max_requests_per_conn: int, shutdown_timeout: int }
+gc struct ServerConfig { idle_timeout: int, header_timeout: int, body_timeout: int, write_timeout: int, max_request_bytes: int, max_requests_per_conn: int, shutdown_timeout: int, request_ids: bool }
     Four deadlines, not one, because "how long should this wait" has different honest answers depending on what a connection is...
 default_server_config() -> ServerConfig
     Safe rather than infinite, per the todo item this answers.
