@@ -113,8 +113,8 @@ body is not one anyone can put in front of the internet.
   `join_wait` waking idle workers, which per-request panic isolation pays
   (~1.5 us Linux, ~4 us macOS) -- or slang closing a panicked task's
   links, which would let isolation move off the request path; zokor's
-  own `Ctx`/routing (~2 us), and four clock reads per request where one
-  per phase would do. Unreproduced: one c=2000 run on Linux collapsed to
+  own `Ctx`/routing (~2 us). Done: the three read deadlines share one
+  clock read (four reads per request -> two). Unreproduced: one c=2000 run on Linux collapsed to
   356 rps with a 9 s p99; six runs after it did not.
 
 ## 1. Language prerequisites
