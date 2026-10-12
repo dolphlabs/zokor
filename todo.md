@@ -64,19 +64,20 @@ library, made and merged there first.
 - [ ] **Input sanitisation against injection**, opt-in and configurable:
   - **NoSQL (Mongo-style operator injection)**, like `express-mongo-sanitize`:
     object keys starting with `$` or containing `.` in JSON bodies and
-    query parameters are rejected (400, the default) or stripped. Useful
-    before zokor has a Mongo driver: it protects whatever the body is
-    forwarded to.
+    query parameters are rejected (400, the default) or stripped, before a
+    body reaches a query built for slang's MongoDB driver
+    (`dolphlabs/mongo`) or anything else that treats `$` keys as operators.
   - **SQL**: pattern-blacklisting is not a defence -- it rejects
     `O'Brien` and still misses real attacks. The defence is parameterised
     queries only: the Postgres helpers (section 3) expose no string-built
     SQL, and `zokor check` flags SQL assembled by concatenation.
-  - **[slang]** A MongoDB driver (BSON, the OP_MSG wire protocol, a pool)
-    does not exist yet; it is its own project, scoped separately.
 - [ ] **Auth helpers**: Bearer extraction (exists), opaque bearer
   tokens (`TokenStore`, exists, in memory), Basic, API keys with
-  constant-time comparison, and JWT HS256 sign and verify with `exp` /
-  `nbf` / `aud` checks. RS256 once slang can verify it.
+  constant-time comparison, and JWT through the `dolphlabs/jwt` package
+  (HS256, typed claims) rather than a second implementation here: a
+  `before` hook that verifies and puts the claims on the request, with
+  `exp` / `nbf` / `aud` checks. Password hashing points at
+  `dolphlabs/argon` (Argon2id). RS256 once slang can verify it.
 - [ ] **Rate limiter, finished**: `RateLimiter`/`rate_limit` exist
   (sliding window, per key, time injected via `take_at`, `429` +
   `Retry-After`). Still owed: sharding, `RateLimit-*` headers, and keying
@@ -88,6 +89,10 @@ library, made and merged there first.
   (`tx.run(fn)` that commits or rolls back), rows into structs, and the
   error shape for a unique violation. Parameterised queries only; only one
   package imports `pg`.
+- [ ] **MongoDB helpers**: a pool from `MONGODB_URI` through
+  `dolphlabs/mongo` (optional, like `redis_from_config`), and the error
+  shape for a duplicate key, so a service on Mongo gets what a service on
+  Postgres does.
 - [ ] **[slang] A sufficient `time` package.** Today it has a monotonic
   clock, wall time and sleep. Missing for real services: calendar time
   (date and time of day, time zones from the system tz database), parsing
