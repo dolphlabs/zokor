@@ -52,10 +52,14 @@ library, made and merged there first.
   restarted. Not unit-tested: the `shutting_down` answer, since
   `proc.shutdown_requested()` cannot be raised inside `slangc test`
   without stopping the run.
-- [ ] **Server-wide connection cap**: a `ServerConfig` limit on open
+- [x] **Server-wide connection cap**: a `ServerConfig` limit on open
   connections across every acceptor (a shared, concurrency-safe count);
   past it, accept and close at once rather than let idle connections
-  exhaust file descriptors.
+  exhaust file descriptors. `max_connections` / `MAX_CONNECTIONS`, default
+  10,000; past it a `503` with `Retry-After: 1`, refusals logged once a
+  second. Also fixed: a failed accept (out of file descriptors) was
+  retried at once, forever -- a full core on Linux at the limit; it now
+  logs once and backs off 5ms -> 1s.
 
 ## 2. Browser-facing APIs
 
