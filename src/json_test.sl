@@ -326,7 +326,11 @@ fn identity_docs() -> [str] {
         "{\"a\":{\"a\":1},\"b\":{\"a\":2}}",
         "{\"été\":1}",
         "{\"snake_case_key\":[{\"x\":1},{\"x\":2}]}",
-        "{\"id\":9007199254740993}"
+        "{\"id\":9007199254740993}",
+        // a depth an array used, then an object at the same depth
+        "[[1],{\"a\":1,\"b\":2}]",
+        "{\"a\":{\"b\":1},\"b\":2}",
+        "{\"x\":[{\"k\":1},{\"k\":1}],\"k\":3}"
     ];
 }
 
@@ -339,6 +343,9 @@ fn rewrite_docs() -> [str] {
         "{\"a\":\"\\u00e9\"}",
         "{\"a\":1,\"a\":2}",
         "{\"x\":{\"k\":1,\"k\":2}}",
+        // the outer duplicate comes after a closed inner container
+        "{\"a\":[{\"b\":1}],\"a\":2}",
+        "{\"a\":{\"a\":1},\"a\":2}",
         "[1,2,]",
         "{\"a\":1,}",
         "{a:1}",
@@ -375,6 +382,36 @@ fn nested(depth: int) -> str {
         i = i + 1;
     }
     return s;
+}
+
+// Objects and arrays alternating, `depth` deep: the identity check keeps
+// container kinds as bits, so this reaches every bit, the sign bit
+// included at 64.
+fn mixed(depth: int) -> str {
+    let open = "";
+    let close = "";
+    let i = 0;
+    while i < depth {
+        if i % 2 == 0 {
+            open = open + "{\"k\":";
+            close = "}" + close;
+        } else {
+            open = open + "[";
+            close = "]" + close;
+        }
+        i = i + 1;
+    }
+    return open + "1" + close;
+}
+
+fn test_identity_fast_path_tracks_kinds_at_every_depth() {
+    assert(snake_keys_is_identity(to_bytes(mixed(max_depth()))));
+    assert(snake_keys_is_identity(to_bytes(mixed(max_depth() - 1))));
+    assert(!snake_keys_is_identity(to_bytes(mixed(max_depth() + 1))));
+    // a kind bit left set by an array must not survive into an object
+    // at the same depth, nor an object's into an array
+    assert(snake_keys_is_identity(b"[[1],{\"a\":1},[2],{\"b\":2}]"));
+    assert(!snake_keys_is_identity(b"[[1],{\"a\":1,]}"));
 }
 
 fn test_identity_fast_path_accepts_only_no_op_documents() {
