@@ -241,6 +241,38 @@ Never logged: query strings, bodies, headers. `zokor.no_logger()` turns
 it off. A full queue drops records and counts them; a request never waits
 on the log.
 
+## CORS
+
+```slang
+import "http";
+import "zokor";
+
+gc struct App {
+    n: int,
+}
+
+fn org(c: zokor.Ctx[App]) -> http.Response {
+    return zokor.text(200, "org " + c.param("id"));
+}
+
+let r = zokor.new_router(App { n: 0 });
+r.get("/orgs/:id", org);
+// From config: r.cors(zokor.cors_from(cfg)) with CORS_ORIGINS=...
+assert(r.cors(zokor.cors_policy(["https://app.example.com"])) > 0);
+let resp = r.serve(zokor.get_request("/orgs/7")
+    .header("Origin", "https://app.example.com").build());
+assert(zokor.resp_header(resp, "access-control-allow-origin") == "https://app.example.com");
+assert(zokor.resp_header(resp, "vary") == "Origin");
+println("ok");
+```
+
+Off by default. `CORS_ORIGINS` (exact, `https://*.example.com`, or `*`),
+`CORS_METHODS`, `CORS_HEADERS`, `CORS_EXPOSE`, `CORS_CREDENTIALS`,
+`CORS_MAX_AGE`. Preflights to existing paths are answered `204` before
+routing (no `before` runs). Every response to an allowed origin, errors
+included, carries the headers. `*` with credentials is refused:
+`zokor.cors_problem(p)` says why `r.cors(p)` returned -1.
+
 ## Health and readiness
 
 ```slang
