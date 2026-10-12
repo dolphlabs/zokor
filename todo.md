@@ -163,9 +163,8 @@ properties of the server, not of a handler.
   Needed two slang fixes: `spawn` of a generic function (PR #188), and
   `crypto.rand`'s libcrypto deadlock (PR #189).
   *Still owed:* `examples/chat`'s stand-in requests, which belong to "wire
-  WebSocket and Socket.IO into the loop" below; a request id per request,
-  blocked on the second half of the `crypto.rand` bug (it is still unsafe
-  from a task that parks on socket I/O, so the loop passes "").
+  WebSocket and Socket.IO into the loop" below. (A request id per
+  request has landed: see "Wire `new_request_id` in" below.)
   ~~The ~0.5% non-2xx rate on the body-reading path~~ was never this
   repo's bug: root-caused to a codegen bug in slang's `json.decode`
   (double-evaluating a non-trivial `str` argument, unrooting the first
@@ -218,9 +217,8 @@ properties of the server, not of a handler.
   plain-function wrapper `serve_frame` needs, since `spawn`'s target
   can't be a method) on the dynamic path, where a handler actually
   runs. A panicking connection is closed after answering, not kept
-  open for more requests. *Still owed:* a real per-request id in that
-  500 (blocked on the same `crypto.rand` parking-safety gap every
-  other request-id mention in this file already points at).
+  open for more requests. That 500 now carries the request's id (see
+  "Wire `new_request_id` in" below).
 - [ ] TLS termination through slang's `net.tls_*`, or a documented decision to
   leave it to a proxy.
 - [ ] Wire WebSocket and Socket.IO into the loop: upgrade a connection in
@@ -264,8 +262,14 @@ now and tested with the test kit.
   and redaction of configured headers.
 - [ ] **Health**: `/healthz` (process is up) and `/readyz` (dependencies are
   reachable), with a way for a service to register its own checks.
-- [ ] Wire `new_request_id` in as middleware: honour an incoming
-  `X-Request-Id` when it is well-formed, generate one otherwise.
+- [x] Wire `new_request_id` in: the serve loop gives every dynamic
+  request an id (`ServerConfig.request_ids`, on by default), reusing an
+  incoming `X-Request-Id` of 1-64 `[A-Za-z0-9._-]` and generating one
+  otherwise; it is in the response header and every error envelope,
+  including the 500 after a panic. Not middleware: the panic 500 is built
+  outside the router. The "crypto.rand is unsafe from a parking task" note
+  this was blocked on was stale (810k requests under forced preemption,
+  macOS and Linux, 0 errors).
 - [ ] Content negotiation (`Accept`) and redirect helpers.
 
 ## 4. What makes it enterprise

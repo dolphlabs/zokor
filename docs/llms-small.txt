@@ -478,10 +478,13 @@ Call it from the main program, not `spawn`. It binds every interface
 (0.0.0.0); there is no host option. `ServerConfig` fields (int
 nanoseconds / bytes): `idle_timeout` 60s, `header_timeout` 5s,
 `body_timeout` 30s, `write_timeout` 10s, `max_request_bytes` 16384 (413
-or 431 above it), `max_requests_per_conn` 100000, `shutdown_timeout` 30s.
+or 431 above it), `max_requests_per_conn` 100000, `shutdown_timeout` 30s,
+`request_ids` true (each dynamic request gets `X-Request-Id`: a valid
+incoming one, 1-64 of `[A-Za-z0-9._-]`, is reused; it is also in every
+error envelope and `c.request_id`).
 `server_config_from(cfg)` reads `IDLE_TIMEOUT`, `READ_HEADER_TIMEOUT`,
 `READ_BODY_TIMEOUT`, `WRITE_TIMEOUT`, `SHUTDOWN_TIMEOUT` ("30s"),
-`MAX_REQUEST_BYTES`, `MAX_REQUESTS_PER_CONN`. `listen_and_serve(r, port)`
+`MAX_REQUEST_BYTES`, `MAX_REQUESTS_PER_CONN`, `REQUEST_IDS`. `listen_and_serve(r, port)`
 uses the defaults. A start script: `slangc main.sl -o app && exec ./app`
 (builds take ~10 s); to test by hand, run `./app > app.log 2>&1 &`,
 poll `/health`, then `kill $!`.
