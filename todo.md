@@ -160,16 +160,18 @@ library, made and merged there first.
 
 - [ ] `LICENSE` (MIT, Dolph Tech Limited, matching slang), `CONTRIBUTING.md`,
   `SECURITY.md` and a code of conduct.
-- [ ] **Docs site**, generated from the README, the `src/` signatures and the
+- [ ] **Docs site**, generated from the README, the `zokor/` signatures and the
   examples, the way slang's `www/build.py` does. Uses `assets/zokor.png`:
   the header, the social card, and a favicon. The source image is 1024 x 1024
   and 358 KB, so produce sized variants (a 64 px favicon, a ~256 px header,
   a 1200 x 630 card) instead of shipping the original everywhere.
 - [ ] A `slangc new`-style scaffold: `zokor new <name>` producing a service
   with the layout, config, one route and one test.
-- [ ] First tagged release, `v0.1.0`, once a slang release includes what
-  zokor needs (generics, `dir` pins, `exclude`, and this year's fixes).
-  Until then the README's Requirements section is the truth.
+- [ ] Tag `v0.2.0`, the release the README and the guide pin (`v0.1.0`
+  was tagged 2026-09-30, before the `src/` -> `zokor/` rename), once a
+  slang release includes what zokor needs (generics, `dir` pins,
+  `exclude`, and this year's fixes). Until then the README's
+  Requirements section is the truth.
 
 ## Performance
 

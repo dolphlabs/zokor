@@ -10,10 +10,10 @@
 // quadratic one is unmistakable long before it becomes a hang.
 import "builder";
 import "time";
-import "../../src" as zokor;
-import "../../src/internal/multipart" as multipart;
-import "../../src/internal/path" as path;
-import "../../src/internal/ws" as ws;
+import "../../zokor" as zokor;
+import "../../zokor/internal/multipart" as multipart;
+import "../../zokor/internal/path" as path;
+import "../../zokor/internal/ws" as ws;
 import "http";
 
 fn ms(t0: duration) -> int {

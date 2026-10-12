@@ -623,7 +623,7 @@ reassembled yet.
 ## Layout
 
 ```
-src/              the package your service imports
+zokor/            the package your service imports
   router.sl       Router[S], Route[S], Ctx[S]
   errors.sl       Registry, Code, ErrorView, the envelope
   config.sl       Config, load_config, require_*
@@ -671,8 +671,11 @@ lines), add the pin to `slang.project`. The whole file:
 name app
 version 0.1.0
 
-pkg zokor git https://github.com/dolphlabs/zokor tag v0.2.0 dir src
+pkg zokor git https://github.com/dolphlabs/zokor tag v0.2.0 dir zokor
 ```
+
+`v0.2.0` is the next release and is not tagged yet. Until it is, pin
+`tag v0.1.0 dir src`: the package lived in `src/` before the rename.
 
 Then fetch it, and import it as `import "zokor";`:
 
@@ -680,7 +683,7 @@ Then fetch it, and import it as `import "zokor";`:
 slangc get
 ```
 
-`dir src` points the pin at the package inside the repository, so the
+`dir zokor` points the pin at the package inside the repository, so the
 repository can hold its examples, docs and tests without shipping them
 into your build.
 
@@ -706,7 +709,7 @@ program that compiles and runs; `make snippets` proves it.
 
 [docs/api.txt](docs/api.txt) is the companion: every public symbol, its
 signature and one line, small enough to keep in context instead of
-reading `src/`. It is generated (`make api`, which runs
+reading `zokor/`. It is generated (`make api`, which runs
 `docs/gen_api.sh`); CI fails if it is stale.
 
 ## Not yet
