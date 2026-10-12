@@ -197,9 +197,17 @@ any of them.
 ```slang
 let sc = zokor.server_config_from(cfg);
 // IDLE_TIMEOUT, READ_HEADER_TIMEOUT, READ_BODY_TIMEOUT, WRITE_TIMEOUT,
-// MAX_REQUEST_BYTES, MAX_REQUESTS_PER_CONN, SHUTDOWN_TIMEOUT
+// MAX_REQUEST_BYTES, MAX_REQUESTS_PER_CONN, SHUTDOWN_TIMEOUT, REQUEST_IDS
 spawn zokor.listen_and_serve_with(r, port, sc);
 ```
+
+Every dynamic request is answered under a **request id**: the client's own
+`X-Request-Id` when it is 1-64 characters of `[A-Za-z0-9._-]` (so a
+proxy's id threads through your logs), a fresh `req_<32 hex>` otherwise.
+It comes back as `X-Request-Id` and in every error envelope, the 500 after
+a panicking handler included, and handlers read it as `c.request_id`.
+Static routes are fixed bytes and carry none. `REQUEST_IDS=false` (or
+`request_ids: false`) turns it off.
 
 Four separate timeouts, not one, because "how long should this wait"
 has different honest answers depending on what a connection is doing:
