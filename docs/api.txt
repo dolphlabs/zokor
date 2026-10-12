@@ -412,7 +412,7 @@ query_as[S, T](c: Ctx[S]) -> result[T, http.Response]
     The query string bound into a declared shape, in one call, with the same field-level errors a bad body gets --      let r:...
 
 ## serve.sl -- The server edge: the accept loop that turns a Router into a running server.
-gc struct ServerConfig { idle_timeout: int, header_timeout: int, body_timeout: int, write_timeout: int, max_request_bytes: int, max_requests_per_conn: int, shutdown_timeout: int, request_ids: bool, trusted_proxies: TrustedProxies, logger: Logger }
+gc struct ServerConfig { idle_timeout: int, header_timeout: int, body_timeout: int, write_timeout: int, max_request_bytes: int, max_requests_per_conn: int, shutdown_timeout: int, request_ids: bool, trusted_proxies: TrustedProxies, logger: Logger, max_connections: int }
     Four deadlines, not one, because "how long should this wait" has different honest answers depending on what a connection is...
 default_server_config() -> ServerConfig
     Safe rather than infinite, per the todo item this answers.
@@ -420,6 +420,17 @@ server_config_from(cfg: Config) -> ServerConfig
     The same defaults, overridable per field from config: IDLE_TIMEOUT, READ_HEADER_TIMEOUT, READ_BODY_TIMEOUT, WRITE_TIMEOUT,...
 serve_conn[S](r: Router[S], c: link, sc: ServerConfig)
     One connection, until the client goes away or asks to close.
+gc struct ConnGate { lock: mutex, open: int, max: int, refused: int, reported_at: int }
+    The server-wide connection count, shared by every acceptor.
+new_conn_gate(max: int) -> ConnGate
+ConnGate.enter() -> bool
+    Takes a slot for a new connection; false (and counted as refused) when every slot is taken.
+ConnGate.leave()
+ConnGate.open_now() -> int
+ConnGate.refusals_to_report(now: int) -> int
+    The refusals to report, at most once per second of `now`: 0 when there are none or the last report was under a second ago.
+accept_backoff(prev_ns: int) -> int
+    The pause after a failed accept: 5ms, doubling to 1s while it keeps failing.
 listen_and_serve[S](r: Router[S], port: int) -> result[int, str]
     Bind, then accept until the process is asked to stop.
 listen_and_serve_with[S](r: Router[S], port: int, sc: ServerConfig) -> result[int, str]

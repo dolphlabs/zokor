@@ -550,6 +550,7 @@ Call it from the main program, not `spawn`. It binds every interface
 nanoseconds / bytes): `idle_timeout` 60s, `header_timeout` 5s,
 `body_timeout` 30s, `write_timeout` 10s, `max_request_bytes` 16384 (413
 or 431 above it), `max_requests_per_conn` 100000, `shutdown_timeout` 30s,
+`max_connections` 10000 (past it: 503 + `Retry-After: 1`, then close),
 `request_ids` true (each dynamic request gets `X-Request-Id`: a valid
 incoming one, 1-64 of `[A-Za-z0-9._-]`, is reused; it is also in every
 error envelope and `c.request_id`), `trusted_proxies` none (`c.client_ip` is
@@ -558,7 +559,7 @@ optionally `PROXY_HEADER=forwarded`, X-Forwarded-For by default).
 `server_config_from(cfg)` reads `IDLE_TIMEOUT`, `READ_HEADER_TIMEOUT`,
 `READ_BODY_TIMEOUT`, `WRITE_TIMEOUT`, `SHUTDOWN_TIMEOUT` ("30s"),
 `MAX_REQUEST_BYTES`, `MAX_REQUESTS_PER_CONN`, `REQUEST_IDS`, `TRUSTED_PROXIES`,
-`PROXY_HEADER`. `listen_and_serve(r, port)`
+`PROXY_HEADER`, `MAX_CONNECTIONS`, and the `LOG_*` settings. `listen_and_serve(r, port)`
 uses the defaults. A start script: `slangc main.sl -o app && exec ./app`
 (builds take ~10 s); to test by hand, run `./app > app.log 2>&1 &`,
 poll `/health`, then `kill $!`.
