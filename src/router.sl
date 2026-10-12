@@ -65,6 +65,10 @@ pub gc struct Ctx[S] {
     // Set by the server for each connection; carried into logs and
     // onto every error response.
     request_id: str,
+    // Who the request came from: the socket's peer, or behind a trusted
+    // proxy the address its forwarding header names (client.sl). "" when
+    // the request did not come through the serve loop (tests, fixtures).
+    client_ip: str,
     // What middleware hands to the handler. Authentication resolves a
     // token and puts the user here; a tenant resolver puts the tenant
     // here. Without it a `before` can only stop a request, never
@@ -616,6 +620,13 @@ impl Router[S] {
     // middleware fixtures); serve_conn uses this via serve_static.
     pub fn serve_frame(self: Router[S], f: http.WireFrame,
                        request_id: str) -> http.Response {
+        return self.serve_frame_for(f, request_id, "");
+    }
+
+    // serve_frame, with the client's address for Ctx.client_ip: what the
+    // serve loop calls.
+    pub fn serve_frame_for(self: Router[S], f: http.WireFrame,
+                           request_id: str, client_ip: str) -> http.Response {
         // Method without from_str: the frame path already holds the
         // method str, and only the enum comparison matters below.
         // Compare inline (GET/POST/HEAD cover the bench + almost all
@@ -632,7 +643,7 @@ impl Router[S] {
         } else if !mget {
             let parsed = Method.from_str(f.method);
             guard let m = parsed else {
-                return self.serve_id(http.wire_request(f), request_id);
+                return self.serve_id_for(http.wire_request(f), request_id, client_ip);
             }
             method = m;
         }
@@ -673,6 +684,7 @@ impl Router[S] {
                     param1_value: "",
                     route: r.pattern,
                     request_id: request_id,
+                    client_ip: client_ip,
                     locals: r.no_map,
                     errors: self.errors
                 };
@@ -724,6 +736,7 @@ impl Router[S] {
                     param1_value: id,
                     route: r.pattern,
                     request_id: request_id,
+                    client_ip: client_ip,
                     locals: r.no_map,
                     errors: self.errors
                 };
@@ -737,11 +750,16 @@ impl Router[S] {
         }
         // General routes (wildcards, multi-param) or no frame hit:
         // the Request is already built -- use the classic path.
-        return self.serve_id(req, request_id);
+        return self.serve_id_for(req, request_id, client_ip);
     }
 
     pub fn serve_id(self: Router[S], req: http.Request,
                     request_id: str) -> http.Response {
+        return self.serve_id_for(req, request_id, "");
+    }
+
+    pub fn serve_id_for(self: Router[S], req: http.Request,
+                        request_id: str, client_ip: str) -> http.Response {
         let p = path.strip_query(req.path);
         let segs = path.split(p);
         // An unknown verb cannot match any route, and is not a 404: the
@@ -756,6 +774,7 @@ impl Router[S] {
                 param1_value: "",
                 route: "",
                 request_id: request_id,
+                client_ip: client_ip,
                 locals: none,
                 errors: self.errors
             };
@@ -808,6 +827,7 @@ impl Router[S] {
                 param1_value: "",
                 route: r.pattern,
                 request_id: request_id,
+                client_ip: client_ip,
                 locals: r.no_map,
                 errors: self.errors
             };
@@ -826,6 +846,7 @@ impl Router[S] {
             param1_value: "",
             route: "",
             request_id: request_id,
+            client_ip: client_ip,
             locals: none,
             errors: self.errors
         };
@@ -946,6 +967,7 @@ fn static_probe[S](state: S, errors: Registry) -> Ctx[S] {
         param1_value: "",
         route: "",
         request_id: "",
+        client_ip: "",
         locals: none,
         errors: errors
     };
