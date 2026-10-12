@@ -317,6 +317,32 @@ in `ServerConfig.logger`, and drain `ch` from your own task.
 `new_log_format(pid)` gives you zokor's `json` and `pretty` formats to reuse.
 `no_logger()` turns logging off.
 
+## Operator injection (MongoDB)
+
+MongoDB reads a key starting with `$` as an operator. A login handler that
+passes the body to a query, with a body like
+`{"user":"ada","password":{"$ne":""}}`, matches any password. The guard
+works like `express-mongo-sanitize` and is opt-in:
+
+```slang
+r.mongo_sanitize(zokor.SanitizeMode.REJECT);   // or zokor.sanitize_from(cfg): MONGO_SANITIZE
+```
+
+- **What it checks.** Every key of a JSON body, at any depth and inside
+  arrays, and every query-parameter name, decoded first so `%24where` is
+  `$where`. A key starting with `$` or containing a `.` is refused.
+- **`REJECT`** answers `400 bad_request` naming the key, for example
+  `body key 'password.$ne'`. No `before` hook and no handler runs.
+- **`STRIP`** removes the offending keys and carries on.
+- **What it leaves alone.** Values are never touched, so `"$5 off"` is
+  fine. A body that isn't JSON, or isn't valid JSON, is left for the
+  handler to refuse.
+- **Cost.** With the guard on, a JSON body is parsed once more.
+
+**SQL** has no equivalent on purpose. A blacklist rejects `O'Brien` and
+still misses real attacks. The defence is parameterised queries, which the
+Postgres helpers use exclusively.
+
 ## Cookies
 
 ```slang

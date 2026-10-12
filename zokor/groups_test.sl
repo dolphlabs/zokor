@@ -16,7 +16,8 @@ fn g_router() -> Router[GState] {
         auto_head: true,
         ready: Readiness[GState] { live_path: "", ready_path: "", checks: [], timeout: default_ready_timeout(), logger: no_logger() },
         cors: cors_off(),
-        security: security_compile(default_security_headers())
+        security: security_compile(default_security_headers()),
+        sanitize: SanitizeMode.OFF
     };
 }
 

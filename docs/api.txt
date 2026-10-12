@@ -354,7 +354,7 @@ gc struct Ctx[S] { state: S, req: http.Request, params: opt[map[str]str], param1
 struct Served { resp: http.Response, route: str }
     A response and the route pattern that produced it, for the request log.
 gc struct Route[S] { method: Method, pattern: str, befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], segs: [str], names: [str], wild: int, fkind: int, fpath: str, handler: fn(Ctx[S]) -> http.Response, has_static: bool, static_status: i32, static_ctype: str, static_body: bytes, static_rendered: bytes, static_hit: opt[http.StaticBody], static_close_hit: opt[http.StaticBody], no_map: opt[map[str]str] }
-gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security }
+gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security, sanitize: SanitizeMode }
     A `before` runs ahead of the handler and may end the request by returning a response; `none` carries on.
 new_router[S](state: S) -> Router[S]
     An application builds its router from its state alone; everything else starts empty or at the default a correct server should...
@@ -385,6 +385,8 @@ Router.before(f: fn(Ctx[S]) -> opt[http.Response]) -> int
 Router.after(f: fn(Ctx[S], http.Response) -> http.Response) -> int
 Router.security_headers(h: SecurityHeaders) -> int
     Replaces the security headers (see security.sl); no_security_headers() turns them off.
+Router.mongo_sanitize(mode: SanitizeMode) -> int
+    Turns the operator-injection guard on (REJECT, STRIP) or off; see sanitize.sl.
 Router.cors(p: CorsPolicy) -> int
     Turns CORS on with `p` (see cors.sl).
 Router.health() -> int
@@ -467,6 +469,19 @@ dto[S, T](c: Ctx[S]) -> result[T, http.Response]
     The body decoded into a declared shape, in one call: the wire's camelCase keys become the struct's snake_case fields (slang's...
 query_as[S, T](c: Ctx[S]) -> result[T, http.Response]
     The query string bound into a declared shape, in one call, with the same field-level errors a bad body gets --      let r:...
+
+## sanitize.sl -- Operator injection: the NoSQL half of input sanitisation.
+enum SanitizeMode { OFF, REJECT, STRIP }
+sanitize_from(cfg: Config) -> SanitizeMode
+    MONGO_SANITIZE: off (default), reject or strip.
+operator_key(k: str) -> bool
+    A key MongoDB would read as an operator or a path.
+find_operator_key(j: Json) -> str
+    The first operator key in `j`, as a path ("filter.$where", "items[2].$gt"), or "" when there is none.
+strip_operator_keys(j: Json) -> int
+    Removes every operator key in `j`, at any depth, in place; returns how many were removed.
+sanitize_request(req: http.Request, mode: SanitizeMode) -> str
+    What the guard says about `req` under `mode`: "" to carry on (after stripping in place, in STRIP mode), or the offending key's...
 
 ## security.sl -- Security headers.
 gc struct SecurityHeaders { csp: str, hsts_max_age: int, hsts_subdomains: bool, hsts_preload: bool, nosniff: bool, frame_options: str, referrer_policy: str, coop: str, corp: str }

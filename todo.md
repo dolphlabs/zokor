@@ -80,7 +80,7 @@ library, made and merged there first.
   HMAC-SHA256 over name and value with `COOKIE_KEYS` rotation and a
   constant-time compare. Not done: `Expires` (needs an HTTP date from the
   time package; `Max-Age` covers every browser in use).
-- [ ] **Input sanitisation against injection**, opt-in and configurable:
+- [x] **Input sanitisation against injection**, opt-in and configurable:
   - **NoSQL (Mongo-style operator injection)**, like `express-mongo-sanitize`:
     object keys starting with `$` or containing `.` in JSON bodies and
     query parameters are rejected (400, the default) or stripped, before a
@@ -90,6 +90,10 @@ library, made and merged there first.
     `O'Brien` and still misses real attacks. The defence is parameterised
     queries only: the Postgres helpers (section 3) expose no string-built
     SQL, and `zokor check` flags SQL assembled by concatenation.
+  Done: `r.mongo_sanitize(mode)` / `MONGO_SANITIZE`, applied by the router
+  ahead of every hook. Form bodies are not checked: zokor reads them as
+  flat strings, never as objects a `$` key could reach. The SQL side
+  lands with the Postgres helpers and `zokor check`.
 - [ ] **Auth helpers**: Bearer extraction (exists), opaque bearer
   tokens (`TokenStore`, exists, in memory), Basic, API keys with
   constant-time comparison, and JWT through the `dolphlabs/jwt` package
