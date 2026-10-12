@@ -13,12 +13,13 @@ library, made and merged there first.
 
 ## 0. Before anything else
 
-- [ ] **CI on every platform slang ships for.** `.github/workflows/ci.yml`
+- [x] **CI on every platform slang ships for.** `.github/workflows/ci.yml`
   already runs `make check` (tests, both examples, the guide's programs,
   `api-check`) against slang's `dev` on every PR and push to `main`/`dev`,
   but on Linux x86_64 only. Add linux-arm64 and macOS (Apple Silicon), the
   other two platforms slang's own CI covers, so a platform-specific break
-  in zokor or in slang is caught here rather than by a user.
+  in zokor or in slang is caught here rather than by a user. Done in
+  #42: a matrix over linux-x86_64, linux-arm64 and macos-arm64.
 
 ## 1. Operability: you cannot run what you cannot see
 
@@ -44,10 +45,16 @@ library, made and merged there first.
   socket's peer is the client. `c.client_ip()`. Logging and the rate
   limiter both use it, so a spoofed header can neither hide a client nor
   frame one.
-- [ ] **Health and readiness**: `/healthz` (the process is up) and
+- [x] **Health and readiness**: `/healthz` (the process is up) and
   `/readyz` (dependencies reachable, through checks a service
   registers), with readiness turning false as graceful shutdown starts so
-  a load balancer stops sending traffic before the drain.
+  a load balancer stops sending traffic before the drain. `r.health()`,
+  `r.ready_check(name, fn)`. Answered by the router on a miss, so a
+  service's own route wins and no `before` runs; checks run concurrently
+  in their own tasks, bounded, a running one joined rather than
+  restarted. Not unit-tested: the `shutting_down` answer, since
+  `proc.shutdown_requested()` cannot be raised inside `slangc test`
+  without stopping the run.
 - [ ] **Server-wide connection cap**: a `ServerConfig` limit on open
   connections across every acceptor (a shared, concurrency-safe count);
   past it, accept and close at once rather than let idle connections

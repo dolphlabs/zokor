@@ -332,10 +332,7 @@ fn run_router() {
     let times: [int] = [];
     for n in counts {
         let st = BS { n: 0 };
-        let r = zokor.Router[BS] {
-            routes: [], befores: [], afters: [], state: st,
-            errors: zokor.new_registry(), auto_options: true, auto_head: true
-        };
+        let r = zokor.new_router(st);
         let i = 0;
         while i < n {
             r.get("/route" + to_str(i) + "/:id", hit);
