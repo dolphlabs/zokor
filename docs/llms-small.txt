@@ -727,6 +727,38 @@ a `mutex` field (`make_mutex()`); never `return` between `mutex_lock` and
 `spawn` is the same object the router holds. A real worker loops
 forever; this one stops when the channel closes.
 
+## Idempotency keys
+
+```slang
+import "http";
+import "zokor";
+
+gc struct App {
+    orders: int,
+}
+
+fn create_order(c: zokor.Ctx[App]) -> http.Response {
+    c.state.orders += 1;
+    return zokor.created("{\"order\":" + to_str(c.state.orders) + "}", "/orders");
+}
+
+let r = zokor.new_router(App { orders: 0 });
+r.post("/orders", create_order);
+r.idempotency(zokor.idempotency_in_memory());       // or idempotency_redis(pool)
+let send = zokor.request(zokor.Method.POST, "/orders").header("Idempotency-Key", "abc-1").body_str("{}");
+let first = r.serve(send.build());
+let again = r.serve(send.build());                   // a client retry
+assert(zokor.resp_text(again) == zokor.resp_text(first));
+assert(zokor.resp_header(again, "idempotent-replayed") == "true");
+assert(r.state.orders == 1);                         // the handler ran once
+println("ok");
+```
+
+POST/PATCH with `Idempotency-Key` run once; retries get the kept answer
+(24h). 409 while still running, 422 for the key with another body. Set
+`store.scope_local` to the local your auth sets, so keys are per caller.
+5xx/408/429 are not kept.
+
 ## Pagination
 
 ```slang

@@ -147,8 +147,14 @@ library, made and merged there first.
   total`) with a `Link` header that keeps the other query parameters.
   `fetch()` asks for one row past the page, so "is there a next" needs no
   count. Keyset cursors are base64url JSON of the row's sort key.
-- [ ] **Idempotency keys** for unsafe methods, stored so a retried `POST`
-  returns the first answer (in memory, or Redis through `redis_from_config`).
+- [x] **Idempotency keys**: `r.idempotency(store)` -- in memory
+  (`idempotency_in_memory`, 16 shards, swept) or Redis
+  (`idempotency_redis`, `SET NX PX` so instances agree). A POST/PATCH with
+  `Idempotency-Key` runs once; a retry gets the kept answer
+  (`Idempotent-Replayed: true`), a retry while it runs 409, the key with
+  another body 422. Scoped by method, route and `scope_local` (the
+  caller). 5xx/408/429 and bodies over `max_body` are not kept; a panic
+  frees the key after `lock_ttl`.
 - [ ] **Compression**: gzip through slang's `compress`, honouring
   `Accept-Encoding`, with a size floor and a content-type allowlist so it is
   never applied to something already compressed.
