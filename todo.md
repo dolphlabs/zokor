@@ -155,9 +155,13 @@ library, made and merged there first.
   another body 422. Scoped by method, route and `scope_local` (the
   caller). 5xx/408/429 and bodies over `max_body` are not kept; a panic
   frees the key after `lock_ttl`.
-- [ ] **Compression**: gzip through slang's `compress`, honouring
-  `Accept-Encoding`, with a size floor and a content-type allowlist so it is
-  never applied to something already compressed.
+- [x] **Compression**: `r.compress(compression())` gzips 2xx bodies of
+  at least 1 KB with an allowlisted type (text, JSON, JS, XML, SVG, form,
+  +json/+xml) for clients whose Accept-Encoding allows gzip (q values
+  read; `gzip;q=0` refuses), adds `Vary: Accept-Encoding` to every
+  variant and weakens a strong ETag. Level 1 by default: 14 KB JSON in
+  36 us at 10% of its size (level 5: 74 us, 10%). Not done: static
+  routes are sent as rendered (pre-compressing them at registration).
 - [x] **Conditional requests**: `preconditions` (RFC 9110 13.2.2 order:
   `If-Match`, `If-Unmodified-Since`, `If-None-Match`, `If-Modified-Since`;
   304 for reads, 412 for writes), `etag_of`, `with_validators`, and an
