@@ -726,6 +726,63 @@ a `mutex` field (`make_mutex()`); never `return` between `mutex_lock` and
 `spawn` is the same object the router holds. A real worker loops
 forever; this one stops when the channel closes.
 
+## Scheduled and queued jobs
+
+```slang
+import "timez";
+import "zokor";
+
+gc struct App {
+    sent: [str],
+    lock: mutex,
+}
+
+fn digest(j: zokor.JobCtx[App]) -> result[int, str] {
+    mutex_lock(j.state.lock);
+    push(j.state.sent, "digest " + j.due.rfc3339());
+    mutex_unlock(j.state.lock);
+    return ok(0);
+}
+
+fn welcome(j: zokor.JobCtx[App]) -> result[int, str] {
+    if j.attempt < 2 {
+        return err("mail server busy");            // retried after 1s
+    }
+    mutex_lock(j.state.lock);
+    push(j.state.sent, "welcome " + j.payload);
+    mutex_unlock(j.state.lock);
+    return ok(0);
+}
+
+let app = App { sent: [], lock: make_mutex() };
+let jobs = zokor.new_jobs(app);
+let start = timez.utc(2026, 10, 13, 8, 59, 0, 0) ?? timez.unix(0);
+jobs.clock = timez.fixed_clock(start);              // tests: no sleeping
+assert(is_ok(jobs.every("digest", "0 9 * * MON-FRI", digest, 30 * timez.SECOND)));
+assert(is_ok(jobs.handle("welcome", welcome, 3)));
+assert(is_ok(jobs.enqueue("welcome", "user-7", start)));
+jobs.tick(start);                                   // learns the 09:00 turn; runs welcome try 1
+assert(jobs.wait_runs(timez.SECOND));
+jobs.clock.set(start.add(timez.MINUTE));
+jobs.tick(start.add(timez.MINUTE));                 // 09:00: digest, and welcome try 2
+assert(jobs.wait_runs(timez.SECOND));
+assert(len(app.sent) == 2);
+println("ok");
+
+fn is_ok(r: result[int, str]) -> bool {
+    if let _v = r { return true; }
+    return false;
+}
+```
+
+`jobs.every(name, cron, f, timeout)` runs `f` on the schedule, read in
+`jobs.zone` (UTC unless set; DST-aware); a run still going skips its next
+turn; missed turns are not replayed. `jobs.handle(kind, f, attempts)` and
+`jobs.enqueue(kind, payload, at)` queue one-off work, retried with
+backoff (1s, 2s, 4s ... capped at 1h). In a server: `jobs.logger =
+sc.logger; jobs.start();` before `listen_and_serve`; it stops on SIGTERM.
+The queue is in memory.
+
 ## Serving for real
 
 ```slang
