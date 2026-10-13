@@ -164,7 +164,7 @@ default_render(v: ErrorView) -> http.Response
 quote(s: str) -> str
     A JSON string, escaped.
 quote_into(sb: builder.Str, s: str) -> builder.Str
-    The same, appended to a builder, which is what every renderer wants: a response is many quoted strings, and joining them here...
+    The same, appended to a builder.
 status_text(status: i32) -> str
 
 ## health.sl -- Health and readiness.
