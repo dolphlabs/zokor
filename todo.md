@@ -170,8 +170,19 @@ library, made and merged there first.
   Not done: static routes are not tagged; a native fast hash in slang
   would cut the per-byte cost about tenfold (FNV-1a in slang runs at
   1.1 ns/byte).
-- [ ] **Static files**: traversal-safe (`..`, symlinks, encoded separators),
-  `Range` requests, content types, cache headers, index files.
+- [x] **Static files**: `files_at(prefix, dir)` and `r.files(mount)`.
+  Traversal-safe (encoded separators, `..`/`.`/dot-file segments,
+  backslashes, NULs: 404; the real path, every symlink resolved, must stay
+  under the real root); index files; ETag from size and mtime,
+  Last-Modified, 304/412; one `Range` (206, 416, If-Range), several get
+  the whole file; Content-Type by extension; Cache-Control per mount
+  (`max_age`, `immutable`). Needs slang's fs.realpath/fs.fstat. Not done:
+  streaming files larger than `max_size` (64 MB), pre-compressed `.gz`
+  variants.
+- [ ] **A HEAD answer says `Content-Length: 0`.** The router drops a HEAD's
+  body and the writer then frames the empty body; RFC 9110 9.3.2 wants the
+  GET's length (or none). Needs a writer call that frames a body it does
+  not send (slang `http`).
 - [ ] **Migrations**: ordered, checksummed, applied in a transaction, with an
   advisory lock so two instances do not race, and a `zokor migrate` command.
 - [ ] **Metrics**: Prometheus text format at `/metrics`; request count and
