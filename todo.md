@@ -179,10 +179,10 @@ library, made and merged there first.
   (`max_age`, `immutable`). Needs slang's fs.realpath/fs.fstat. Not done:
   streaming files larger than `max_size` (64 MB), pre-compressed `.gz`
   variants.
-- [ ] **A HEAD answer says `Content-Length: 0`.** The router drops a HEAD's
-  body and the writer then frames the empty body; RFC 9110 9.3.2 wants the
-  GET's length (or none). Needs a writer call that frames a body it does
-  not send (slang `http`).
+- [x] **A HEAD answer says the GET's `Content-Length`** (RFC 9110 9.3.2).
+  The routed calls keep the body; the serve loop writes a HEAD answer
+  with slang's `http.write_head` (the length, no body); the public
+  `serve`/`serve_frame`/`serve_id` still hand back an empty body.
 - [ ] **Migrations**: ordered, checksummed, applied in a transaction, with an
   advisory lock so two instances do not race, and a `zokor migrate` command.
 - [ ] **Metrics**: Prometheus text format at `/metrics`; request count and

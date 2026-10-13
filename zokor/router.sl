@@ -854,7 +854,7 @@ impl Router[S] {
     // serve_frame, with the client's address for Ctx.client_ip.
     pub fn serve_frame_for(self: Router[S], f: http.WireFrame,
                            request_id: str, client_ip: str) -> http.Response {
-        return self.serve_frame_routed(f, request_id, client_ip).resp;
+        return head_dropped(f.method, self.serve_frame_routed(f, request_id, client_ip).resp);
     }
 
     // What the serve loop calls: the response, and the route pattern that
@@ -933,9 +933,6 @@ impl Router[S] {
                     errors: self.errors
                 };
                 let resp = self.run(c, r);
-                if head_of_get && r.method == Method.GET {
-                    resp.body = to_bytes("");
-                }
                 return Served { resp: resp, route: r.pattern };
             }
             if r.fkind == 2 {
@@ -986,9 +983,6 @@ impl Router[S] {
                     errors: self.errors
                 };
                 let resp = self.run(c, r);
-                if head_of_get && r.method == Method.GET {
-                    resp.body = to_bytes("");
-                }
                 return Served { resp: resp, route: r.pattern };
             }
             i = i + 1;
@@ -1005,7 +999,7 @@ impl Router[S] {
 
     pub fn serve_id_for(self: Router[S], req: http.Request,
                         request_id: str, client_ip: str) -> http.Response {
-        return self.serve_id_routed(req, request_id, client_ip).resp;
+        return head_dropped(req.method, self.serve_id_routed(req, request_id, client_ip).resp);
     }
 
     pub fn serve_id_routed(self: Router[S], req: http.Request,
@@ -1108,9 +1102,6 @@ impl Router[S] {
                 errors: self.errors
             };
             let resp = self.run(c, r);
-            if head_of_get && r.method == Method.GET {
-                resp.body = to_bytes("");
-            }
             return Served { resp: resp, route: r.pattern };
         }
 
@@ -1141,9 +1132,6 @@ impl Router[S] {
                     hr = ready_response(self.ready, self.state);
                 }
                 let fr = self.finish(c, hr);
-                if method == Method.HEAD {
-                    fr.body = to_bytes("");
-                }
                 return Served { resp: fr, route: c.route };
             }
             for m in self.mounts {
@@ -1157,9 +1145,6 @@ impl Router[S] {
                                     route: c.route };
                 }
                 let ff = self.finish(c, serve_file(m, c, rest));
-                if method == Method.HEAD {
-                    ff.body = to_bytes("");
-                }
                 return Served { resp: ff, route: c.route };
             }
             return Served { resp: self.finish(c, respond(self.errors, "not_found", request_id)),
@@ -1740,4 +1725,14 @@ pub fn query_as[S, T](c: Ctx[S]) -> result[T, http.Response] {
         return err(decode_failed(c.errors, e, c.request_id));
     }
     return ok(v);
+}
+
+// What the public serve calls hand back for a HEAD: the answer without
+// its body. The routed calls keep the body, so the serve loop can frame
+// its length (http.write_head) as RFC 9110 has a HEAD answer do.
+fn head_dropped(method: str, resp: http.Response) -> http.Response {
+    if method == "HEAD" {
+        resp.body = to_bytes("");
+    }
+    return resp;
 }
