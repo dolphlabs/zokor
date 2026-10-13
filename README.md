@@ -155,6 +155,61 @@ Validators: `require`, `require_int`, `require_range`, `require_port`,
 `require_max_len`, and `optional_url` / `optional_one_of` / `optional_dsn`
 for values that must be valid *when set*.
 
+## Postgres
+
+slang's `pg` package is the driver. zokor adds what every service writes on
+top of it, and nothing that bypasses it:
+
+```slang
+let pr = zokor.pg_from_config(cfg);          // DATABASE_URL, DB_POOL_SIZE (10)
+guard let db = pr else let e = err_of(pr) { log.error(e); exit(1); }
+
+struct User { id: int, email: str, name: opt[str] }
+
+fn list_users(c: zokor.Ctx[App]) -> http.Response {
+    let r: result[[User], str] = zokor.query_all(c.state.db,
+        "select id, email, name from users where org = $1",
+        [pg.arg_int(c.param_int("org", 0))], until_of(time.mono() + 2000000000));
+    guard let users = r else let e = err_of(r) {
+        return zokor.db_failure(c.errors, e, c.request_id);
+    }
+    return zokor.ok_json(json.encode(users));
+}
+```
+
+- **Rows into structs, by column name.** `query_all`, `query_one` (none
+  when there's no row), `conn_query_all` inside a transaction, and
+  `rows_as`:
+  - integers, floats and numerics become numbers (NaN and infinity become
+    strings)
+  - booleans stay booleans
+  - `json`/`jsonb` decode into nested structs
+  - NULL becomes `none`, so use an `opt` field
+  - `bytea` becomes base64
+  - text, uuid and timestamps become strings
+
+  A column your struct doesn't name is ignored. A field the query doesn't
+  return must be an `opt`, or the result names the missing field.
+- **Transactions.** `transaction(db, arg, body, deadline)` runs
+  `body(conn, arg)` between `BEGIN` and `COMMIT`. An `err`, a failed
+  `COMMIT` or a panic in the body rolls back, and the connection goes back
+  to the pool every way out. There are no closures, so what the body
+  needs comes in as `arg`.
+- **Failures in your envelope.** `db_failure(reg, e, rid)` picks the
+  status from the SQLSTATE:
+  - unique violation: `409 already_exists`
+  - foreign key: `409 conflict`
+  - not null, check, or a bad value: `422`
+  - serialization, deadlock or timeout: `503`
+  - anything else: `500`
+
+  The server's message, which names tables, columns and values, never
+  reaches the client. `is_unique_violation(e)` is there for the common
+  branch.
+- **Parameterised queries only.** Every helper takes `$1`-style SQL and
+  `pg.Arg` values, and nothing builds SQL from strings. That's the SQL
+  injection defence.
+
 ## Redis
 
 Optional the same way any dependency should be: a service with no

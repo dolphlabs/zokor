@@ -116,10 +116,15 @@ library, made and merged there first.
 
 ## 3. Building real services
 
-- [ ] **Postgres helpers**: pool setup from config, transactions
+- [x] **Postgres helpers**: pool setup from config, transactions
   (`tx.run(fn)` that commits or rolls back), rows into structs, and the
   error shape for a unique violation. Parameterised queries only; only one
-  package imports `pg`.
+  package imports `pg`. Done: `pg_from_config`, `query_all`/`query_one`/
+  `rows_as` (rows by column name through JSON), `transaction` (rollback on
+  err or panic, connection always returned), `db_failure` (SQLSTATE ->
+  409/422/503/500, message withheld). Live tests run on Linux CI against
+  postgres:16. Not done: retrying serialization failures, and streaming
+  large results into structs (use `pg.stream` directly).
 - [ ] **MongoDB helpers**: a pool from `MONGODB_URI` through
   `dolphlabs/mongo` (optional, like `redis_from_config`), and the error
   shape for a duplicate key, so a service on Mongo gets what a service on
