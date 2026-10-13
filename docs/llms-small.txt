@@ -241,6 +241,29 @@ Never logged: query strings, bodies, headers. `zokor.no_logger()` turns
 it off. A full queue drops records and counts them; a request never waits
 on the log.
 
+## Postgres
+
+```slang
+import "zokor";
+
+// zokor.pg_from_config(cfg) builds a pool from DATABASE_URL (+ DB_POOL_SIZE).
+// let r: result[[User], str] = zokor.query_all(db, "select id, email from users where org = $1",
+//                                               [pg.arg_int(org)], deadline);
+// zokor.query_one -> result[opt[T], str]; zokor.transaction(db, arg, body, deadline)
+// runs body(conn, arg) in BEGIN/COMMIT and rolls back on err or panic.
+let reg = zokor.new_registry();
+let dup = zokor.db_failure(reg, "duplicate key (SQLSTATE 23505)", "req_1");
+assert(zokor.resp_status(dup) == 409);
+assert(zokor.resp_error_code(dup) == "already_exists");
+println("ok");
+```
+
+Rows map into your struct by column name (NULL is none: use `opt` fields;
+jsonb decodes into a nested struct). `db_failure` turns a pg error into the
+envelope by SQLSTATE (409 unique/foreign key, 422 constraint/bad value, 503
+serialization/deadlock/timeout, else 500) without the server's message.
+Parameterised SQL only.
+
 ## Authentication
 
 ```slang
