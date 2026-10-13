@@ -204,3 +204,20 @@ library, made and merged there first.
   `Ctx`/routing (~1-2 us). Needs a fresh measurement on a quiet host
   before more work. Unreproduced: one c=2000 run on Linux collapsed to
   356 rps with a 9 s p99; six runs after it did not.
+- [ ] **Index the routes instead of scanning them.** Matching walks
+  `Router.routes` in order and compares each route, so its cost grows with
+  the number of routes: bench/audit's router case (200 requests to the
+  last of *n* one-parameter routes) is ~60 us a request at 64 routes and
+  ~550 us at 512, on the general path. The frame path is cheaper per
+  route but still linear. Keep the list as the source of truth
+  (registration order, "first registered wins", `routes_list`) and add,
+  built at registration:
+  - a map from method + exact path to route, so static paths cost one
+    hash and one lookup;
+  - a segment tree for `:param` and `*rest` routes, so matching costs the
+    path's depth, not the route count (httprouter's and Fiber's approach).
+
+  `befores`/`afters` stay lists: they are an ordered sequence run in full,
+  with nothing to look up. Done when bench/audit's router case is flat
+  across 64-512 routes and the latency benchmark shows no regression at
+  2-3 routes, with both measurements recorded here.
