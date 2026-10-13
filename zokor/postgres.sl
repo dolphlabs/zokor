@@ -34,8 +34,9 @@
 //
 // Rows map by name through JSON: integers, floats and numerics become
 // numbers, booleans booleans, json/jsonb columns their own JSON, NULL
-// `null` (so an opt field), bytea base64, and everything else -- text,
-// uuid, timestamps -- a string. A column your struct does not name is
+// `null` (so an opt field), bytea base64, timestamptz and timestamp RFC
+// 3339 strings (so a timez.Time field, or a str), and everything else --
+// text, uuid -- a string. A column your struct does not name is
 // ignored; a field the query does not return must be an opt.
 
 import "builder";
@@ -113,6 +114,14 @@ fn cell_into(sb: builder.Str, rows: pg.Rows, r: int, c: int) {
     }
     if oid == 17 {
         quote_into(sb, encoding.base64_encode(pg.get_bytes(rows, r, c)));
+        return;
+    }
+    // timestamptz, timestamp: RFC 3339, so a timez.Time field reads them
+    // (and a str field gets the same text an API would send); infinity
+    // and BC dates stay as Postgres wrote them, which a Time refuses
+    if oid == 1184 || oid == 1114 {
+        let t = pg.get_text(rows, r, c);
+        quote_into(sb, pg.timestamp_rfc3339(t, oid == 1184) ?? t);
         return;
     }
     quote_into(sb, pg.get_text(rows, r, c));

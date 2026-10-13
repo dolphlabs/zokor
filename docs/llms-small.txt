@@ -259,7 +259,8 @@ println("ok");
 ```
 
 Rows map into your struct by column name (NULL is none: use `opt` fields;
-jsonb decodes into a nested struct). `db_failure` turns a pg error into the
+jsonb decodes into a nested struct; timestamptz into a `timez.Time` field,
+bound with `pg.arg_time(t)`). `db_failure` turns a pg error into the
 envelope by SQLSTATE (409 unique/foreign key, 422 constraint/bad value, 503
 serialization/deadlock/timeout, else 500) without the server's message.
 Parameterised SQL only.
