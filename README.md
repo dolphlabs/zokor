@@ -102,6 +102,7 @@ declare, and every handler receives it.
 | `Json`, `parse`, `jobj` | JSON you did not declare: walk it, build it, render it |
 | `upgrade`, `receive`, `sio_*` | WebSocket (RFC 6455) and Socket.IO, as a state machine you feed bytes |
 | `ok_json`, `created`, … | success responses with the headers they should carry |
+| `files_at`, `r.files(mount)` | static files: traversal-safe, ranges, validators, cache headers |
 | `r.compress(compression())` | gzip for clients that accept it, on bodies worth it |
 | `r.idempotency(store)` | idempotency keys: a retried POST gets the first answer, in memory or Redis |
 | `page_of`, `offset_page`, `cursor_page` | pagination: offset or keyset pages, one envelope, `Link` headers |
@@ -658,6 +659,38 @@ sending traffic before the drain.
   claims them, so your own `/healthz` wins. No `before` runs on them,
   since an auth hook would fail the probes. `r.health_at(live, ready)`
   mounts them elsewhere.
+
+## Static files
+
+```slang
+let mr = zokor.files_at("/assets", "./public");     // err if not a directory
+guard let assets = mr else let e = err_of(mr) { println(e); exit(1); }
+assets.max_age = 31536000;                          // hashed names: a year
+assets.immutable = true;
+r.files(assets);
+```
+
+A GET or HEAD under the prefix that no route claims is a file from the
+directory:
+
+- **Traversal-safe.** An encoded separator (`%2f`, `%5c`), a `..`, `.` or
+  dot-file segment (`.env`, `.git`), a backslash or a NUL is a 404, and
+  the file's real path, every symlink resolved, must be inside the
+  directory's real path or it is a 404 too: a link cannot lead out.
+- **Index files.** A directory answers `index.html` (`mount.index`).
+- **Validators.** ETag from size and modification time, Last-Modified,
+  and `304`/`412` through `preconditions`.
+- **Ranges.** One `Range: bytes=` range is a `206` with `Content-Range`
+  (`If-Range` honoured); one past the end a `416`; several ranges get the
+  whole file, as RFC 9110 allows.
+- **Headers.** Content-Type by extension (unknown types are
+  `application/octet-stream`, which `nosniff` keeps from being rendered),
+  `Cache-Control` from `max_age` (`no-cache` by default: revalidate every
+  time, cheap with the validators) and `Accept-Ranges`.
+
+Files are read into memory, up to `max_size` (64 MB), and the read
+blocks a worker: serve an app's own assets this way, and put a CDN in
+front of large or busy ones.
 
 ## Compression
 

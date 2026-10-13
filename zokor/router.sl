@@ -176,6 +176,8 @@ pub gc struct Router[S] {
     idem: opt[Idempotency],
     // Off until `r.compress(compression())`; see compression.sl.
     gzip: opt[Compression],
+    // Directories served by `r.files(mount)`; see files.sl.
+    mounts: [FileMount],
     // The none every Ctx's `out` starts as.
     no_lines: opt[[str]],
 }
@@ -204,6 +206,7 @@ pub fn new_router[S](state: S) -> Router[S] {
         auto_etag: false,
         idem: none,
         gzip: none,
+        mounts: [],
         no_lines: none
     };
 }
@@ -492,6 +495,13 @@ impl Router[S] {
     pub fn compress(self: Router[S], z: Compression) -> int {
         self.gzip = some(z);
         return 0;
+    }
+
+    // Serves the directory of `m` under its prefix (see files.sl): a GET
+    // or HEAD no route claims. Routes registered under the prefix win.
+    pub fn files(self: Router[S], m: FileMount) -> int {
+        push(self.mounts, m);
+        return len(self.mounts);
     }
 
     // Replaces the security headers (see security.sl);
@@ -1077,6 +1087,22 @@ impl Router[S] {
                     fr.body = to_bytes("");
                 }
                 return Served { resp: fr, route: c.route };
+            }
+            for m in self.mounts {
+                guard let rest = mount_rest(m, p) else {
+                    continue;
+                }
+                c.route = m.prefix + "/*";
+                if method != Method.GET && method != Method.HEAD {
+                    let na = respond(self.errors, "method_not_allowed", request_id);
+                    return Served { resp: self.finish(c, http.with_header(na, "allow", "GET, HEAD")),
+                                    route: c.route };
+                }
+                let ff = self.finish(c, serve_file(m, c, rest));
+                if method == Method.HEAD {
+                    ff.body = to_bytes("");
+                }
+                return Served { resp: ff, route: c.route };
             }
             return Served { resp: self.finish(c, respond(self.errors, "not_found", request_id)),
                             route: "" };
