@@ -141,8 +141,12 @@ library, made and merged there first.
   #409): calendar time, RFC 3339 / HTTP / RFC 2822 dates, strftime,
   durations, IANA zones from the system tz database, test clocks and
   cron. Pure slang, no C interop.
-- [ ] **Pagination**: offset and cursor forms, with the `Link` header and a
-  response envelope that does not change shape between them.
+- [x] **Pagination**: `page_of` reads and checks `limit` with `offset` or
+  `cursor` (a 422 naming each bad one); `offset_page` and `cursor_page`
+  answer in one envelope (`data`, `page.limit/offset|cursor/next/prev/
+  total`) with a `Link` header that keeps the other query parameters.
+  `fetch()` asks for one row past the page, so "is there a next" needs no
+  count. Keyset cursors are base64url JSON of the row's sort key.
 - [ ] **Idempotency keys** for unsafe methods, stored so a retried `POST`
   returns the first answer (in memory, or Redis through `redis_from_config`).
 - [ ] **Compression**: gzip through slang's `compress`, honouring

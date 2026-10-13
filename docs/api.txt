@@ -359,6 +359,24 @@ LogFormat.json(ev: LogEvent) -> str
     The same as single strings, without the newline: for a consumer that wants one line at a time.
 LogFormat.pretty(ev: LogEvent, color: bool, since_ns: int) -> str
 
+## pagination.sl -- Pagination: offset pages and keyset (cursor) pages, one envelope for both, so a client reads every list the same way:
+struct Page { limit: int, offset: int, cursor: str, by_cursor: bool }
+    What the request asked for, checked.
+Page.fetch() -> int
+    How many rows to ask the database for: one more than the page, so the response knows whether there is a next page without a count.
+page_of[S](c: Ctx[S], default_limit: int, max_limit: int) -> result[Page, http.Response]
+    The page `c` asks for: `limit` (default `default_limit`, at most `max_limit`), and either `offset` or `cursor`.
+encode_cursor(parts: [str]) -> str
+    The opaque cursor for a row whose sort key is `parts`.
+decode_cursor(cursor: str) -> result[[str], str]
+    The key parts of a cursor, err when it is not one encode_cursor made.
+cursor_parts(p: Page) -> [str]
+    The key parts of the cursor `p` came with ([] on the first page).
+offset_page[S, T](c: Ctx[S], p: Page, rows: [T], total: opt[int]) -> http.Response
+    An offset page of `rows` -- up to p.fetch() of them; one past the limit means there is a next page -- in the envelope, with Link.
+cursor_page[S, T](c: Ctx[S], p: Page, rows: [T], key: fn(T) -> [str]) -> http.Response
+    A keyset page of `rows` -- up to p.fetch(); one past the limit means there is a next page, whose cursor is `key` of the last...
+
 ## postgres.sl -- Postgres, wired to zokor's config, results and error envelope.
 pg_from_config(cfg: Config) -> result[pg.Pool, str]
     DATABASE_URL (postgres://user:pass@host:port/db?sslmode=require) and DB_POOL_SIZE (default 10).

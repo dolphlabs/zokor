@@ -102,6 +102,7 @@ declare, and every handler receives it.
 | `Json`, `parse`, `jobj` | JSON you did not declare: walk it, build it, render it |
 | `upgrade`, `receive`, `sio_*` | WebSocket (RFC 6455) and Socket.IO, as a state machine you feed bytes |
 | `ok_json`, `created`, … | success responses with the headers they should carry |
+| `page_of`, `offset_page`, `cursor_page` | pagination: offset or keyset pages, one envelope, `Link` headers |
 | `new_jobs`, `every`, `handle`, `enqueue` | background jobs: cron schedules in a time zone, a retrying in-memory queue |
 | `preconditions`, `etag_of`, `r.etags()` | conditional requests: `304 Not Modified`, `412` on a lost update, ETag and Last-Modified |
 | `redis_from_config` | a Redis pool from `REDIS_URL`, optional by default |
@@ -655,6 +656,43 @@ sending traffic before the drain.
   claims them, so your own `/healthz` wins. No `before` runs on them,
   since an auth hook would fail the probes. `r.health_at(live, ready)`
   mounts them elsewhere.
+
+## Pagination
+
+Offset pages (`?limit=20&offset=40`) and keyset pages (`?limit=20&cursor=…`)
+answer in the same envelope, so a client reads every list the same way:
+
+```slang
+fn list_orders(c: zokor.Ctx[App]) -> http.Response {
+    let pr = zokor.page_of(c, 20, 100);            // default 20, at most 100
+    guard let p = pr else let bad = err_of(pr) { return bad; }   // 422, named
+    let after = zokor.cursor_parts(p);             // [] on the first page
+    // WHERE (created, id) < ($1, $2) ORDER BY created DESC, id DESC LIMIT p.fetch()
+    let rows = load_orders(c, after, p.fetch());
+    return zokor.cursor_page(c, p, rows, order_key);
+}
+
+fn order_key(o: Order) -> [str] { return [o.created, to_str(o.id)]; }
+```
+
+```json
+{"data":[...],"page":{"limit":20,"cursor":"WyIyMDI2...","next":"WyIyMDI2...","total":null}}
+```
+
+- **One row past the page.** `p.fetch()` is `limit + 1`: an extra row
+  means there is a next page, without a `COUNT(*)`. `offset_page` takes an
+  optional total when the handler has one.
+- **Links.** A `Link` header (RFC 8288) carries `rel="next"` (and
+  `rel="prev"` for offset pages), keeping the request's other query
+  parameters.
+- **Checked.** `limit` must be 1 to the maximum; `offset` 0 to 1,000,000
+  (deeper: use a cursor); not both `offset` and `cursor`; a cursor this
+  API did not issue is refused. Each problem is a named field in a 422.
+- **Keyset is the one to use on big tables**: the next page is an index
+  range, and rows inserted between requests are neither skipped nor
+  repeated. A cursor is opaque base64url of the last row's sort key; a
+  client can forge one, but only to read another position of a list it
+  may read anyway, so authorise the list, and never put a secret in a key.
 
 ## Background jobs
 
