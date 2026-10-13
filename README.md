@@ -102,6 +102,7 @@ declare, and every handler receives it.
 | `Json`, `parse`, `jobj` | JSON you did not declare: walk it, build it, render it |
 | `upgrade`, `receive`, `sio_*` | WebSocket (RFC 6455) and Socket.IO, as a state machine you feed bytes |
 | `ok_json`, `created`, … | success responses with the headers they should carry |
+| `preconditions`, `etag_of`, `r.etags()` | conditional requests: `304 Not Modified`, `412` on a lost update, ETag and Last-Modified |
 | `redis_from_config` | a Redis pool from `REDIS_URL`, optional by default |
 | `ServerConfig`, `listen_and_serve_with` | idle/header/body/write timeouts, safe defaults, all overridable |
 | `RateLimiter`, `rate_limit` | per-client sliding-window limits: `429`, `Retry-After`, the registered envelope |
@@ -468,9 +469,17 @@ return zokor.set_cookie(resp, ck) ?? resp;         // err names what is wrong
   - more than 4,096 bytes
 - **Reading.** `c.cookie(name)` and `c.cookies()` skip malformed pairs the
   way browsers do, and the first of two same-named cookies wins.
-- **Deleting.** `clear_cookie(resp, name, path, domain)` removes a cookie.
-- **No `Expires`.** `Max-Age` (seconds, `0` deletes) says the same thing
-  to every browser in use.
+- **Deleting.** `clear_cookie(resp, name, path, domain)` removes a cookie
+  (`Max-Age=0`, and an `Expires` in 1970 for clients that read only that).
+- **Lifetime.** `max_age` (seconds; `-1`, the default, is a session
+  cookie) is what every browser uses. Set `expires` too, an instant from
+  `timez`, for HTTP clients that only read `Expires`; when both are sent
+  `Max-Age` wins:
+
+  ```slang
+  ck.max_age = 3600;
+  ck.expires = some(timez.now().add(timez.HOUR));   // Expires=<HTTP date>
+  ```
 
 **Signed cookies** carry an HMAC-SHA256 over their name and value, so a
 client can read them but not change them, or move one to another name:
@@ -486,6 +495,43 @@ key first and keep the old one until the cookies it signed have expired;
 nobody is logged out. Keys must be at least 32 bytes. Signatures are
 compared in constant time. Signed is not encrypted: never put a secret in
 a cookie.
+
+## Conditional requests
+
+A client that already holds the current version gets `304 Not Modified`
+and no body; a write made against a version that is no longer current
+gets `412` instead of overwriting someone else's change (RFC 9110 §13):
+
+```slang
+fn get_doc(c: zokor.Ctx[App]) -> http.Response {
+    let doc = load(c);                                 // has .version, .updated_at
+    let tag = zokor.etag_of(to_bytes(to_str(doc.version)));
+    if let stop = zokor.preconditions(c, tag, some(doc.updated_at)) {
+        return stop;                                   // 304, or 412 on a write
+    }
+    let resp = zokor.ok_json(json.encode(doc));
+    return zokor.with_validators(resp, tag, some(doc.updated_at));
+}
+```
+
+- **One call for reads and writes.** `preconditions` evaluates `If-Match`,
+  `If-Unmodified-Since`, `If-None-Match` and `If-Modified-Since` in the
+  order RFC 9110 §13.2.2 sets. A PUT that sends back the ETag it read in
+  `If-Match` updates only if nobody changed the resource since: optimistic
+  concurrency, no lock. Pass `""` as the tag for a resource that does not
+  exist yet, and `If-None-Match: *` means "create, never replace".
+- **Comparisons as the RFC has them.** `If-Match` compares strongly, so a
+  `W/` tag never matches; `If-None-Match` compares weakly. Tag lists,
+  `*`, and all three HTTP date forms are read; a date that is not a valid
+  HTTP date is ignored, and a malformed tag never matches.
+- **`r.etags()`**, opt in: every `200` answer to a GET or HEAD gets an
+  ETag hashed from its body, and a matching `If-None-Match` gets a `304`
+  that keeps the other headers (`Cache-Control`, `Vary`, …). A response
+  with its own ETag is left alone. It hashes every such body, measured in
+  process (`bench/conditional`): about 1.5 µs a request at 128 bytes,
+  2.7 µs at 1 KB and 20 µs at 16 KB. With nothing turned on, the request
+  path costs what it did. For a large body, a version you already have
+  (`preconditions`) is far cheaper than hashing the bytes.
 
 ## Security headers
 
@@ -1058,8 +1104,7 @@ The full list, ordered and checkable, is [todo.md](todo.md). In short:
   shutdown, panic recovery and a connection cap are done (see above).
   Still owed: TLS.
 - **Middleware**, none of it blocked:
-  cookies, JWT and basic auth, ETag/304, compression, static
-  files. (A rate limiter and a
+  compression, static files. (A rate limiter and a
   bearer-token store exist; `RateLimit-*` headers and sharding do not.)
 - **Enterprise**: Postgres helpers with transactions, migrations,
   metrics, tracing, background jobs, pagination, OpenAPI, and

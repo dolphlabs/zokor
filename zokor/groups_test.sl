@@ -18,6 +18,7 @@ fn g_router() -> Router[GState] {
         cors: cors_off(),
         security: security_compile(default_security_headers()),
         sanitize: SanitizeMode.OFF,
+        auto_etag: false,
         no_lines: none
     };
 }
