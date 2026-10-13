@@ -242,11 +242,15 @@ impl Security {
 }
 
 // A static route's bytes: status line, content type, the security lines,
-// length, connection, body. `keep_alive` false renders the close variant.
-// Built once per route, so a static answer carries the headers at no cost
-// per request.
+// length, connection, the date line, body. `keep_alive` false renders the
+// close variant. Built once per route, so a static answer carries the
+// headers at no cost per request; the header block ends with
+// http.static_date_line(), whose date slang's write_static refreshes on
+// every send (RFC 9110 requires a current Date). A 1xx, 204 or 304 has no
+// content: no Content-Length and no body, whatever the route holds.
 pub fn static_render_with(status: i32, content_type: str, lines: [str], body: bytes,
                           keep_alive: bool) -> bytes {
+    let no_content = status < 200 || status == 204 || status == 304;
     let sb = builder.new_bytes();
     sb.write_str("HTTP/1.1 ");
     sb.write_str(to_str(status));
@@ -259,13 +263,20 @@ pub fn static_render_with(status: i32, content_type: str, lines: [str], body: by
         sb.write_str(l);
         sb.write_str("\r\n");
     }
-    sb.write_str("Content-Length: ");
-    sb.write_str(to_str(len(body)));
-    if keep_alive {
-        sb.write_str("\r\nConnection: keep-alive\r\n\r\n");
-    } else {
-        sb.write_str("\r\nConnection: close\r\n\r\n");
+    if !no_content {
+        sb.write_str("Content-Length: ");
+        sb.write_str(to_str(len(body)));
+        sb.write_str("\r\n");
     }
-    sb.write(body);
+    if keep_alive {
+        sb.write_str("Connection: keep-alive\r\n");
+    } else {
+        sb.write_str("Connection: close\r\n");
+    }
+    sb.write_str(http.static_date_line());
+    sb.write_str("\r\n");
+    if !no_content {
+        sb.write(body);
+    }
     return sb.finish();
 }
