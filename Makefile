@@ -1,17 +1,20 @@
 SLANGC ?= slangc
+TESTFLAGS ?=
 
 .PHONY: test example check snippets api api-check
 
 # Every package dir is listed explicitly: a new package without its own
 # line here is a package with no tests, and that fails review.
+# TESTFLAGS: CI passes `-v --keep`, so a crash names the last test that
+# passed and leaves the runner binary to resolve its pc against.
 test:
-	$(SLANGC) test zokor
-	$(SLANGC) test zokor/internal/path
-	$(SLANGC) test zokor/internal/envfile
-	$(SLANGC) test zokor/internal/validate
-	$(SLANGC) test zokor/internal/multipart
-	$(SLANGC) test zokor/internal/ws
-	$(SLANGC) test zokor/internal/sio
+	$(SLANGC) test zokor $(TESTFLAGS)
+	$(SLANGC) test zokor/internal/path $(TESTFLAGS)
+	$(SLANGC) test zokor/internal/envfile $(TESTFLAGS)
+	$(SLANGC) test zokor/internal/validate $(TESTFLAGS)
+	$(SLANGC) test zokor/internal/multipart $(TESTFLAGS)
+	$(SLANGC) test zokor/internal/ws $(TESTFLAGS)
+	$(SLANGC) test zokor/internal/sio $(TESTFLAGS)
 
 example:
 	$(SLANGC) examples/hello/main.sl --run
