@@ -165,8 +165,13 @@ library, made and merged there first.
   service's own.
 - [ ] **Tracing**: W3C `traceparent` in, propagated to outbound calls, and the
   trace id on every log line and error envelope.
-- [ ] **Background work**: a scheduler for periodic jobs and a channel-backed
-  queue with retry and backoff, on slang's tasks.
+- [x] **Background work**: `new_jobs` -- cron schedules read in a time zone
+  (timez), one run at a time per job, missed turns not replayed, each run
+  its own task (a panic is that run's failure); an in-memory queue with
+  per-kind attempts and exponential backoff (1 s doubling, capped at an
+  hour); stops starting runs on SIGTERM. Tests drive it with `tick` on a
+  fixed clock. Not done: a durable queue (Redis or Postgres) -- queued
+  work is lost on restart.
 - [ ] **OpenAPI**: generate a document from `routes_list` plus the declared
   DTOs and the error registry.
 - [ ] **Config profiles** (`dev`, `test`, `prod`), and `.env.test` selection
