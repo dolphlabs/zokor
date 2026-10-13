@@ -7,7 +7,7 @@
 // section after it plays the part of a client so you can see the
 // exchange.
 import "http";
-import "../../src" as zokor;
+import "../../zokor" as zokor;
 
 // ---------------------------------------------------------------- //
 // the service                                                        //
@@ -174,7 +174,7 @@ fn on_sio(cl: Client, e: zokor.SioEvent) -> bytes {
 // A browser decodes the server's frames; this demo does the same, only
 // to print them. A service never needs this -- it writes the bytes
 // zokor hands it.
-import "../../src/internal/ws" as frames;
+import "../../zokor/internal/ws" as frames;
 
 // A client's frames are masked, which the server requires.
 fn client_frame(op: int, payload: bytes, fin: bool) -> bytes {
@@ -247,15 +247,8 @@ fn show_written(label: str, written: bytes) {
 let reg = zokor.new_registry();
 let app = App { name: "zokor chat", history: [], errors: reg };
 
-let r = zokor.Router[App] {
-    routes: [],
-    befores: [],
-    afters: [],
-    state: app,
-    errors: reg,
-    auto_options: true,
-    auto_head: true
-};
+let r = zokor.new_router(app);
+r.errors = reg;
 r.get("/ws", ws_route);
 
 // 1. the handshake, over the ordinary router

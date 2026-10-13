@@ -4,3 +4,5 @@ exclude bench
 exclude docs
 exclude examples
 exclude assets
+
+pkg jwt git https://github.com/dolphlabs/jwt.git tag v0.1.0 dir src/jwt
