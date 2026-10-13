@@ -10,10 +10,10 @@
 // quadratic one is unmistakable long before it becomes a hang.
 import "builder";
 import "time";
-import "../../src" as zokor;
-import "../../src/internal/multipart" as multipart;
-import "../../src/internal/path" as path;
-import "../../src/internal/ws" as ws;
+import "../../zokor" as zokor;
+import "../../zokor/internal/multipart" as multipart;
+import "../../zokor/internal/path" as path;
+import "../../zokor/internal/ws" as ws;
 import "http";
 
 fn ms(t0: duration) -> int {
@@ -332,10 +332,7 @@ fn run_router() {
     let times: [int] = [];
     for n in counts {
         let st = BS { n: 0 };
-        let r = zokor.Router[BS] {
-            routes: [], befores: [], afters: [], state: st,
-            errors: zokor.new_registry(), auto_options: true, auto_head: true
-        };
+        let r = zokor.new_router(st);
         let i = 0;
         while i < n {
             r.get("/route" + to_str(i) + "/:id", hit);

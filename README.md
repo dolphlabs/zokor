@@ -34,10 +34,8 @@ fn show_org(c: zokor.Ctx[App]) -> http.Response {
     return zokor.ok_json(encode(org));
 }
 
-let r = zokor.Router[App] {
-    routes: [], befores: [], afters: [], state: app,
-    errors: reg, auto_options: true, auto_head: true
-};
+let r = zokor.new_router(app);
+r.errors = reg;
 r.get("/orgs/:id", show_org);
 r.post("/orgs", create_org);
 ```
@@ -198,6 +196,8 @@ any of them.
 let sc = zokor.server_config_from(cfg);
 // IDLE_TIMEOUT, READ_HEADER_TIMEOUT, READ_BODY_TIMEOUT, WRITE_TIMEOUT,
 // MAX_REQUEST_BYTES, MAX_REQUESTS_PER_CONN, SHUTDOWN_TIMEOUT, REQUEST_IDS,
+// TRUSTED_PROXIES, PROXY_HEADER, LOG_FORMAT, LOG_LEVEL, LOG_REQUESTS,
+// MAX_CONNECTIONS,
 // TRUSTED_PROXIES, PROXY_HEADER
 spawn zokor.listen_and_serve_with(r, port, sc);
 ```
@@ -238,6 +238,15 @@ buffering. `max_requests_per_conn` (default 100,000) closes a
 connection after it, answering the request that hit the limit
 normally first.
 
+`max_connections` (default 10,000, `MAX_CONNECTIONS`) caps open
+connections across every acceptor. A connection past it is answered `503`
+with `Retry-After: 1` and closed at once, so a load balancer retries
+elsewhere instead of waiting in the accept backlog. Refusals are logged at
+most once a second. Raise the process's open-file limit (`ulimit -n`) above
+the cap. If `accept` fails anyway (out of file descriptors), the loop logs
+it once and backs off from 5ms up to 1s instead of spinning. Measured on
+Linux at the limit: a full core spinning before, about 2% after.
+
 On `SIGTERM`/`SIGINT`, `listen_and_serve` stops accepting immediately
 and gives in-flight connections up to `shutdown_timeout` (default 30s)
 to finish on their own before returning anyway -- long enough for
@@ -250,6 +259,297 @@ own task, and the connection closes right after answering rather than
 serving more requests on whatever state the panic left behind. The
 static fast path (`GET /`, no handler call) never pays for this
 isolation, since nothing there can panic in the first place.
+
+## Logging
+
+On by default. Every request gets one record, and the server writes its
+own lines too: routes mapped, listening, shutting down, stopped. On a
+terminal they look like NestJS's, in colour:
+
+```
+[zokor] 51734  - 2026-10-12 18:47:01.123Z     LOG [Router] Mapped {/users/:id, GET} route
+[zokor] 51734  - 2026-10-12 18:47:01.124Z     LOG [Server] Listening on :8080 +1ms
+[zokor] 51734  - 2026-10-12 18:47:03.551Z     LOG [HTTP] GET /users/:id 200 28B 10.0.0.4 req_1a2b… +0.41ms
+[zokor] 51734  - 2026-10-12 18:47:04.002Z    WARN [HTTP] GET /nope 404 124B 10.0.0.4 req_9f3c… +0.16ms
+```
+
+Anywhere else, such as a pipe, a file or a container's stdout, each line
+is one JSON object, which is what a log shipper wants:
+
+```
+{"time":"2026-10-12T18:47:03.551Z","level":"log","pid":51734,"context":"HTTP","msg":"GET /users/:id 200 28B 10.0.0.4 req_1a2b…","method":"GET","route":"/users/:id","status":200,"duration_ms":0.412,"bytes":28,"request_id":"req_1a2b…","client_ip":"10.0.0.4"}
+```
+
+| Setting | Values | Default |
+|---|---|---|
+| `LOG_FORMAT` | `pretty`, `json` | pretty on a terminal, json otherwise |
+| `LOG_LEVEL` | `debug`, `log`, `warn`, `error`, `off` | `log` |
+| `LOG_REQUESTS` | `true`, `false` | `true` |
+| `NO_COLOR` | any value | colour on a terminal |
+
+Settings are read by `server_config_from(cfg)`; plain `listen_and_serve`
+uses the defaults. A 4xx is a `warn` record and a 5xx an `error`, so
+`LOG_LEVEL=warn` keeps exactly the requests that went wrong. A panicking
+handler adds an `error` line with the panic and the request id.
+
+**What is never logged:** query strings, bodies or headers. A matched
+request is logged by its route pattern, not its path, so ids in paths stay
+out of the log and a dashboard sees one series per route. An unmatched path
+is cut to 64 bytes, and control characters, `"` and `\` are
+percent-encoded, so a client cannot forge a line or send a terminal
+escape.
+
+**It never slows a request down.** The serve loop hands each record to a
+bounded queue and moves on, and one task formats and writes the records in
+batches. If the queue is ever full, records are dropped and counted, and a
+`WARN [Logger] N log records dropped` line says so.
+
+**What it costs.** About 3 extra allocations per request. At saturation,
+`GET /users/:id` on a laptop with 32 connections went from about 62k to
+about 50k requests per second, with p99 rising from 1.6–3.0ms to
+1.9–3.3ms on the runs not hit by thermal throttling. That's 50k JSON
+lines a second written to a file. `LOG_REQUESTS=false` removes the cost
+and keeps the server's own lines.
+
+**Bring your own.** A `Logger` is a channel plus a level. To ship records
+somewhere else, make one with `channel_logger(ch, level, requests)`, put it
+in `ServerConfig.logger`, and drain `ch` from your own task.
+`new_log_format(pid)` gives you zokor's `json` and `pretty` formats to reuse.
+`no_logger()` turns logging off.
+
+## Authentication
+
+Three helpers. Each answers "who is this?" and leaves the policy to you.
+There are no closures, so keys live in your state and a short `before`
+hook passes them in:
+
+```slang
+gc struct App { jwt: zokor.JwtAuth, keys: zokor.ApiKeys }
+struct Claims { sub: str, role: str, exp: int }
+
+fn require_user(c: zokor.Ctx[App]) -> opt[http.Response] {
+    let r: result[Claims, http.Response] = zokor.bearer_claims(c, c.state.jwt);
+    guard let claims = r else let deny = err_of(r) { return some(deny); }
+    c.set_local("user_id", claims.sub);
+    return none;
+}
+```
+
+**JWTs**, HS256 through [dolphlabs/jwt](https://github.com/dolphlabs/jwt):
+- **Configuration.** `jwt_auth_from(cfg)` reads `JWT_SECRETS`
+  (comma-separated, newest first, 32+ bytes each), `JWT_AUDIENCE`,
+  `JWT_ISSUER` and `JWT_LEEWAY` (seconds of clock skew, default 30).
+- **Checks.** `bearer_claims` checks the signature, algorithm and duplicate
+  claims, then `exp` (required), `nbf`, and `aud` and `iss` when
+  configured. Only then does it decode the payload into your own claims
+  type.
+- **Failures.** Every failure gets the same `401` with
+  `WWW-Authenticate: Bearer error="invalid_token"`.
+  `token_problem(token, auth, now)` gives the reason for your logs.
+- **Signing and rotation.** `sign_token(claims, auth)` signs with the
+  newest secret. A token signed with an older listed secret still
+  verifies, so rotation logs nobody out.
+
+**Basic auth:**
+- `basic_credentials(c)` returns the user and password, keeping a colon
+  inside the password.
+- `basic_matches(creds, user, pass)` compares SHA-256 digests in constant
+  time, so neither content nor length leaks through timing.
+- `basic_denied(c, realm)` asks the browser to log in.
+
+**API keys:**
+- `API_KEYS=billing:key1,search:key2`, 24+ bytes each, is read by
+  `api_keys_from(cfg)`.
+- `api_key_client(c, keys)` reads `X-Api-Key` and returns the client's
+  name, so a request can be traced to who sent it.
+- Only SHA-256 digests are kept in memory. Every key is compared, in
+  constant time.
+
+## Operator injection (MongoDB)
+
+MongoDB reads a key starting with `$` as an operator. A login handler that
+passes the body to a query, with a body like
+`{"user":"ada","password":{"$ne":""}}`, matches any password. The guard
+works like `express-mongo-sanitize` and is opt-in:
+
+```slang
+r.mongo_sanitize(zokor.SanitizeMode.REJECT);   // or zokor.sanitize_from(cfg): MONGO_SANITIZE
+```
+
+- **What it checks.** Every key of a JSON body, at any depth and inside
+  arrays, and every query-parameter name, decoded first so `%24where` is
+  `$where`. A key starting with `$` or containing a `.` is refused.
+- **`REJECT`** answers `400 bad_request` naming the key, for example
+  `body key 'password.$ne'`. No `before` hook and no handler runs.
+- **`STRIP`** removes the offending keys and carries on.
+- **What it leaves alone.** Values are never touched, so `"$5 off"` is
+  fine. A body that isn't JSON, or isn't valid JSON, is left for the
+  handler to refuse.
+- **Cost.** With the guard on, a JSON body is parsed once more.
+
+**SQL** has no equivalent on purpose. A blacklist rejects `O'Brien` and
+still misses real attacks. The defence is parameterised queries, which the
+Postgres helpers use exclusively.
+
+## Cookies
+
+```slang
+let theme = c.cookie("theme");                    // "" when not sent
+
+let ck = zokor.new_cookie("theme", "dark");        // HttpOnly, Secure, SameSite=Lax, Path=/
+ck.max_age = 86400 * 30;
+return zokor.set_cookie(resp, ck) ?? resp;         // err names what is wrong
+```
+
+- **Safe defaults.** A new cookie is `HttpOnly`, `Secure`, `SameSite=Lax`
+  and `Path=/`, with no `Domain`, so it's host-only.
+- **Checked before it's sent.** `set_cookie` refuses:
+  - a value with a space, quote, comma, `;`, backslash or control byte,
+    which could add attributes of its own
+  - a bad name
+  - a path or domain carrying `;`
+  - `SameSite=None` without `Secure`, which browsers drop
+  - a `__Host-` or `__Secure-` cookie that breaks its prefix's rules
+  - more than 4,096 bytes
+- **Reading.** `c.cookie(name)` and `c.cookies()` skip malformed pairs the
+  way browsers do, and the first of two same-named cookies wins.
+- **Deleting.** `clear_cookie(resp, name, path, domain)` removes a cookie.
+- **No `Expires`.** `Max-Age` (seconds, `0` deletes) says the same thing
+  to every browser in use.
+
+**Signed cookies** carry an HMAC-SHA256 over their name and value, so a
+client can read them but not change them, or move one to another name:
+
+```slang
+let keys = zokor.cookie_keys_from(cfg);            // COOKIE_KEYS=newest,older
+let ck = zokor.signed_cookie("uid", "42", keys) ?? zokor.new_cookie("uid", "");
+let uid = zokor.signed_value(c, "uid", keys) ?? "";  // none when forged
+```
+
+The first key signs and every listed key verifies. To rotate, put the new
+key first and keep the old one until the cookies it signed have expired;
+nobody is logged out. Keys must be at least 32 bytes. Signatures are
+compared in constant time. Signed is not encrypted: never put a secret in
+a cookie.
+
+## Security headers
+
+On by default, on every response: dynamic, static, errors, and the 500
+after a panic.
+
+```
+content-security-policy: default-src 'none'; frame-ancestors 'none'
+strict-transport-security: max-age=31536000; includeSubDomains
+x-content-type-options: nosniff
+x-frame-options: DENY
+referrer-policy: no-referrer
+```
+
+- **CSP.** An API answers JSON, so its CSP allows nothing: a response
+  opened in a browser runs no script and can't be framed.
+- **HSTS.** Browsers ignore HSTS on plain HTTP, so it's harmless behind a
+  proxy that ends TLS, and right when the proxy doesn't.
+- **COOP and CORP** are opt-in: `same-origin` CORP breaks legitimate
+  cross-origin embeds.
+- **Handlers win.** A handler that sets one of these headers with
+  `with_header` keeps its own value.
+
+| Setting | Values |
+|---|---|
+| `SECURITY_HEADERS` | `false` turns them all off |
+| `CONTENT_SECURITY_POLICY` | a policy, or `off` |
+| `HSTS_MAX_AGE` | seconds; `0` is off |
+| `HSTS_INCLUDE_SUBDOMAINS`, `HSTS_PRELOAD` | `true` / `false` |
+| `FRAME_OPTIONS` | `DENY`, `SAMEORIGIN`, `off` |
+| `REFERRER_POLICY` | any standard policy, or `off` |
+| `CROSS_ORIGIN_OPENER_POLICY`, `CROSS_ORIGIN_RESOURCE_POLICY` | the standard values |
+
+`r.security_headers(zokor.security_from(cfg))` applies the settings, and
+`zokor.no_security_headers()` turns them off. Bad values are refused with
+the fix: an unknown frame option or referrer policy, preload without a
+year and subdomains, or a CSP containing a line break. Static routes are
+pre-rendered with the headers, so they cost nothing per request there. On
+a dynamic response, the five lines add about 10 allocations.
+
+## CORS
+
+Off by default. One call turns it on:
+
+```slang
+r.cors(zokor.cors_from(cfg));   // CORS_ORIGINS=https://app.example.com,https://*.example.org
+```
+
+or `r.cors(zokor.cors_policy(["https://app.example.com"]))` from code.
+
+| Setting | Meaning | Default |
+|---|---|---|
+| `CORS_ORIGINS` | exact origins, `https://*.example.com` for subdomains, or `*` alone | none (off) |
+| `CORS_METHODS` | allowed methods | `GET, HEAD, POST, PUT, PATCH, DELETE` |
+| `CORS_HEADERS` | request headers a page may send | `Content-Type, Authorization, X-Request-Id` |
+| `CORS_EXPOSE` | response headers a page may read | `X-Request-Id` |
+| `CORS_CREDENTIALS` | allow cookies and `Authorization` | `false` |
+| `CORS_MAX_AGE` | seconds a browser may cache a preflight | `600` |
+
+The router applies it, so it isn't one more `before`:
+- **Preflights.** A preflight to a path that exists gets a `204` with the
+  allowed methods and headers before routing. Neither an auth hook nor a
+  route's own `OPTIONS` handler can turn it away, and browsers send
+  preflights without credentials.
+- **Every response.** Any answer to an allowed origin carries its headers:
+  the 404, the 422, a `before`'s 401 and the 500 after a panic. Without
+  that, the page sees a CORS error instead of the real one.
+- **`Vary: Origin`.** It's sent whenever the answer depends on the origin,
+  so a shared cache never hands one origin's answer to another.
+- **Other origins.** An origin that isn't allowed gets no CORS headers, and
+  the browser withholds the response from the page.
+
+A policy is checked before use, and every problem names the fix:
+- an origin with a path or trailing slash, which an `Origin` header never has
+- a missing scheme
+- upper case
+- a wildcard anywhere but a leading `*.`
+- `*` together with credentials, which browsers refuse
+
+`https://*.example.com` matches `api.example.com` and `a.b.example.com`,
+but never `example.com` or `evilexample.com`. CORS protects users'
+browsers, not your server: it is no substitute for authentication.
+
+## Health and readiness
+
+```slang
+r.health();                      // GET /healthz and GET /readyz
+r.ready_check("db", db_ready);   // what /readyz waits on
+
+fn db_ready(s: App) -> result[int, str] {
+    let q = s.db.query("select 1");
+    guard let _rows = q else let e = err_of(q) {
+        return err(to_str(e));
+    }
+    return ok(0);
+}
+```
+
+`/healthz` is liveness: `200 {"status":"ok"}` whenever the process is
+serving, and it never touches a dependency, so a database outage cannot
+make the orchestrator restart every replica. `/readyz` runs every check at
+once and answers `200 {"status":"ok","checks":{"db":"ok"}}`, or `503` with
+`"failing"` or `"timeout"` against each check that did not pass. It also
+answers `503 shutting_down` once `SIGTERM` arrives, so a load balancer stops
+sending traffic before the drain.
+
+- **Bounded.** A probe waits at most 0.9s (`r.ready_timeout(ns)`), inside
+  Kubernetes' default 1s probe timeout.
+- **Isolated.** A check runs in its own task, so a panic fails that check,
+  not the probe. A check still running from an earlier probe is joined,
+  not started again, so a hung database costs one task, not one per probe.
+- **No leaks.** The body names checks, never errors: a driver's message
+  carries hosts and user names. The reason goes to the server's log as a
+  `WARN [Health]` line, once each time a check starts failing, changes
+  reason or recovers.
+- **Out of the way.** The router answers these paths only when no route
+  claims them, so your own `/healthz` wins. No `before` runs on them,
+  since an auth hook would fail the probes. `r.health_at(live, ready)`
+  mounts them elsewhere.
 
 ## Errors
 
@@ -589,7 +889,7 @@ reassembled yet.
 ## Layout
 
 ```
-src/              the package your service imports
+zokor/            the package your service imports
   router.sl       Router[S], Route[S], Ctx[S]
   errors.sl       Registry, Code, ErrorView, the envelope
   config.sl       Config, load_config, require_*
@@ -637,8 +937,11 @@ lines), add the pin to `slang.project`. The whole file:
 name app
 version 0.1.0
 
-pkg zokor git https://github.com/dolphlabs/zokor tag v0.2.0 dir src
+pkg zokor git https://github.com/dolphlabs/zokor tag v0.2.0 dir zokor
 ```
+
+`v0.2.0` is the next release and is not tagged yet. Until it is, pin
+`tag v0.1.0 dir src`: the package lived in `src/` before the rename.
 
 Then fetch it, and import it as `import "zokor";`:
 
@@ -646,7 +949,7 @@ Then fetch it, and import it as `import "zokor";`:
 slangc get
 ```
 
-`dir src` points the pin at the package inside the repository, so the
+`dir zokor` points the pin at the package inside the repository, so the
 repository can hold its examples, docs and tests without shipping them
 into your build.
 
@@ -672,7 +975,7 @@ program that compiles and runs; `make snippets` proves it.
 
 [docs/api.txt](docs/api.txt) is the companion: every public symbol, its
 signature and one line, small enough to keep in context instead of
-reading `src/`. It is generated (`make api`, which runs
+reading `zokor/`. It is generated (`make api`, which runs
 `docs/gen_api.sh`); CI fails if it is stale.
 
 ## Not yet
@@ -681,11 +984,11 @@ The full list, ordered and checkable, is [todo.md](todo.md). In short:
 
 - **The serve loop.** `listen_and_serve` turns the WebSocket state
   machine into a running server; timeouts, body limits, graceful
-  shutdown, and panic recovery are done (see above). Still owed: max
-  concurrent connections.
-- **Middleware**, none of it blocked: CORS, security headers,
+  shutdown, panic recovery and a connection cap are done (see above).
+  Still owed: TLS.
+- **Middleware**, none of it blocked:
   cookies, JWT and basic auth, ETag/304, compression, static
-  files, request logging, health endpoints. (A rate limiter and a
+  files. (A rate limiter and a
   bearer-token store exist; `RateLimit-*` headers and sharding do not.)
 - **Enterprise**: Postgres helpers with transactions, migrations,
   metrics, tracing, background jobs, pagination, OpenAPI, and

@@ -13,56 +13,74 @@ library, made and merged there first.
 
 ## 0. Before anything else
 
-- [ ] **CI on every platform slang ships for.** `.github/workflows/ci.yml`
+- [x] **CI on every platform slang ships for.** `.github/workflows/ci.yml`
   already runs `make check` (tests, both examples, the guide's programs,
   `api-check`) against slang's `dev` on every PR and push to `main`/`dev`,
   but on Linux x86_64 only. Add linux-arm64 and macOS (Apple Silicon), the
   other two platforms slang's own CI covers, so a platform-specific break
-  in zokor or in slang is caught here rather than by a user.
+  in zokor or in slang is caught here rather than by a user. Done in
+  #42: a matrix over linux-x86_64, linux-arm64 and macos-arm64.
 
 ## 1. Operability: you cannot run what you cannot see
 
-- [ ] **Structured request logging, pluggable.** One record per request:
+- [x] **Structured request logging, pluggable.** One record per request:
   time, request id, method, route *pattern* (not the path), status,
-  duration, bytes, client address. Decided (2026-10-12):
-  - **On by default, off from config** (`LOG_REQUESTS=false`, and a
-    `ServerConfig` field).
-  - **Beautiful by default, NestJS-style**: `[zokor] <pid>  - <time>
-    LOG [Router] GET /users/:id 200 +3ms`, coloured on a TTY, plain
-    otherwise; **JSON lines** for production (`LOG_FORMAT=json`). Levels
-    (`debug`/`log`/`warn`/`error`), with `LOG_LEVEL`.
-  - **Not coupled to one implementation**: the router holds a logger value
-    -- a struct of `fn` values (slang has no interfaces or closures), so
-    a separate logging package can be injected in its place. zokor ships
-    the console logger and a no-op one. Startup lines too (routes mapped,
-    listening), as Nest prints.
-  - Redaction of configured headers; never a secret, token or body.
-  Depends on: client address (below), for the address field.
-- [ ] **Client address and trusted proxies.** `X-Forwarded-For` and
+  duration, bytes, client address; plus the server's own lines (routes
+  mapped, listening, shutting down, stopped, panics, readiness changes).
+  On by default; NestJS-style colour on a TTY, JSON lines otherwise;
+  `LOG_FORMAT`, `LOG_LEVEL` (`off` included), `LOG_REQUESTS`, `NO_COLOR`.
+  A `Logger` is a channel plus a level: `channel_logger` hands records to
+  another package, `new_log_format` lends it zokor's formats. The serve
+  loop never waits: a full queue drops and counts. Cost measured at ~3
+  allocations per request, after slang's channel fix (fix/chan-stale-slots:
+  an old channel used to promote every value sent through it). Not done:
+  redaction of configured headers -- no header is logged at all, so there
+  is nothing to redact until one is.
+- [x] **Client address and trusted proxies.** `X-Forwarded-For` and
   `Forwarded` are believed only from proxies listed in
   `TRUSTED_PROXIES` (comma-separated addresses and CIDRs); otherwise the
   socket's peer is the client. `c.client_ip()`. Logging and the rate
   limiter both use it, so a spoofed header can neither hide a client nor
   frame one.
-- [ ] **Health and readiness**: `/healthz` (the process is up) and
+- [x] **Health and readiness**: `/healthz` (the process is up) and
   `/readyz` (dependencies reachable, through checks a service
   registers), with readiness turning false as graceful shutdown starts so
-  a load balancer stops sending traffic before the drain.
-- [ ] **Server-wide connection cap**: a `ServerConfig` limit on open
+  a load balancer stops sending traffic before the drain. `r.health()`,
+  `r.ready_check(name, fn)`. Answered by the router on a miss, so a
+  service's own route wins and no `before` runs; checks run concurrently
+  in their own tasks, bounded, a running one joined rather than
+  restarted. Not unit-tested: the `shutting_down` answer, since
+  `proc.shutdown_requested()` cannot be raised inside `slangc test`
+  without stopping the run.
+- [x] **Server-wide connection cap**: a `ServerConfig` limit on open
   connections across every acceptor (a shared, concurrency-safe count);
   past it, accept and close at once rather than let idle connections
-  exhaust file descriptors.
+  exhaust file descriptors. `max_connections` / `MAX_CONNECTIONS`, default
+  10,000; past it a `503` with `Retry-After: 1`, refusals logged once a
+  second. Also fixed: a failed accept (out of file descriptors) was
+  retried at once, forever -- a full core on Linux at the limit; it now
+  logs once and backs off 5ms -> 1s.
 
 ## 2. Browser-facing APIs
 
-- [ ] **CORS**: allowed origins, methods, headers, credentials, max-age,
-  correct `Vary: Origin`, and a real preflight answer.
-- [ ] **Security headers**: HSTS, `X-Content-Type-Options`, frame options,
+- [x] **CORS**: allowed origins, methods, headers, credentials, max-age,
+  correct `Vary: Origin`, and a real preflight answer. `r.cors(policy)` /
+  `cors_from(cfg)` (`CORS_*`); applied by the router, so preflights skip
+  `before`s and every answer, errors and the panic 500 included, carries
+  the headers. Static routes stay static for requests without an Origin.
+- [x] **Security headers**: HSTS, `X-Content-Type-Options`, frame options,
   referrer policy, a configurable CSP; on by default, off by choice.
-- [ ] **Cookies**: parse, set with every attribute (`Secure`,
+  Applied by the router and baked into static renderings (both the
+  keep-alive and the close variant); COOP/CORP opt-in. +10 allocations per
+  dynamic response (2 per line in http.write's emit, slang-side).
+- [x] **Cookies**: parse, set with every attribute (`Secure`,
   `HttpOnly`, `SameSite`, `Max-Age`, `Domain`, `Path`), and signed
-  cookies with a rotating key.
-- [ ] **Input sanitisation against injection**, opt-in and configurable:
+  cookies with a rotating key. Safe defaults, every attribute checked
+  (`set_cookie` returns err), `Partitioned`, `__Host-`/`__Secure-` rules,
+  HMAC-SHA256 over name and value with `COOKIE_KEYS` rotation and a
+  constant-time compare. Not done: `Expires` (needs an HTTP date from the
+  time package; `Max-Age` covers every browser in use).
+- [x] **Input sanitisation against injection**, opt-in and configurable:
   - **NoSQL (Mongo-style operator injection)**, like `express-mongo-sanitize`:
     object keys starting with `$` or containing `.` in JSON bodies and
     query parameters are rejected (400, the default) or stripped, before a
@@ -72,13 +90,21 @@ library, made and merged there first.
     `O'Brien` and still misses real attacks. The defence is parameterised
     queries only: the Postgres helpers (section 3) expose no string-built
     SQL, and `zokor check` flags SQL assembled by concatenation.
-- [ ] **Auth helpers**: Bearer extraction (exists), opaque bearer
+  Done: `r.mongo_sanitize(mode)` / `MONGO_SANITIZE`, applied by the router
+  ahead of every hook. Form bodies are not checked: zokor reads them as
+  flat strings, never as objects a `$` key could reach. The SQL side
+  lands with the Postgres helpers and `zokor check`.
+- [x] **Auth helpers**: Bearer extraction (exists), opaque bearer
   tokens (`TokenStore`, exists, in memory), Basic, API keys with
   constant-time comparison, and JWT through the `dolphlabs/jwt` package
   (HS256, typed claims) rather than a second implementation here: a
   `before` hook that verifies and puts the claims on the request, with
   `exp` / `nbf` / `aud` checks. Password hashing points at
   `dolphlabs/argon` (Argon2id). RS256 once slang can verify it.
+  Done: `bearer_claims` (jwt v0.1.0, pinned), `jwt_auth_from` (secret
+  rotation, aud/iss, leeway), `basic_credentials`/`basic_matches`,
+  `api_keys_from`/`api_key_client`. Password hashing is still a pointer to
+  dolphlabs/argon, not a helper here.
 - [ ] **Rate limiter, finished**: `RateLimiter`/`rate_limit` exist
   (sliding window, per key, time injected via `take_at`, `429` +
   `Retry-After`). Still owed: sharding, `RateLimit-*` headers, and keying
@@ -153,16 +179,18 @@ library, made and merged there first.
 
 - [ ] `LICENSE` (MIT, Dolph Tech Limited, matching slang), `CONTRIBUTING.md`,
   `SECURITY.md` and a code of conduct.
-- [ ] **Docs site**, generated from the README, the `src/` signatures and the
+- [ ] **Docs site**, generated from the README, the `zokor/` signatures and the
   examples, the way slang's `www/build.py` does. Uses `assets/zokor.png`:
   the header, the social card, and a favicon. The source image is 1024 x 1024
   and 358 KB, so produce sized variants (a 64 px favicon, a ~256 px header,
   a 1200 x 630 card) instead of shipping the original everywhere.
 - [ ] A `slangc new`-style scaffold: `zokor new <name>` producing a service
   with the layout, config, one route and one test.
-- [ ] First tagged release, `v0.1.0`, once a slang release includes what
-  zokor needs (generics, `dir` pins, `exclude`, and this year's fixes).
-  Until then the README's Requirements section is the truth.
+- [ ] Tag `v0.2.0`, the release the README and the guide pin (`v0.1.0`
+  was tagged 2026-09-30, before the `src/` -> `zokor/` rename), once a
+  slang release includes what zokor needs (generics, `dir` pins,
+  `exclude`, and this year's fixes). Until then the README's
+  Requirements section is the truth.
 
 ## Performance
 
@@ -176,3 +204,20 @@ library, made and merged there first.
   `Ctx`/routing (~1-2 us). Needs a fresh measurement on a quiet host
   before more work. Unreproduced: one c=2000 run on Linux collapsed to
   356 rps with a 9 s p99; six runs after it did not.
+- [ ] **Index the routes instead of scanning them.** Matching walks
+  `Router.routes` in order and compares each route, so its cost grows with
+  the number of routes: bench/audit's router case (200 requests to the
+  last of *n* one-parameter routes) is ~60 us a request at 64 routes and
+  ~550 us at 512, on the general path. The frame path is cheaper per
+  route but still linear. Keep the list as the source of truth
+  (registration order, "first registered wins", `routes_list`) and add,
+  built at registration:
+  - a map from method + exact path to route, so static paths cost one
+    hash and one lookup;
+  - a segment tree for `:param` and `*rest` routes, so matching costs the
+    path's depth, not the route count (httprouter's and Fiber's approach).
+
+  `befores`/`afters` stay lists: they are an ordered sequence run in full,
+  with nothing to look up. Done when bench/audit's router case is flat
+  across 64-512 routes and the latency benchmark shows no regression at
+  2-3 routes, with both measurements recorded here.

@@ -17,8 +17,10 @@ reads:
 name app
 version 0.1.0
 
-pkg zokor git https://github.com/dolphlabs/zokor tag v0.2.0 dir src
+pkg zokor git https://github.com/dolphlabs/zokor tag v0.2.0 dir zokor
 ```
+
+(Until `v0.2.0` is tagged: `tag v0.1.0 dir src`.)
 
 Then run `slangc get` in `app/`. Programs import the package with
 `import "zokor";`.
@@ -203,6 +205,212 @@ println("ok");
 
 One value: `c.query("q")`, `c.query_int("page", 1)`, `c.param("id")`,
 `c.param_int("id", 0)`.
+
+## Logging
+
+```slang
+import "zokor";
+
+// The default needs nothing: the server logs every request, pretty on a
+// terminal and JSON lines otherwise. server_config_from(cfg) reads
+// LOG_FORMAT (pretty|json), LOG_LEVEL (debug|log|warn|error|off),
+// LOG_REQUESTS (true|false) and NO_COLOR.
+//
+// Your own sink: a channel_logger in ServerConfig.logger, drained by your
+// own task, with zokor's formats if you want them.
+let ch: chan[zokor.LogEvent] = make_chan(1024);
+let lg = zokor.channel_logger(ch, zokor.LogLevel.LOG, true);
+let sc = zokor.default_server_config();
+sc.logger = lg;
+lg.warn("Billing", "card declined");
+let got = chan_recv(ch);
+guard let ev = got else {
+    exit(1);
+}
+let f = zokor.new_log_format(1);
+let line = f.json(ev);
+assert(ev.context == "Billing" && ev.message == "card declined");
+assert(zokor.level_name(ev.level) == "warn");
+assert(len(line) > 0);
+println("ok");
+```
+
+Request records: route pattern (never the path), status, duration, bytes,
+request id and client address, at `warn` for 4xx and `error` for 5xx.
+Never logged: query strings, bodies, headers. `zokor.no_logger()` turns
+it off. A full queue drops records and counts them; a request never waits
+on the log.
+
+## Authentication
+
+```slang
+import "http";
+import "time";
+import "zokor";
+
+struct Claims {
+    sub: str,
+    exp: int,
+}
+
+gc struct App {
+    jwt: zokor.JwtAuth,
+}
+
+fn me(c: zokor.Ctx[App]) -> http.Response {
+    let r: result[Claims, http.Response] = zokor.bearer_claims(c, c.state.jwt);
+    guard let claims = r else let deny = err_of(r) {
+        return deny;                 // 401, WWW-Authenticate: Bearer error="invalid_token"
+    }
+    return zokor.text(200, claims.sub);
+}
+
+// From config: zokor.jwt_auth_from(cfg) reads JWT_SECRETS (32+ bytes, newest
+// first), JWT_AUDIENCE, JWT_ISSUER, JWT_LEEWAY.
+let ar = zokor.jwt_auth(["0123456789abcdef0123456789abcdef"]);
+guard let auth = ar else { exit(1); }
+let r = zokor.new_router(App { jwt: auth });
+r.get("/me", me);
+let now = (time.wall() as int) / 1000000000;
+let tr = zokor.sign_token(Claims { sub: "u_1", exp: now + 3600 }, auth);
+guard let token = tr else { exit(1); }
+let resp = r.serve(zokor.get_request("/me").bearer(token).build());
+assert(zokor.resp_text(resp) == "u_1");
+assert(zokor.resp_status(r.serve(zokor.get_request("/me").build())) == 401);
+println("ok");
+```
+
+Claims structs need `exp` (Unix seconds). Also: `zokor.basic_credentials(c)` +
+`zokor.basic_matches(creds, user, pass)` + `zokor.basic_denied(c, realm)`;
+`zokor.api_keys_from(cfg)` (`API_KEYS=name:key,...`, 24+ bytes) +
+`zokor.api_key_client(c, keys)` (reads `X-Api-Key`, returns the client name).
+All comparisons are constant-time.
+
+## Operator injection (MongoDB)
+
+`r.mongo_sanitize(zokor.SanitizeMode.REJECT)` (or `zokor.sanitize_from(cfg)`,
+`MONGO_SANITIZE=off|reject|strip`): JSON body keys at any depth and decoded
+query names that start with `$` or contain `.` get `400 bad_request` before
+any `before` or handler (`STRIP` removes them instead). Values are untouched.
+Off by default. For SQL, use parameterised queries; there is no SQL filter.
+
+## Cookies
+
+```slang
+import "http";
+import "strings";
+import "zokor";
+
+gc struct App {
+    keys: zokor.CookieKeys,
+}
+
+fn login(c: zokor.Ctx[App]) -> http.Response {
+    let resp = zokor.text(200, "hi " + c.cookie("theme"));
+    let r = zokor.signed_cookie("uid", "42", c.state.keys);
+    guard let ck = r else let e = err_of(r) {
+        return zokor.respond(c.errors, "internal", c.request_id);
+    }
+    return zokor.set_cookie(resp, ck) ?? resp;
+}
+
+let kr = zokor.cookie_keys(["0123456789abcdef0123456789abcdef"]);   // COOKIE_KEYS
+guard let keys = kr else { exit(1); }
+let r = zokor.new_router(App { keys: keys });
+r.get("/login", login);
+let resp = r.serve(zokor.get_request("/login").header("Cookie", "theme=dark").build());
+assert(zokor.resp_text(resp) == "hi dark");
+// The cookie the browser will send back verifies; a changed one does not.
+let sent = zokor.parse_cookies(zokor.resp_header(resp, "set-cookie"))["uid"];
+assert((zokor.verify_signed("uid", sent, keys) ?? "") == "42");
+assert((zokor.verify_signed("uid", "43" + strings.slice(sent, 2, len(sent)), keys) ?? "none") == "none");
+println("ok");
+```
+
+New cookies are `HttpOnly; Secure; SameSite=Lax; Path=/`; `set_cookie` returns
+`err` for anything a browser would drop or an attacker could abuse (`;` in a
+value, `SameSite=None` without `Secure`, broken `__Host-` rules). Signed
+cookies: `zokor.signed_value(c, name, keys)` is none when forged; COOKIE_KEYS
+lists 32+ byte keys, newest first (rotation keeps old cookies valid). Signed
+is not encrypted.
+
+## Security headers
+
+On by default: CSP `default-src 'none'; frame-ancestors 'none'`, HSTS (one
+year, includeSubDomains), `nosniff`, `X-Frame-Options: DENY`,
+`Referrer-Policy: no-referrer`, on every response including static routes and
+errors. A handler's own `with_header` value wins.
+`r.security_headers(zokor.security_from(cfg))` reads `SECURITY_HEADERS`,
+`CONTENT_SECURITY_POLICY`, `HSTS_MAX_AGE`, `HSTS_INCLUDE_SUBDOMAINS`,
+`HSTS_PRELOAD`, `FRAME_OPTIONS`, `REFERRER_POLICY`,
+`CROSS_ORIGIN_OPENER_POLICY`, `CROSS_ORIGIN_RESOURCE_POLICY`;
+`zokor.no_security_headers()` turns them off.
+
+## CORS
+
+```slang
+import "http";
+import "zokor";
+
+gc struct App {
+    n: int,
+}
+
+fn org(c: zokor.Ctx[App]) -> http.Response {
+    return zokor.text(200, "org " + c.param("id"));
+}
+
+let r = zokor.new_router(App { n: 0 });
+r.get("/orgs/:id", org);
+// From config: r.cors(zokor.cors_from(cfg)) with CORS_ORIGINS=...
+assert(r.cors(zokor.cors_policy(["https://app.example.com"])) > 0);
+let resp = r.serve(zokor.get_request("/orgs/7")
+    .header("Origin", "https://app.example.com").build());
+assert(zokor.resp_header(resp, "access-control-allow-origin") == "https://app.example.com");
+assert(zokor.resp_header(resp, "vary") == "Origin");
+println("ok");
+```
+
+Off by default. `CORS_ORIGINS` (exact, `https://*.example.com`, or `*`),
+`CORS_METHODS`, `CORS_HEADERS`, `CORS_EXPOSE`, `CORS_CREDENTIALS`,
+`CORS_MAX_AGE`. Preflights to existing paths are answered `204` before
+routing (no `before` runs). Every response to an allowed origin, errors
+included, carries the headers. `*` with credentials is refused:
+`zokor.cors_problem(p)` says why `r.cors(p)` returned -1.
+
+## Health and readiness
+
+```slang
+import "zokor";
+
+gc struct App {
+    db_up: bool,
+}
+
+// err(reason) when the dependency is unusable; the reason goes to
+// stderr, never into the response.
+fn db_ready(s: App) -> result[int, str] {
+    if !s.db_up {
+        return err("connection refused");
+    }
+    return ok(0);
+}
+
+let r = zokor.new_router(App { db_up: true });
+r.health();
+r.ready_check("db", db_ready);
+assert(zokor.resp_status(r.serve(zokor.get_request("/healthz").build())) == 200);
+let ready = r.serve(zokor.get_request("/readyz").build());
+assert(zokor.resp_text(ready) == "{\"status\":\"ok\",\"checks\":{\"db\":\"ok\"}}");
+println("ok");
+```
+
+`/healthz` never runs checks; `/readyz` runs them concurrently, each
+bounded by `r.ready_timeout(ns)` (default 0.9s), and answers 503 with
+`failing`/`timeout` per check, or `shutting_down` after SIGTERM. A
+check's panic fails the check, and failures are logged as `WARN [Health]`.
+The router answers these only when no route claims the path, and no
+`before` runs on them.
 
 ## Headers and rate limiting
 
@@ -479,6 +687,7 @@ Call it from the main program, not `spawn`. It binds every interface
 nanoseconds / bytes): `idle_timeout` 60s, `header_timeout` 5s,
 `body_timeout` 30s, `write_timeout` 10s, `max_request_bytes` 16384 (413
 or 431 above it), `max_requests_per_conn` 100000, `shutdown_timeout` 30s,
+`max_connections` 10000 (past it: 503 + `Retry-After: 1`, then close),
 `request_ids` true (each dynamic request gets `X-Request-Id`: a valid
 incoming one, 1-64 of `[A-Za-z0-9._-]`, is reused; it is also in every
 error envelope and `c.request_id`), `trusted_proxies` none (`c.client_ip` is
@@ -487,7 +696,7 @@ optionally `PROXY_HEADER=forwarded`, X-Forwarded-For by default).
 `server_config_from(cfg)` reads `IDLE_TIMEOUT`, `READ_HEADER_TIMEOUT`,
 `READ_BODY_TIMEOUT`, `WRITE_TIMEOUT`, `SHUTDOWN_TIMEOUT` ("30s"),
 `MAX_REQUEST_BYTES`, `MAX_REQUESTS_PER_CONN`, `REQUEST_IDS`, `TRUSTED_PROXIES`,
-`PROXY_HEADER`. `listen_and_serve(r, port)`
+`PROXY_HEADER`, `MAX_CONNECTIONS`, and the `LOG_*` settings. `listen_and_serve(r, port)`
 uses the defaults. A start script: `slangc main.sl -o app && exec ./app`
 (builds take ~10 s); to test by hand, run `./app > app.log 2>&1 &`,
 poll `/health`, then `kill $!`.
@@ -538,6 +747,6 @@ slang itself (each one cost benchmark agents several turns):
 - `time.mono()` is a `duration`: `time.mono() as int` for arithmetic.
 - `60 * 1000000000` silently wraps (a literal times a literal is
   32-bit): write `60000000000`. Durations here are int nanoseconds.
-- The package cache (`~/.cache/slang/pkg/zokor/sha256:<64 hex>/src`) is
+- The package cache (`~/.cache/slang/pkg/zokor/sha256:<64 hex>/zokor`) is
   easy to mistype and expensive to read: use api.txt. (Newer `slangc get`
-  prints a typeable `.../pkg/zokor/v0.2.0/src`.)
+  prints a typeable `.../pkg/zokor/v0.2.0/zokor`.)

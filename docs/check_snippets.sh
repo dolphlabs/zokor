@@ -4,7 +4,7 @@
 # that drifts teaches every reader the wrong thing. The blocks import the
 # package as a service does, `import "zokor";`; this script stages each
 # block two levels below the repo root and points that one import at the
-# checkout (`import "../../src" as zokor;`), so it tests this tree, not a
+# checkout (`import "../../zokor" as zokor;`), so it tests this tree, not a
 # fetched tag, and needs no network.
 #
 # PORT=8080 is set because the config block asserts it; harmless to the
@@ -41,7 +41,7 @@ awk -v stage="$STAGE" '
         next
     }
     /^```$/ { if (inb) { close(out); inb = 0 } next }
-    inb && $0 == "import \"zokor\";" { print "import \"../../src\" as zokor;" > out; next }
+    inb && $0 == "import \"zokor\";" { print "import \"../../zokor\" as zokor;" > out; next }
     inb { print > out }
 ' "$DOC"
 

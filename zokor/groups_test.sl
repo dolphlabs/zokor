@@ -13,7 +13,11 @@ fn g_router() -> Router[GState] {
         state: st,
         errors: new_registry(),
         auto_options: true,
-        auto_head: true
+        auto_head: true,
+        ready: Readiness[GState] { live_path: "", ready_path: "", checks: [], timeout: default_ready_timeout(), logger: no_logger() },
+        cors: cors_off(),
+        security: security_compile(default_security_headers()),
+        sanitize: SanitizeMode.OFF
     };
 }
 

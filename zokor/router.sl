@@ -82,6 +82,13 @@ pub gc struct Ctx[S] {
     errors: Registry,
 }
 
+// A response and the route pattern that produced it, for the request
+// log. A value struct: returned by value, never allocated.
+pub struct Served {
+    resp: http.Response,
+    route: str,
+}
+
 pub gc struct Route[S] {
     method: Method,
     pattern: str,
@@ -125,6 +132,9 @@ pub gc struct Route[S] {
     // per-request some() or none costs an allocation; these are
     // never mutated, so every request can share them.
     static_hit: opt[http.StaticBody],
+    // The same answer for a connection that is closing: its prebuilt
+    // bytes say `Connection: close`, and are sent the same way.
+    static_close_hit: opt[http.StaticBody],
     // A none to start a Ctx's params and locals from, for the same
     // reason. Safe to share: nothing writes into an opt in place --
     // set_local replaces the field with a fresh some().
@@ -148,6 +158,13 @@ pub gc struct Router[S] {
     // them. On by default; both are what a correct HTTP server does.
     auto_options: bool,
     auto_head: bool,
+    ready: Readiness[S],
+    // Off until `r.cors(policy)`; see cors.sl.
+    cors: Cors,
+    // On by default; see security.sl.
+    security: Security,
+    // Off until `r.mongo_sanitize(mode)`; see sanitize.sl.
+    sanitize: SanitizeMode,
 }
 
 // An application builds its router from its state alone; everything else
@@ -166,7 +183,11 @@ pub fn new_router[S](state: S) -> Router[S] {
         state: state,
         errors: new_registry(),
         auto_options: true,
-        auto_head: true
+        auto_head: true,
+        ready: Readiness[S] { live_path: "", ready_path: "", checks: [], timeout: default_ready_timeout(), logger: no_logger() },
+        cors: cors_off(),
+        security: security_compile(default_security_headers()),
+        sanitize: SanitizeMode.OFF
     };
 }
 
@@ -272,6 +293,7 @@ impl Router[S] {
             static_body: sb,
             static_rendered: b"",
             static_hit: none,
+            static_close_hit: none,
             no_map: none
         });
         return len(self.routes);
@@ -324,7 +346,8 @@ impl Router[S] {
         }
         let no_befores: [fn(Ctx[S]) -> opt[http.Response]] = [];
         let no_afters: [fn(Ctx[S], http.Response) -> http.Response] = [];
-        let rendered = http.static_render(status, content_type, body);
+        let rendered = static_render_with(status, content_type, self.security.lines, body, true);
+        let closing_bytes = static_render_with(status, content_type, self.security.lines, body, false);
         push(self.routes, Route[S] {
             method: Method.GET,
             pattern: p,
@@ -346,6 +369,12 @@ impl Router[S] {
                 content_type: content_type,
                 body: body,
                 keep_alive: rendered
+            }),
+            static_close_hit: some(http.StaticBody {
+                status: status,
+                content_type: content_type,
+                body: body,
+                keep_alive: closing_bytes
             }),
             no_map: none
         });
@@ -420,6 +449,105 @@ impl Router[S] {
     pub fn after(self: Router[S], f: fn(Ctx[S], http.Response) -> http.Response) -> int {
         push(self.afters, f);
         return len(self.afters);
+    }
+
+    // Replaces the security headers (see security.sl);
+    // no_security_headers() turns them off. -1, changing nothing, when `h`
+    // has a problem; security_problem(h) says what. Static routes already
+    // registered are re-rendered with the new set.
+    pub fn security_headers(self: Router[S], h: SecurityHeaders) -> int {
+        if len(security_problem(h)) > 0 {
+            return -1;
+        }
+        self.security = security_compile(h);
+        for rt in self.routes {
+            if rt.has_static {
+                let ka = static_render_with(rt.static_status, rt.static_ctype,
+                                            self.security.lines, rt.static_body, true);
+                let cl = static_render_with(rt.static_status, rt.static_ctype,
+                                            self.security.lines, rt.static_body, false);
+                rt.static_rendered = ka;
+                rt.static_hit = some(http.StaticBody { status: rt.static_status,
+                    content_type: rt.static_ctype, body: rt.static_body, keep_alive: ka });
+                rt.static_close_hit = some(http.StaticBody { status: rt.static_status,
+                    content_type: rt.static_ctype, body: rt.static_body, keep_alive: cl });
+            }
+        }
+        return len(self.security.lines);
+    }
+
+    // Turns the operator-injection guard on (REJECT, STRIP) or off; see
+    // sanitize.sl.
+    pub fn mongo_sanitize(self: Router[S], mode: SanitizeMode) -> int {
+        self.sanitize = mode;
+        return 0;
+    }
+
+    // Turns CORS on with `p` (see cors.sl). -1, leaving CORS off, when the
+    // policy has a problem; cors_problem(p) says what.
+    pub fn cors(self: Router[S], p: CorsPolicy) -> int {
+        if len(cors_problem(p)) > 0 {
+            return -1;
+        }
+        self.cors = cors_compile(p);
+        return len(p.origins);
+    }
+
+    // Answers GET /healthz (liveness) and GET /readyz (the checks
+    // below). See health.sl for what each one says. The router answers
+    // them itself, only for a path no route claims, so a service's own
+    // route at the same path wins, and they run no `before`: an auth
+    // hook that refused the orchestrator would restart healthy pods.
+    pub fn health(self: Router[S]) -> int {
+        return self.health_at("/healthz", "/readyz");
+    }
+
+    // The same at paths of the service's choosing. -1 when either is
+    // not an absolute path or both are the same.
+    pub fn health_at(self: Router[S], live_path: str, ready_path: str) -> int {
+        if !strings.has_prefix(live_path, "/") || !strings.has_prefix(ready_path, "/") ||
+           live_path == ready_path {
+            return -1;
+        }
+        self.ready.live_path = live_path;
+        self.ready.ready_path = ready_path;
+        return 2;
+    }
+
+    // Registers a dependency /readyz waits on. `f` returns err with
+    // the reason when the dependency is unusable. -1 when the name is
+    // not 1-64 of [A-Za-z0-9_.-] or is already registered.
+    pub fn ready_check(self: Router[S], name: str,
+                       f: fn(S) -> result[int, str]) -> int {
+        if !check_name_ok(name) {
+            return -1;
+        }
+        for ch in self.ready.checks {
+            if ch.name == name {
+                return -1;
+            }
+        }
+        push(self.ready.checks, ReadyCheck[S] {
+            name: name,
+            check: f,
+            lock: make_mutex(),
+            started: 0,
+            finished: 0,
+            passed: false,
+            reported: ""
+        });
+        return len(self.ready.checks);
+    }
+
+    // How long /readyz waits for its checks, in nanoseconds; below 1ms
+    // is raised to 1ms. Default 0.9s (default_ready_timeout).
+    pub fn ready_timeout(self: Router[S], ns: int) -> int {
+        let t = ns;
+        if t < 1000000 {
+            t = 1000000;
+        }
+        self.ready.timeout = t;
+        return t;
     }
 
     // "METHOD /pattern" per route, in registration order: for a boot
@@ -595,6 +723,11 @@ impl Router[S] {
     // ("GET", <static-path>) falls to the dynamic path, which
     // parses properly (501s, 405s, 404s all live there).
     fn static_index(self: Router[S], f: http.WireFrame) -> int {
+        // A static answer is fixed bytes, and a cross-origin request needs
+        // headers that depend on its Origin: it takes the dynamic path.
+        if self.cors.on && strings.find_field(f.headers, "origin") >= 0 {
+            return -1;
+        }
         if f.method == "GET" {
             let i = 0;
             while i < len(self.routes) {
@@ -623,10 +756,17 @@ impl Router[S] {
         return self.serve_frame_for(f, request_id, "");
     }
 
-    // serve_frame, with the client's address for Ctx.client_ip: what the
-    // serve loop calls.
+    // serve_frame, with the client's address for Ctx.client_ip.
     pub fn serve_frame_for(self: Router[S], f: http.WireFrame,
                            request_id: str, client_ip: str) -> http.Response {
+        return self.serve_frame_routed(f, request_id, client_ip).resp;
+    }
+
+    // What the serve loop calls: the response, and the route pattern that
+    // answered it for the request log ("" when none did). A value struct,
+    // so returning the pattern costs no allocation.
+    pub fn serve_frame_routed(self: Router[S], f: http.WireFrame,
+                              request_id: str, client_ip: str) -> Served {
         // Method without from_str: the frame path already holds the
         // method str, and only the enum comparison matters below.
         // Compare inline (GET/POST/HEAD cover the bench + almost all
@@ -643,9 +783,13 @@ impl Router[S] {
         } else if !mget {
             let parsed = Method.from_str(f.method);
             guard let m = parsed else {
-                return self.serve_id_for(http.wire_request(f), request_id, client_ip);
+                return self.serve_id_routed(http.wire_request(f), request_id, client_ip);
             }
             method = m;
+            if self.cors.on && method == Method.OPTIONS {
+                // A preflight is answered before routing, in serve_id.
+                return self.serve_id_routed(http.wire_request(f), request_id, client_ip);
+            }
         }
         let head_of_get = self.auto_head && method == Method.HEAD;
         let req = http.wire_request(f);
@@ -692,7 +836,7 @@ impl Router[S] {
                 if head_of_get && r.method == Method.GET {
                     resp.body = to_bytes("");
                 }
-                return resp;
+                return Served { resp: resp, route: r.pattern };
             }
             if r.fkind == 2 {
                 // Single trailing :id: prefix compare on the str,
@@ -744,13 +888,13 @@ impl Router[S] {
                 if head_of_get && r.method == Method.GET {
                     resp.body = to_bytes("");
                 }
-                return resp;
+                return Served { resp: resp, route: r.pattern };
             }
             i = i + 1;
         }
         // General routes (wildcards, multi-param) or no frame hit:
         // the Request is already built -- use the classic path.
-        return self.serve_id_for(req, request_id, client_ip);
+        return self.serve_id_routed(req, request_id, client_ip);
     }
 
     pub fn serve_id(self: Router[S], req: http.Request,
@@ -760,6 +904,11 @@ impl Router[S] {
 
     pub fn serve_id_for(self: Router[S], req: http.Request,
                         request_id: str, client_ip: str) -> http.Response {
+        return self.serve_id_routed(req, request_id, client_ip).resp;
+    }
+
+    pub fn serve_id_routed(self: Router[S], req: http.Request,
+                           request_id: str, client_ip: str) -> Served {
         let p = path.strip_query(req.path);
         let segs = path.split(p);
         // An unknown verb cannot match any route, and is not a 404: the
@@ -778,8 +927,20 @@ impl Router[S] {
                 locals: none,
                 errors: self.errors
             };
-            return self.finish(uc, respond(self.errors, "not_implemented",
-                                           request_id));
+            return Served { resp: self.finish(uc, respond(self.errors, "not_implemented",
+                                                          request_id)),
+                            route: "" };
+        }
+        if self.cors.on && method == Method.OPTIONS &&
+           is_preflight(req.method, req.raw_headers) && self.path_exists(segs, p) {
+            // Before routing, so a route's own OPTIONS handler or a `before`
+            // demanding a token cannot turn a preflight away: browsers send
+            // preflights without credentials.
+            let pf = self.cors.preflight(http.header(req, "origin") ?? "");
+            if len(request_id) > 0 {
+                pf = http.with_header(pf, "x-request-id", request_id);
+            }
+            return Served { resp: self.security.apply(pf), route: "" };
         }
         // A HEAD with no HEAD route is served by the GET one, and the
         // body dropped after the handler and the hooks have run -- so
@@ -835,7 +996,7 @@ impl Router[S] {
             if head_of_get && r.method == Method.GET {
                 resp.body = to_bytes("");
             }
-            return resp;
+            return Served { resp: resp, route: r.pattern };
         }
 
         let c = Ctx[S] {
@@ -851,7 +1012,26 @@ impl Router[S] {
             errors: self.errors
         };
         if !path_seen {
-            return self.finish(c, respond(self.errors, "not_found", request_id));
+            if len(self.ready.live_path) > 0 &&
+               (p == self.ready.live_path || p == self.ready.ready_path) {
+                c.route = p;
+                if method != Method.GET && method != Method.HEAD {
+                    let na = respond(self.errors, "method_not_allowed", request_id);
+                    return Served { resp: self.finish(c, http.with_header(na, "allow", "GET, HEAD")),
+                                    route: c.route };
+                }
+                let hr = live_response();
+                if p == self.ready.ready_path {
+                    hr = ready_response(self.ready, self.state);
+                }
+                let fr = self.finish(c, hr);
+                if method == Method.HEAD {
+                    fr.body = to_bytes("");
+                }
+                return Served { resp: fr, route: c.route };
+            }
+            return Served { resp: self.finish(c, respond(self.errors, "not_found", request_id)),
+                            route: "" };
         }
         let allow = self.allowed(p);
         if self.auto_options && method == Method.OPTIONS {
@@ -864,11 +1044,22 @@ impl Router[S] {
                 extra: none_extra,
                 body: to_bytes("")
             };
-            return self.finish(c, ok_resp);
+            return Served { resp: self.finish(c, ok_resp), route: "" };
         }
         let resp = respond(self.errors, "method_not_allowed", request_id);
         resp = http.with_header(resp, "allow", join_methods(allow));
-        return self.finish(c, resp);
+        return Served { resp: self.finish(c, resp), route: "" };
+    }
+
+    // Whether any route, or a mounted health path, answers `p`.
+    fn path_exists(self: Router[S], segs: [str], p: str) -> bool {
+        for r in self.routes {
+            if self.match_only(r, segs) {
+                return true;
+            }
+        }
+        return len(self.ready.live_path) > 0 &&
+               (p == self.ready.live_path || p == self.ready.ready_path);
     }
 
     // Router-wide `before`s, then the route's own, then the handler.
@@ -876,6 +1067,15 @@ impl Router[S] {
     // `after`s still run, so a logging or header hook cannot be skipped
     // by a short circuit.
     fn run(self: Router[S], c: Ctx[S], r: Route[S]) -> http.Response {
+        // Ahead of every hook, so nothing downstream sees an unchecked body.
+        if self.sanitize != SanitizeMode.OFF {
+            let why = sanitize_request(c.req, self.sanitize);
+            if len(why) > 0 {
+                return self.finish_route(c, r, respond_with(self.errors, "bad_request",
+                    why + " is not allowed: a key may not start with $ or contain a dot",
+                    c.request_id));
+            }
+        }
         let i = 0;
         while i < len(self.befores) {
             let b = self.befores[i];
@@ -926,7 +1126,12 @@ impl Router[S] {
             out = a(c, out);
             i = i + 1;
         }
-        return out;
+        // Last, so every answer carries it -- a 404, a 422, a `before`'s
+        // 401 -- unless an `after` already wrote its own.
+        if self.cors.on && !http.has_resp_header(out, "access-control-allow-origin") {
+            out = self.cors.apply(out, c.header("origin"));
+        }
+        return self.security.apply(out);
     }
 
     // The registry's codes, rendered with this request's id. A handler
@@ -1146,6 +1351,24 @@ impl Ctx[S] {
 
     pub fn header(self: Ctx[S], name: str) -> str {
         return http.header(self.req, name) ?? "";
+    }
+
+    // The value of cookie `name`, "" when the request carried none.
+    pub fn cookie(self: Ctx[S], name: str) -> str {
+        let h = http.header(self.req, "cookie") ?? "";
+        if len(h) == 0 {
+            return "";
+        }
+        let all = parse_cookies(h);
+        if has(all, name) {
+            return all[name];
+        }
+        return "";
+    }
+
+    // Every cookie the request carried.
+    pub fn cookies(self: Ctx[S]) -> map[str]str {
+        return parse_cookies(http.header(self.req, "cookie") ?? "");
     }
 
     // What a `before` resolved, read by the handler: the user a token
