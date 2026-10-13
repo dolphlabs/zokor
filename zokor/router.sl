@@ -172,6 +172,12 @@ pub gc struct Router[S] {
     sanitize: SanitizeMode,
     // Off until `r.etags()`; see conditional.sl.
     auto_etag: bool,
+    // The route index (route_index.sl): empty below index_from() routes,
+    // else one trie root kept in step with `routes` at registration.
+    rindex: [RNode],
+    // With an index: the first static GET route for each exact path, so
+    // static_index needs no scan.
+    static_paths: map[str]int,
     // Off until `r.idempotency(store)`; see idempotency.sl.
     idem: opt[Idempotency],
     // Off until `r.compress(compression())`; see compression.sl.
@@ -202,6 +208,8 @@ pub fn new_router[S](state: S) -> Router[S] {
         security: security_compile(default_security_headers()),
         sanitize: SanitizeMode.OFF,
         auto_etag: false,
+        rindex: [],
+        static_paths: {},
         idem: none,
         gzip: none,
         no_lines: none
@@ -313,7 +321,34 @@ impl Router[S] {
             static_close_hit: none,
             no_map: none
         });
+        self.index_route(len(self.routes) - 1);
         return len(self.routes);
+    }
+
+    // Keeps the route index in step with `routes`: built whole when the
+    // router passes index_from() routes, then one insert per route.
+    fn index_route(self: Router[S], i: int) {
+        if len(self.rindex) == 0 {
+            if len(self.routes) <= index_from() {
+                return;
+            }
+            push(self.rindex, rnode());
+            let k = 0;
+            while k < len(self.routes) {
+                self.index_one(k);
+                k = k + 1;
+            }
+            return;
+        }
+        self.index_one(i);
+    }
+
+    fn index_one(self: Router[S], k: int) {
+        let r = self.routes[k];
+        rindex_insert(self.rindex[0], k, r.segs, r.names, r.wild);
+        if r.has_static && r.method == Method.GET && r.fkind == 1 && !has(self.static_paths, r.fpath) {
+            self.static_paths[r.fpath] = k;
+        }
     }
 
     // The full set of HTTP methods, so no service has to fall back to
@@ -395,6 +430,7 @@ impl Router[S] {
             }),
             no_map: none
         });
+        self.index_route(len(self.routes) - 1);
         return len(self.routes);
     }
     pub fn get(self: Router[S], p: str, h: fn(Ctx[S]) -> http.Response) -> int {
@@ -772,6 +808,12 @@ impl Router[S] {
             return -1;
         }
         if f.method == "GET" {
+            if len(self.rindex) > 0 {
+                if has(self.static_paths, f.path) {
+                    return self.static_paths[f.path];
+                }
+                return -1;
+            }
             let i = 0;
             while i < len(self.routes) {
                 let r = self.routes[i];
@@ -836,6 +878,10 @@ impl Router[S] {
         }
         let head_of_get = self.auto_head && method == Method.HEAD;
         let req = http.wire_request(f);
+        if len(self.rindex) > 0 {
+            // a big router: one trie walk instead of the per-route scan
+            return self.serve_id_routed(req, request_id, client_ip);
+        }
         // Query strings never route: strip once, compare the rest.
         // strip_query returns the SAME str when there is no "?" --
         // one scan, no allocation on the common path.
@@ -997,6 +1043,18 @@ impl Router[S] {
         }
         let path_seen = false;
         let i = 0;
+        if len(self.rindex) > 0 {
+            // The trie names the route the scan below would stop at, so the
+            // scan starts there; none matching ends it at once, and only
+            // then is "does any method match" asked (405 against 404).
+            let best = rindex_best(self.routes, self.rindex[0], segs, 0, method, head_of_get);
+            if best >= 0 {
+                i = best;
+            } else {
+                i = len(self.routes);
+                path_seen = rindex_any(self.rindex[0], segs, 0);
+            }
+        }
         while i < len(self.routes) {
             let r = self.routes[i];
             // Shape first, bindings after: a near miss costs no map, and
