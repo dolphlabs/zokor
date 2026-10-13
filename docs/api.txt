@@ -183,6 +183,14 @@ quote_into(sb: builder.Str, s: str) -> builder.Str
     The same, appended to a builder.
 status_text(status: i32) -> str
 
+## files.sl -- Static files: a directory served under a path prefix, safely.
+gc struct FileMount { prefix: str, root: str, index: str, max_age: int, immutable: bool, max_size: int }
+files_at(prefix: str, dir: str) -> result[FileMount, str]
+    A mount of `dir` under `prefix`.
+content_type_for(name: str) -> str
+parse_range(header: str, size: int) -> [int]
+    One byte range of a file of `size`: [first, last] inclusive; [-1, -1] when the header is not one usable range (several,...
+
 ## health.sl -- Health and readiness.
 gc struct ReadyCheck[S] { name: str, check: fn(S) -> result[int, str], lock: mutex, started: int, finished: int, passed: bool, reported: str }
 gc struct Readiness[S] { live_path: str, ready_path: str, checks: [ReadyCheck[S]], timeout: int, logger: Logger }
@@ -476,7 +484,7 @@ gc struct Ctx[S] { state: S, req: http.Request, params: opt[map[str]str], param1
 struct Served { resp: http.Response, route: str }
     A response and the route pattern that produced it, for the request log.
 gc struct Route[S] { method: Method, pattern: str, befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], segs: [str], names: [str], wild: int, fkind: int, fpath: str, handler: fn(Ctx[S]) -> http.Response, has_static: bool, static_status: i32, static_ctype: str, static_body: bytes, static_rendered: bytes, static_hit: opt[http.StaticBody], static_close_hit: opt[http.StaticBody], no_map: opt[map[str]str] }
-gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security, sanitize: SanitizeMode, auto_etag: bool, idem: opt[Idempotency], gzip: opt[Compression], no_lines: opt[[str]] }
+gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security, sanitize: SanitizeMode, auto_etag: bool, idem: opt[Idempotency], gzip: opt[Compression], mounts: [FileMount], no_lines: opt[[str]] }
     A `before` runs ahead of the handler and may end the request by returning a response; `none` carries on.
 new_router[S](state: S) -> Router[S]
     An application builds its router from its state alone; everything else starts empty or at the default a correct server should...
@@ -511,6 +519,8 @@ Router.idempotency(store: Idempotency) -> int
     Answers a retried POST or PATCH that carries an Idempotency-Key with the first answer, from `store` (see idempotency.sl).
 Router.compress(z: Compression) -> int
     Gzips answers worth it for clients that accept it (see compression.sl).
+Router.files(m: FileMount) -> int
+    Serves the directory of `m` under its prefix (see files.sl): a GET or HEAD no route claims.
 Router.security_headers(h: SecurityHeaders) -> int
     Replaces the security headers (see security.sl); no_security_headers() turns them off.
 Router.mongo_sanitize(mode: SanitizeMode) -> int

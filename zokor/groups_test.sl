@@ -21,6 +21,7 @@ fn g_router() -> Router[GState] {
         auto_etag: false,
         idem: none,
         gzip: none,
+        mounts: [],
         no_lines: none
     };
 }
