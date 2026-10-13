@@ -102,6 +102,7 @@ declare, and every handler receives it.
 | `Json`, `parse`, `jobj` | JSON you did not declare: walk it, build it, render it |
 | `upgrade`, `receive`, `sio_*` | WebSocket (RFC 6455) and Socket.IO, as a state machine you feed bytes |
 | `ok_json`, `created`, … | success responses with the headers they should carry |
+| `new_jobs`, `every`, `handle`, `enqueue` | background jobs: cron schedules in a time zone, a retrying in-memory queue |
 | `preconditions`, `etag_of`, `r.etags()` | conditional requests: `304 Not Modified`, `412` on a lost update, ETag and Last-Modified |
 | `redis_from_config` | a Redis pool from `REDIS_URL`, optional by default |
 | `ServerConfig`, `listen_and_serve_with` | idle/header/body/write timeouts, safe defaults, all overridable |
@@ -652,6 +653,45 @@ sending traffic before the drain.
   since an auth hook would fail the probes. `r.health_at(live, ready)`
   mounts them elsewhere.
 
+## Background jobs
+
+Work on a schedule, and work queued to run later, on slang's tasks:
+
+```slang
+let jobs = zokor.new_jobs(state);
+jobs.logger = sc.logger;
+jobs.zone = timez.load_zone("Europe/Berlin") ?? timez.utc_zone();
+jobs.every("digest", "0 9 * * MON-FRI", send_digest, 60 * timez.SECOND);
+jobs.handle("welcome_email", send_welcome, 5);        // up to 5 attempts
+jobs.start();
+// ... in a handler:
+jobs.enqueue("welcome_email", to_str(user.id), timez.now());
+```
+
+A job is `fn(JobCtx[S]) -> result[int, str]`; the context carries the
+state, the job's name, a queued job's payload and attempt, when the run
+was due, and a `deadline` to pass to every call that can block.
+
+- **Schedules in a time zone.** Five-field cron (names, ranges, steps,
+  `@daily` and friends) read on the zone's clocks, so 09:00 in Berlin
+  stays 09:00 across daylight-saving changes (slang's `timez`).
+- **One run at a time per job.** A scheduled job due while its last run
+  is still going skips that turn, with a warning. Missed turns are not
+  replayed after downtime, as in cron.
+- **Isolated runs.** Each run is its own task: a panic fails that run,
+  logged with the job's name, and the scheduler carries on.
+- **Retries.** A queued job that returns `err` or panics is retried after
+  1 s, 2 s, 4 s ... (capped at an hour) until its attempts run out, then
+  logged and dropped.
+- **Shutdown.** On SIGTERM the scheduler stops starting runs within a
+  quarter second; runs in progress get the server's shutdown drain.
+- **In memory.** Queued jobs are lost when the process stops. Work that
+  must survive a restart belongs in a table or a Redis list that a
+  scheduled job drains.
+
+Tests set `jobs.clock = timez.fixed_clock(...)` and call
+`jobs.tick(instant)` and `jobs.wait_runs(timeout)`: no sleeping.
+
 ## Errors
 
 Every failure names a code; every code is registered once with its status
@@ -1106,8 +1146,7 @@ The full list, ordered and checkable, is [todo.md](todo.md). In short:
 - **Middleware**, none of it blocked:
   compression, static files. (A rate limiter and a
   bearer-token store exist; `RateLimit-*` headers and sharding do not.)
-- **Enterprise**: Postgres helpers with transactions, migrations,
-  metrics, tracing, background jobs, pagination, OpenAPI, and
+- **Enterprise**: migrations, metrics, tracing, pagination, OpenAPI, and
   `zokor check`, the layout checker.
 - **Socket.IO over HTTP long-polling**, so a client needs
   `transports: ["websocket"]`; and binary attachment frames.

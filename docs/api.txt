@@ -193,6 +193,32 @@ new_session_id() -> str
 request_id_for(headers: bytes) -> str
     The id a request is answered and logged under: the client's own X-Request-Id when it is 1-64 characters of [A-Za-z0-9._-], so...
 
+## jobs.sl -- Background jobs: work on a schedule, and work queued to run later.
+gc struct JobCtx[S] { state: S, name: str, payload: str, attempt: int, due: timez.Time, deadline: until }
+    What a run gets: the service's state, which run this is, and the deadline to pass to everything that can block.
+gc struct Jobs[S] { state: S, zone: timez.Zone, clock: timez.Clock, logger: Logger, default_timeout: int, scheduled: [ScheduledJob[S]], kinds: [JobKind[S]], queue: [QueuedJob], lock: mutex, in_flight: int, stopping: bool, failures: int }
+new_jobs[S](state: S) -> Jobs[S]
+job_backoff(attempt: int) -> int
+    The wait before try `attempt + 1`: 1 s, 2 s, 4 s ...
+Jobs.every(name: str, spec: str, run: fn(JobCtx[S]) -> result[int, str], timeout: int) -> result[int, str]
+    Runs `run` on the cron schedule `spec` (see timez.parse_cron), each run given `timeout` nanoseconds as its deadline.
+Jobs.handle(kind: str, run: fn(JobCtx[S]) -> result[int, str], attempts: int) -> result[int, str]
+    Registers what runs a queued job of `kind`, and how many tries it gets (at least 1).
+Jobs.enqueue(kind: str, payload: str, at: timez.Time) -> result[int, str]
+    Queues one run of `kind` with `payload`, due at `at` (now or in the past runs at the next tick).
+Jobs.queued() -> int
+    Queued runs not yet started.
+Jobs.running() -> int
+    Runs started and not yet finished.
+Jobs.tick(now: timez.Time) -> int
+    Starts every run due at `now` -- scheduled turns and queued jobs -- each in its own task, and returns how many it started.
+Jobs.start() -> int
+    Starts the scheduler: a task that ticks at each due time, and at least every quarter second so a stop or SIGTERM is seen quickly.
+Jobs.stop() -> int
+    Stops starting runs.
+Jobs.wait_runs(timeout: int) -> bool
+    Waits until no run is in progress, or `timeout` nanoseconds pass; true when none is.
+
 ## json.sl -- JSON, for the shapes you know and the ones you do not.
 enum JsonKind { Null, Bool, Number, String, Array, Object }
 gc struct Json { kind: JsonKind, bool_val: bool, raw: str, text: str, items: [Json], keys: [str], values: [Json] }
