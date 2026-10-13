@@ -105,10 +105,14 @@ library, made and merged there first.
   rotation, aud/iss, leeway), `basic_credentials`/`basic_matches`,
   `api_keys_from`/`api_key_client`. Password hashing is still a pointer to
   dolphlabs/argon, not a helper here.
-- [ ] **Rate limiter, finished**: `RateLimiter`/`rate_limit` exist
+- [x] **Rate limiter, finished**: `RateLimiter`/`rate_limit` exist
   (sliding window, per key, time injected via `take_at`, `429` +
   `Retry-After`). Still owed: sharding, `RateLimit-*` headers, and keying
-  on the trusted client address.
+  on the trusted client address. Done: 16 shards (8 tasks on distinct
+  keys: 17.3 -> 2.0 us a check), `RateLimit-Limit/-Remaining/-Reset` on
+  every answer via the new `c.add_header`, `rate_limit_client`. Left for
+  later: a shared store (Redis) for limits across instances; each
+  process counts on its own.
 
 ## 3. Building real services
 
