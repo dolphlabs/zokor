@@ -323,6 +323,27 @@ LogFormat.json(ev: LogEvent) -> str
     The same as single strings, without the newline: for a consumer that wants one line at a time.
 LogFormat.pretty(ev: LogEvent, color: bool, since_ns: int) -> str
 
+## postgres.sl -- Postgres, wired to zokor's config, results and error envelope.
+pg_from_config(cfg: Config) -> result[pg.Pool, str]
+    DATABASE_URL (postgres://user:pass@host:port/db?sslmode=require) and DB_POOL_SIZE (default 10).
+has_postgres(cfg: Config) -> bool
+pg_close(p: pg.Pool)
+row_json(rows: pg.Rows, r: int) -> str
+    Row `r` as a JSON object keyed by column name.
+rows_as[T](rows: pg.Rows) -> result[[T], str]
+    Every row as a T, matched by column name.
+query_all[T](p: pg.Pool, sql: str, args: [pg.Arg], deadline: until) -> result[[T], str]
+    Runs `sql` with `args` on a pooled connection and returns every row as a T.
+query_one[T](p: pg.Pool, sql: str, args: [pg.Arg], deadline: until) -> result[opt[T], str]
+    The first row as a T, none when the query returned no row.
+conn_query_all[T](c: pg.Conn, sql: str, args: [pg.Arg], deadline: until) -> result[[T], str]
+    The same on a connection you hold -- inside a transaction body.
+transaction[A, R](p: pg.Pool, arg: A, body: fn(pg.Conn, A) -> result[R, str], deadline: until) -> result[R, str]
+    Runs `body(conn, arg)` inside BEGIN ...
+is_unique_violation(e: str) -> bool
+db_failure(reg: Registry, e: str, request_id: str) -> http.Response
+    A database error as the answer to send, in the service's envelope.
+
 ## ratelimit.sl -- Rate limiting.
 gc struct RateShard { hits: map[str][int], lock: mutex, since_sweep: int }
 gc struct RateLimiter { limit: int, window: int, shards: [RateShard], sweep_every: int }
