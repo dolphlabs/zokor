@@ -727,6 +727,65 @@ a `mutex` field (`make_mutex()`); never `return` between `mutex_lock` and
 `spawn` is the same object the router holds. A real worker loops
 forever; this one stops when the channel closes.
 
+## Pagination
+
+```slang
+import "http";
+import "strings";
+import "zokor";
+
+struct Row {
+    id: int,
+}
+
+gc struct App {
+    rows: [Row],
+}
+
+fn page_from(all: [Row], after: int, n: int) -> [Row] {
+    let out: [Row] = [];
+    for r in all {
+        if r.id > after && len(out) < n {
+            push(out, r);
+        }
+    }
+    return out;
+}
+
+fn row_key(r: Row) -> [str] {
+    return [to_str(r.id)];
+}
+
+fn list(c: zokor.Ctx[App]) -> http.Response {
+    let pr = zokor.page_of(c, 2, 50);                   // ?limit (default 2, max 50), ?cursor
+    guard let p = pr else let bad = err_of(pr) { return bad; }
+    let parts = zokor.cursor_parts(p);                   // [] on the first page
+    let after = 0;
+    if len(parts) == 1 {
+        after = to_int(parts[0]) ?? 0;
+    }
+    let rows = page_from(c.state.rows, after, p.fetch()); // limit + 1: tells if there is a next
+    return zokor.cursor_page(c, p, rows, row_key);
+}
+
+let app = App { rows: [Row { id: 1 }, Row { id: 2 }, Row { id: 3 }] };
+let r = zokor.new_router(app);
+r.get("/rows", list);
+let first = r.serve(zokor.get_request("/rows").build());
+assert(strings.contains(zokor.resp_text(first), "\"data\":[{\"id\":1},{\"id\":2}]"));
+let link_text = zokor.resp_header(first, "link");        // </rows?limit=2&cursor=...>; rel="next"
+let next = strings.slice(link_text, 1, strings.find(link_text, ">"));
+let second = r.serve(zokor.get_request(next).build());
+assert(strings.contains(zokor.resp_text(second), "\"data\":[{\"id\":3}]"));
+assert(zokor.resp_status(r.serve(zokor.get_request("/rows?limit=0").build())) == 422);
+println("ok");
+```
+
+`page_of(c, default, max)` checks `limit` and `offset` or `cursor` (422 per
+bad field). `offset_page(c, p, rows, total)` and `cursor_page(c, p, rows,
+key_fn)` answer `{"data":[...],"page":{...}}` with a Link header. Fetch
+`p.fetch()` rows (limit + 1). Prefer cursors on large tables.
+
 ## Scheduled and queued jobs
 
 ```slang
