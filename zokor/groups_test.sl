@@ -19,6 +19,7 @@ fn g_router() -> Router[GState] {
         security: security_compile(default_security_headers()),
         sanitize: SanitizeMode.OFF,
         auto_etag: false,
+        idem: none,
         no_lines: none
     };
 }

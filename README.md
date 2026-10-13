@@ -102,6 +102,7 @@ declare, and every handler receives it.
 | `Json`, `parse`, `jobj` | JSON you did not declare: walk it, build it, render it |
 | `upgrade`, `receive`, `sio_*` | WebSocket (RFC 6455) and Socket.IO, as a state machine you feed bytes |
 | `ok_json`, `created`, … | success responses with the headers they should carry |
+| `r.idempotency(store)` | idempotency keys: a retried POST gets the first answer, in memory or Redis |
 | `page_of`, `offset_page`, `cursor_page` | pagination: offset or keyset pages, one envelope, `Link` headers |
 | `new_jobs`, `every`, `handle`, `enqueue` | background jobs: cron schedules in a time zone, a retrying in-memory queue |
 | `preconditions`, `etag_of`, `r.etags()` | conditional requests: `304 Not Modified`, `412` on a lost update, ETag and Last-Modified |
@@ -656,6 +657,35 @@ sending traffic before the drain.
   claims them, so your own `/healthz` wins. No `before` runs on them,
   since an auth hook would fail the probes. `r.health_at(live, ready)`
   mounts them elsewhere.
+
+## Idempotency keys
+
+A client that retries a POST after a timeout must not charge twice. With
+`Idempotency-Key` (the IETF draft), it gets the first answer instead:
+
+```slang
+let store = zokor.idempotency_redis(redis_pool);   // or idempotency_in_memory()
+store.scope_local = "user_id";                       // set by your auth `before`
+r.idempotency(store);
+```
+
+- **Runs once.** A POST or PATCH with the header runs; its answer is kept
+  for 24 hours (`store.ttl`). The same request again gets that answer,
+  with `Idempotent-Replayed: true`, and the handler does not run.
+- **Refuses misuse.** The key again while the first is still running:
+  `409`. The key with a different method, path or body: `422`. A key that
+  is not 1–255 printable characters: `400`. `store.required = true` makes
+  the header mandatory on POST and PATCH.
+- **Scoped.** Keys are per method, route and caller (`scope_local` names
+  the local your authentication sets), so one user cannot replay
+  another's answer.
+- **Only final answers.** A 5xx, 408 or 429 is not kept: the next retry
+  runs again. Neither is a body over `store.max_body` (1 MB). A handler
+  that panics leaves its key "running" for `store.lock_ttl` (30 s).
+- **Shared.** The Redis store claims a key with `SET NX PX`, so instances
+  behind a balancer agree; if Redis cannot be reached the request is
+  refused with 503 rather than risk running twice. The in-memory store is
+  for a single instance.
 
 ## Pagination
 

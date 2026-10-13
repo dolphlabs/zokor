@@ -172,6 +172,8 @@ pub gc struct Router[S] {
     sanitize: SanitizeMode,
     // Off until `r.etags()`; see conditional.sl.
     auto_etag: bool,
+    // Off until `r.idempotency(store)`; see idempotency.sl.
+    idem: opt[Idempotency],
     // The none every Ctx's `out` starts as.
     no_lines: opt[[str]],
 }
@@ -198,6 +200,7 @@ pub fn new_router[S](state: S) -> Router[S] {
         security: security_compile(default_security_headers()),
         sanitize: SanitizeMode.OFF,
         auto_etag: false,
+        idem: none,
         no_lines: none
     };
 }
@@ -469,6 +472,15 @@ impl Router[S] {
     // `with_validators`) is left alone. Static routes are not tagged.
     pub fn etags(self: Router[S]) -> int {
         self.auto_etag = true;
+        return 0;
+    }
+
+    // Answers a retried POST or PATCH that carries an Idempotency-Key
+    // with the first answer, from `store` (see idempotency.sl). Runs
+    // after the `before`s, so a key can be scoped to the authenticated
+    // caller.
+    pub fn idempotency(self: Router[S], store: Idempotency) -> int {
+        self.idem = some(store);
         return 0;
     }
 
@@ -1123,6 +1135,17 @@ impl Router[S] {
             return self.finish_route(c, r, resp2);
         }
         let h = r.handler;
+        if let ip = self.idem {
+            if idem_method(c.req.method) {
+                let st = idem_start(ip, c, r.pattern);
+                if let stop = st.stop {
+                    return self.finish_route(c, r, stop);
+                }
+                let resp = h(c);
+                ip.finish(st, resp);
+                return self.finish_route(c, r, resp);
+            }
+        }
         return self.finish_route(c, r, h(c));
     }
 
