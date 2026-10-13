@@ -355,7 +355,60 @@ New cookies are `HttpOnly; Secure; SameSite=Lax; Path=/`; `set_cookie` returns
 value, `SameSite=None` without `Secure`, broken `__Host-` rules). Signed
 cookies: `zokor.signed_value(c, name, keys)` is none when forged; COOKIE_KEYS
 lists 32+ byte keys, newest first (rotation keeps old cookies valid). Signed
-is not encrypted.
+is not encrypted. `ck.max_age` is seconds (-1 session, 0 delete); also set
+`ck.expires = some(timez.now().add(timez.HOUR))` for clients that read only
+Expires.
+
+## Conditional requests (304, 412)
+
+```slang
+import "http";
+import "timez";
+import "zokor";
+
+gc struct Doc {
+    version: int,
+    updated: timez.Time,
+}
+
+fn tag(d: Doc) -> str {
+    return zokor.etag_of(to_bytes(to_str(d.version)));
+}
+
+fn get_doc(c: zokor.Ctx[Doc]) -> http.Response {
+    if let stop = zokor.preconditions(c, tag(c.state), some(c.state.updated)) {
+        return stop;                                   // 304 Not Modified
+    }
+    return zokor.with_validators(zokor.text(200, "v" + to_str(c.state.version)),
+                                 tag(c.state), some(c.state.updated));
+}
+
+fn put_doc(c: zokor.Ctx[Doc]) -> http.Response {
+    if let stop = zokor.preconditions(c, tag(c.state), some(c.state.updated)) {
+        return stop;                                   // 412: changed since read
+    }
+    c.state.version = c.state.version + 1;
+    return zokor.text(200, "saved");
+}
+
+let r = zokor.new_router(Doc { version: 1, updated: timez.unix(1792000000) });
+r.get("/doc", get_doc);
+r.put("/doc", put_doc);
+let first = r.serve(zokor.get_request("/doc").build());
+let etag = zokor.resp_header(first, "etag");
+let again = r.serve(zokor.get_request("/doc").header("If-None-Match", etag).build());
+assert(again.status == 304);
+let put = zokor.request(zokor.Method.PUT, "/doc").header("If-Match", etag).build();
+assert(r.serve(put).status == 200);
+assert(r.serve(put).status == 412);                    // the same stale tag
+println("ok");
+```
+
+`preconditions(c, etag, last_modified)` runs RFC 9110's order (If-Match,
+If-Unmodified-Since, If-None-Match, If-Modified-Since): some(304|412) to
+return, none to go on; pass "" when the resource does not exist.
+`r.etags()` (opt in) tags every 200 GET by hashing its body and answers a
+matching If-None-Match with 304; it costs a hash of every body.
 
 ## Security headers
 

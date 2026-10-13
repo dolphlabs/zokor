@@ -1,5 +1,6 @@
 import "http";
 import "strings";
+import "timez";
 
 gc struct CkState {
     keys: CookieKeys,
@@ -93,7 +94,27 @@ fn test_cookie_problems_name_the_fix() {
 fn test_clear_cookie_expires_it_now() {
     let r = clear_cookie(text(200, "ok"), "theme", "/", "");
     guard let resp = r else let e = err_of(r) { panic(e); }
-    assert(strings.contains(resp_header(resp, "set-cookie"), "theme=; Path=/; Max-Age=0"));
+    assert(strings.contains(resp_header(resp, "set-cookie"),
+                            "theme=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT"));
+}
+
+fn test_expires_is_written_as_an_http_date() {
+    let c = new_cookie("sid", "abc");
+    assert(!strings.contains(cookie_string(c), "Expires"));
+    c.expires = some(timez.unix(1792000000));
+    c.max_age = 3600;
+    assert(cookie_string(c) == "sid=abc; Path=/; Max-Age=3600; " +
+           "Expires=Wed, 14 Oct 2026 17:46:40 GMT; Secure; HttpOnly; SameSite=Lax");
+}
+
+fn test_expires_before_1601_is_refused() {
+    let c = new_cookie("sid", "abc");
+    c.expires = some(timez.unix(-11700000000));
+    assert(strings.contains(cookie_problem(c), "expires must be in or after 1601"));
+    let r = set_cookie(text(200, "ok"), c);
+    if let _sent = r {
+        panic("a cookie expiring in 1599 was sent");
+    }
 }
 
 fn test_parse_cookies_skips_what_is_malformed() {
