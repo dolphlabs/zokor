@@ -102,9 +102,24 @@ jobs:
           docker exec pg pg_isready -U postgres -d zokor_test
           echo "ZOKOR_TEST_DATABASE_URL=postgres://postgres:zokor@127.0.0.1:5432/zokor_test" >> "$GITHUB_ENV"
 
+      # Verbose, so a crash names the last test that passed; kept, so the
+      # runner a crash happened in can be downloaded and its
+      # `(image+0x...)` pc resolved with addr2line or atos.
       - name: Tests
         timeout-minutes: 10
-        run: make test SLANGC="$SLANGC"
+        env:
+          TMPDIR: ${{ runner.temp }}/slangtest
+        run: |
+          mkdir -p "$TMPDIR"
+          make test SLANGC="$SLANGC" TESTFLAGS="-v --keep"
+
+      - name: Keep the test runners of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-runners-${{ matrix.name }}
+          path: ${{ runner.temp }}/slangtest
+          retention-days: 14
 
       - name: Examples
         timeout-minutes: 5
