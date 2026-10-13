@@ -251,20 +251,16 @@ library, made and merged there first.
   `Ctx`/routing (~1-2 us). Needs a fresh measurement on a quiet host
   before more work. Unreproduced: one c=2000 run on Linux collapsed to
   356 rps with a 9 s p99; six runs after it did not.
-- [ ] **Index the routes instead of scanning them.** Matching walks
-  `Router.routes` in order and compares each route, so its cost grows with
-  the number of routes: bench/audit's router case (200 requests to the
-  last of *n* one-parameter routes) is ~60 us a request at 64 routes and
-  ~550 us at 512, on the general path. The frame path is cheaper per
-  route but still linear. Keep the list as the source of truth
-  (registration order, "first registered wins", `routes_list`) and add,
-  built at registration:
-  - a map from method + exact path to route, so static paths cost one
-    hash and one lookup;
-  - a segment tree for `:param` and `*rest` routes, so matching costs the
-    path's depth, not the route count (httprouter's and Fiber's approach).
-
-  `befores`/`afters` stay lists: they are an ordered sequence run in full,
-  with nothing to look up. Done when bench/audit's router case is flat
-  across 64-512 routes and the latency benchmark shows no regression at
-  2-3 routes, with both measurements recorded here.
+- [x] **Index the routes instead of scanning them** (route_index.sl).
+  Above 16 routes the router keeps a segment trie in step with `routes`
+  at registration; a lookup walks the path's literal and `:param`
+  children and takes the smallest matching index whose method fits --
+  the route a scan in registration order picks (a differential test
+  checks 3,200 random requests over random 60-route routers against the
+  scan). Static GETs get an exact path map. Measured, ns per request to
+  the last of n one-param routes, dev -> index: 64: 4,600-4,900 ->
+  2,100-3,000; 128: 8,300 -> 2,900-3,500; 256: 16,800-18,200 ->
+  3,200-3,700; 512: 33,900-34,600 -> 3,300-5,200. Three routes (not
+  indexed), ABBA x4: medians 1,612 vs 1,646 ns, inside the spread.
+  The frame path and the general one now agree on precedence for an
+  indexed router (the frame path used to skip general routes).

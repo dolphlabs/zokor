@@ -28,6 +28,7 @@ a JSON string took **2.8 seconds**.
 | WebSocket, one message in 4 KB reads | 375us | 2.9ms | ~2x (linear) |
 | WebSocket, one message, 1 KB fragments | 368us | 3.1ms | ~2x (linear) |
 | router, 200 requests to the last of *n* routes | 12.1ms (64) | 110.6ms (512) | ~2x (linear) |
+| router, the same, with the route index (2026-10-13) | 0.4-0.6ms (64) | 0.7-1.0ms (512) | ~flat |
 
 Everything that was seconds is now single- or double-digit milliseconds.
 The purely linear cases (render, quote, one whole frame, one big file, the
