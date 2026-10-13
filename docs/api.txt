@@ -568,7 +568,7 @@ security_compile(h: SecurityHeaders) -> Security
 Security.apply(resp: http.Response) -> http.Response
     `resp` with every line it does not already carry.
 static_render_with(status: i32, content_type: str, lines: [str], body: bytes, keep_alive: bool) -> bytes
-    A static route's bytes: status line, content type, the security lines, length, connection, body.
+    A static route's bytes: status line, content type, the security lines, length, connection, the date line, body.
 
 ## serve.sl -- The server edge: the accept loop that turns a Router into a running server.
 gc struct ServerConfig { idle_timeout: int, header_timeout: int, body_timeout: int, write_timeout: int, max_request_bytes: int, max_requests_per_conn: int, shutdown_timeout: int, request_ids: bool, trusted_proxies: TrustedProxies, logger: Logger, max_connections: int }
