@@ -188,7 +188,10 @@ fn list_users(c: zokor.Ctx[App]) -> http.Response {
   - `json`/`jsonb` decode into nested structs
   - NULL becomes `none`, so use an `opt` field
   - `bytea` becomes base64
-  - text, uuid and timestamps become strings
+  - `timestamptz` and `timestamp` become RFC 3339 strings, so a
+    `timez.Time` field reads them (a `timestamp` without a zone as UTC),
+    and a `str` field gets the text an API would send
+  - text and uuid become strings
 
   A column your struct doesn't name is ignored. A field the query doesn't
   return must be an `opt`, or the result names the missing field.

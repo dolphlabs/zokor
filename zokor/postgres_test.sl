@@ -1,5 +1,6 @@
 import "http";
 import "pg";
+import "timez";
 import "proc";
 import "strings";
 import "time";
@@ -20,6 +21,13 @@ struct PgItem {
 
 struct PgName {
     name: str,
+}
+
+struct PgWhen {
+    id: int,
+    at: timez.Time,
+    at_text: str,
+    plain: timez.Time,
 }
 
 struct PgText {
@@ -219,4 +227,32 @@ fn test_live_unique_violation_answers_409() {
         return;
     }
     panic("a duplicate was inserted");
+}
+
+fn test_live_timestamps_map_into_time_fields() {
+    guard let p = pg_live("live_timestamps_map_into_time_fields") else { return; }
+    pg_must(p, "drop table if exists zokor_t_when");
+    pg_must(p, "create table zokor_t_when (id int primary key, at timestamptz not null, " +
+               "plain timestamp not null)");
+    let t = timez.unix_nano(1792000000123456000);
+    let ins = pg.pool_query(p, "insert into zokor_t_when values (1, $1, $2)",
+                            [pg.arg_time(t), pg.arg_text("2026-10-13 09:30:15.25")], pg_dl());
+    guard let _i = ins else let e = err_of(ins) { panic(e); }
+    // a session in Kathmandu writes +05:45; the instant is the same
+    let r: result[[PgWhen], str] = transaction(p, 0, pg_when_in_kathmandu, pg_dl());
+    guard let rows = r else let e = err_of(r) { panic(e); }
+    assert(len(rows) == 1);
+    assert(rows[0].at.equal(t), rows[0].at.rfc3339_nano());
+    assert(strings.has_prefix(rows[0].at_text, "2026-10-14T23:31:40.123456+05:45"),
+           rows[0].at_text);
+    assert(rows[0].plain.rfc3339_nano() == "2026-10-13T09:30:15.25Z");
+    pg_must(p, "drop table zokor_t_when");
+}
+
+fn pg_when_in_kathmandu(c: pg.Conn, unused: int) -> result[[PgWhen], str] {
+    let s = pg.exec(c, "set local time zone 'Asia/Kathmandu'", pg_dl());
+    guard let _s = s else let e = err_of(s) { return err(e); }
+    let none_args: [pg.Arg] = [];
+    return conn_query_all(c, "select id, at, at as at_text, plain from zokor_t_when", none_args,
+                          pg_dl());
 }
