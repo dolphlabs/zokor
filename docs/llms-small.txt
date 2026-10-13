@@ -727,6 +727,13 @@ a `mutex` field (`make_mutex()`); never `return` between `mutex_lock` and
 `spawn` is the same object the router holds. A real worker loops
 forever; this one stops when the channel closes.
 
+## Compression
+
+`r.compress(zokor.compression())` gzips 2xx JSON/text bodies of 1 KB or
+more for clients whose Accept-Encoding allows gzip, adds `Vary:
+Accept-Encoding`, and weakens a strong ETag. Never compress pages that put
+a secret (CSRF token) next to reflected input (BREACH).
+
 ## Idempotency keys
 
 ```slang

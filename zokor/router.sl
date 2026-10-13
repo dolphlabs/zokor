@@ -174,6 +174,8 @@ pub gc struct Router[S] {
     auto_etag: bool,
     // Off until `r.idempotency(store)`; see idempotency.sl.
     idem: opt[Idempotency],
+    // Off until `r.compress(compression())`; see compression.sl.
+    gzip: opt[Compression],
     // The none every Ctx's `out` starts as.
     no_lines: opt[[str]],
 }
@@ -201,6 +203,7 @@ pub fn new_router[S](state: S) -> Router[S] {
         sanitize: SanitizeMode.OFF,
         auto_etag: false,
         idem: none,
+        gzip: none,
         no_lines: none
     };
 }
@@ -481,6 +484,13 @@ impl Router[S] {
     // caller.
     pub fn idempotency(self: Router[S], store: Idempotency) -> int {
         self.idem = some(store);
+        return 0;
+    }
+
+    // Gzips answers worth it for clients that accept it (see
+    // compression.sl). Static routes are sent as rendered.
+    pub fn compress(self: Router[S], z: Compression) -> int {
+        self.gzip = some(z);
         return 0;
     }
 
@@ -1182,6 +1192,10 @@ impl Router[S] {
         if self.auto_etag && out.status == 200 && len(out.body) > 0 &&
            is_read(c.req.method) && !http.has_resp_header(out, "etag") {
             out = tag_response(c.header("if-none-match"), out);
+        }
+        // After the tag, which is of the uncompressed bytes (and made weak).
+        if let z = self.gzip {
+            out = maybe_gzip(z, c.header("accept-encoding"), c.req.method, out);
         }
         // Last, so every answer carries it -- a 404, a 422, a `before`'s
         // 401 -- unless an `after` already wrote its own.

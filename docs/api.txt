@@ -46,6 +46,12 @@ peer_ip_of(rendered: str) -> str
 client_ip_of(peer_ip: str, headers: bytes, tp: TrustedProxies) -> str
     Who the request came from.
 
+## compression.sl -- Response compression: gzip through slang's `compress` (zlib), for clients that accept it, on bodies worth it.
+gc struct Compression { min_size: int, level: int, types: [str] }
+compression() -> Compression
+accepts_gzip(header: str) -> bool
+    Whether an Accept-Encoding value allows gzip.
+
 ## conditional.sl -- Conditional requests (RFC 9110 section 13): answer "not modified" when the client already has the current version, and refuse...
 etag_of(data: bytes) -> str
     A strong entity tag for `data`: its length and 64-bit FNV-1a hash, quoted.
@@ -470,7 +476,7 @@ gc struct Ctx[S] { state: S, req: http.Request, params: opt[map[str]str], param1
 struct Served { resp: http.Response, route: str }
     A response and the route pattern that produced it, for the request log.
 gc struct Route[S] { method: Method, pattern: str, befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], segs: [str], names: [str], wild: int, fkind: int, fpath: str, handler: fn(Ctx[S]) -> http.Response, has_static: bool, static_status: i32, static_ctype: str, static_body: bytes, static_rendered: bytes, static_hit: opt[http.StaticBody], static_close_hit: opt[http.StaticBody], no_map: opt[map[str]str] }
-gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security, sanitize: SanitizeMode, auto_etag: bool, idem: opt[Idempotency], no_lines: opt[[str]] }
+gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security, sanitize: SanitizeMode, auto_etag: bool, idem: opt[Idempotency], gzip: opt[Compression], no_lines: opt[[str]] }
     A `before` runs ahead of the handler and may end the request by returning a response; `none` carries on.
 new_router[S](state: S) -> Router[S]
     An application builds its router from its state alone; everything else starts empty or at the default a correct server should...
@@ -503,6 +509,8 @@ Router.etags() -> int
     Tags every 200 answer to a GET or HEAD with a strong ETag -- a hash of the body it sends -- and answers a matching...
 Router.idempotency(store: Idempotency) -> int
     Answers a retried POST or PATCH that carries an Idempotency-Key with the first answer, from `store` (see idempotency.sl).
+Router.compress(z: Compression) -> int
+    Gzips answers worth it for clients that accept it (see compression.sl).
 Router.security_headers(h: SecurityHeaders) -> int
     Replaces the security headers (see security.sl); no_security_headers() turns them off.
 Router.mongo_sanitize(mode: SanitizeMode) -> int

@@ -102,6 +102,7 @@ declare, and every handler receives it.
 | `Json`, `parse`, `jobj` | JSON you did not declare: walk it, build it, render it |
 | `upgrade`, `receive`, `sio_*` | WebSocket (RFC 6455) and Socket.IO, as a state machine you feed bytes |
 | `ok_json`, `created`, … | success responses with the headers they should carry |
+| `r.compress(compression())` | gzip for clients that accept it, on bodies worth it |
 | `r.idempotency(store)` | idempotency keys: a retried POST gets the first answer, in memory or Redis |
 | `page_of`, `offset_page`, `cursor_page` | pagination: offset or keyset pages, one envelope, `Link` headers |
 | `new_jobs`, `every`, `handle`, `enqueue` | background jobs: cron schedules in a time zone, a retrying in-memory queue |
@@ -657,6 +658,27 @@ sending traffic before the drain.
   claims them, so your own `/healthz` wins. No `before` runs on them,
   since an auth hook would fail the probes. `r.health_at(live, ready)`
   mounts them elsewhere.
+
+## Compression
+
+```slang
+r.compress(zokor.compression());       // min_size 1 KB, level 1, text-like types
+```
+
+A response is gzipped when the client's `Accept-Encoding` allows it (q
+values honoured: `gzip;q=0` refuses it), it is a 2xx other than 204/206
+to a method other than HEAD, its body is at least `min_size`, its type is
+text, JSON, JavaScript, XML, SVG or form data (or ends in `+json`/`+xml`),
+and it has no `Content-Encoding` of its own. Every response that could
+have been gzipped carries `Vary: Accept-Encoding`; a strong ETag becomes
+weak. Level 1 is the default: on API JSON it keeps nearly all of level
+5's saving (14 KB: 36 µs to 10% of the size, against 74 µs) for half the
+CPU. Static routes are sent as rendered.
+
+**BREACH.** Over TLS, compressing a response that holds a secret next to
+input an attacker controls lets them recover the secret from sizes. Keep
+pages that mix the two (a CSRF token and reflected search terms) on a
+router without compression.
 
 ## Idempotency keys
 
