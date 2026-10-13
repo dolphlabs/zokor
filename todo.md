@@ -78,8 +78,9 @@ library, made and merged there first.
   cookies with a rotating key. Safe defaults, every attribute checked
   (`set_cookie` returns err), `Partitioned`, `__Host-`/`__Secure-` rules,
   HMAC-SHA256 over name and value with `COOKIE_KEYS` rotation and a
-  constant-time compare. Not done: `Expires` (needs an HTTP date from the
-  time package; `Max-Age` covers every browser in use).
+  constant-time compare. `expires` (an instant from slang's `timez`) is
+  written as `Expires` beside `Max-Age`, and `clear_cookie` sends the 1970
+  date for clients that read only `Expires`.
 - [x] **Input sanitisation against injection**, opt-in and configurable:
   - **NoSQL (Mongo-style operator injection)**, like `express-mongo-sanitize`:
     object keys starting with `$` or containing `.` in JSON bodies and
@@ -136,16 +137,10 @@ library, made and merged there first.
   `dolphlabs/mongo` (optional, like `redis_from_config`), and the error
   shape for a duplicate key, so a service on Mongo gets what a service on
   Postgres does.
-- [ ] **[slang] A sufficient `time` package.** Today it has a monotonic
-  clock, wall time and sleep. Missing for real services: calendar time
-  (date and time of day, time zones from the system tz database), parsing
-  and formatting (RFC 3339 / ISO 8601, RFC 1123 for HTTP dates, custom
-  layouts), durations with units, date arithmetic (add months, start of
-  day) and comparisons. Built on the existing package, with C interop
-  (`localtime_r`, `timegm`, `strftime`) where libc already does it
-  right. Scoped and agreed in slang before code; several items below need
-  it (HTTP dates for conditional requests, cookie expiry, pagination
-  cursors, idempotency TTLs).
+- [x] **[slang] A sufficient `time` package**: slang's `timez` (slang
+  #409): calendar time, RFC 3339 / HTTP / RFC 2822 dates, strftime,
+  durations, IANA zones from the system tz database, test clocks and
+  cron. Pure slang, no C interop.
 - [ ] **Pagination**: offset and cursor forms, with the `Link` header and a
   response envelope that does not change shape between them.
 - [ ] **Idempotency keys** for unsafe methods, stored so a retried `POST`
@@ -153,8 +148,14 @@ library, made and merged there first.
 - [ ] **Compression**: gzip through slang's `compress`, honouring
   `Accept-Encoding`, with a size floor and a content-type allowlist so it is
   never applied to something already compressed.
-- [ ] **Conditional requests**: `ETag`, `Last-Modified`, `If-None-Match`,
-  `If-Modified-Since`, `304`.
+- [x] **Conditional requests**: `preconditions` (RFC 9110 13.2.2 order:
+  `If-Match`, `If-Unmodified-Since`, `If-None-Match`, `If-Modified-Since`;
+  304 for reads, 412 for writes), `etag_of`, `with_validators`, and an
+  opt-in `r.etags()` that hashes 200 GET bodies (`bench/conditional`:
+  +1.5 us at 128 B, +2.7 us at 1 KB, +20 us at 16 KB; nothing when off).
+  Not done: static routes are not tagged; a native fast hash in slang
+  would cut the per-byte cost about tenfold (FNV-1a in slang runs at
+  1.1 ns/byte).
 - [ ] **Static files**: traversal-safe (`..`, symlinks, encoded separators),
   `Range` requests, content types, cache headers, index files.
 - [ ] **Migrations**: ordered, checksummed, applied in a transaction, with an
