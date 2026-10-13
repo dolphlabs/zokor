@@ -1039,3 +1039,39 @@ fn test_serve_conn_errors_built_outside_the_router_carry_security_headers() {
     }
     println("serve_conn_errors_built_outside_the_router_carry_security_headers ok");
 }
+
+// A HEAD answer carries the Content-Length its GET would (RFC 9110
+// 9.3.2), and no body: it used to say `Content-Length: 0` once the router
+// had dropped the body. Kept alive, so a byte of body would be read as the
+// start of the next answer: the GET after it must come back whole.
+fn test_serve_conn_head_says_the_get_length_and_sends_no_body() {
+    let lr = link_listen(0);
+    guard let ln = lr else { panic("listen"); }
+    let dr = link_dial("127.0.0.1", ln.port(), until_never());
+    guard let client = dr else { panic("dial"); }
+    let ar = ln.accept(until_never());
+    guard let server = ar else { panic("accept"); }
+    let r = serve_test_router();
+    spawn serve_conn(r, server, default_server_config());
+    let a = arena_new(8192);
+    let sr = client.send(req_wire("HEAD /hi HTTP/1.1\r\nHost: t\r\n\r\nGET /hi HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n", &mut a),
+                         until_never());
+    guard let _n = sr else { panic("client send"); }
+    let inb = a.wire(4096);
+    let got = 0;
+    while true {
+        let rr = client.recv(inb[got..], until_of(time.mono() + 2000000000));
+        guard let n = rr else { break; }
+        if n == 0 { break; }
+        got = got + n;
+    }
+    let text = conn_resp_text(inb, got);
+    let second = strings.find(strings.slice(text, 1, len(text)), "http/1.1 ") + 1;
+    assert(second > 0, text);
+    let head_answer = strings.slice(text, 0, second);
+    let get_answer = strings.slice(text, second, len(text));
+    assert(strings.contains(head_answer, "content-length: 2\r\n"), head_answer);
+    assert(strings.has_suffix(head_answer, "\r\n\r\n"), head_answer);
+    assert(strings.has_suffix(get_answer, "\r\n\r\nhi"), get_answer);
+    println("serve_conn_head_length ok");
+}
