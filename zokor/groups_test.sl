@@ -20,6 +20,7 @@ fn g_router() -> Router[GState] {
         sanitize: SanitizeMode.OFF,
         auto_etag: false,
         idem: none,
+        gzip: none,
         no_lines: none
     };
 }
