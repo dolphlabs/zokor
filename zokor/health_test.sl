@@ -188,7 +188,21 @@ fn test_a_slow_check_times_out_and_is_not_restarted_while_running() {
     mutex_lock(s.lock);
     s.slow_ns = 0;
     mutex_unlock(s.lock);
-    time.sleep(400000000);
+    // Wait for the slow run to finish rather than sleep a fixed time: on a
+    // loaded runner a 300 ms sleep can end well after 400 ms, and a probe
+    // that arrives first joins the run still going and sees 503.
+    let ch = r.ready.checks[0];
+    let deadline = time.mono() + 5000000000;
+    let running = true;
+    while running && time.mono() < deadline {
+        mutex_lock(ch.lock);
+        running = ch.started != ch.finished;
+        mutex_unlock(ch.lock);
+        if running {
+            time.sleep(10000000);
+        }
+    }
+    assert(!running, "the slow run never finished");
     assert(resp_status(hc_get(r, "/readyz")) == 200);
     assert(hc_calls(s) == 2);
 }
