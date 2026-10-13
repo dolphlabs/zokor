@@ -73,16 +73,44 @@ fn test_retry_after_rounds_up_and_is_at_least_one() {
     assert(retry_after_secs(2500000000) == 3);
 }
 
+// Keys that land in the same shard as `first`: a shard sweeps on its own
+// count of requests.
+fn same_shard_keys(first: str, n: int) -> [str] {
+    let want = key_hash(first) & (rate_shard_count() - 1);
+    let out: [str] = [first];
+    let i = 0;
+    while len(out) < n {
+        let k = "k" + to_str(i);
+        if (key_hash(k) & (rate_shard_count() - 1)) == want {
+            push(out, k);
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
 fn test_quiet_clients_are_swept() {
     let l = new_rate_limiter(5, 1000);
     l.sweep_every = 4;
-    l.take_at("a", 0);
-    l.take_at("b", 0);
-    l.take_at("c", 0);
+    let ks = same_shard_keys("a", 4);
+    l.take_at(ks[0], 0);
+    l.take_at(ks[1], 0);
+    l.take_at(ks[2], 0);
     assert(l.tracked() == 3);
-    // the 4th call sweeps: a, b, c have nothing inside the window
-    l.take_at("d", 5000);
+    // the shard's 4th call sweeps: the first three have nothing inside
+    // the window
+    l.take_at(ks[3], 5000);
     assert(l.tracked() == 1, "tracked " + to_str(l.tracked()));
+}
+
+fn test_keys_spread_across_shards() {
+    let used: map[int]bool = {};
+    let i = 0;
+    while i < 256 {
+        used[key_hash("10.0.0." + to_str(i)) & (rate_shard_count() - 1)] = true;
+        i = i + 1;
+    }
+    assert(len(used) == rate_shard_count(), "neighbouring addresses must not share one shard");
 }
 
 fn test_middleware_answers_429_in_the_envelope_with_retry_after() {
@@ -143,4 +171,73 @@ fn test_concurrent_takes_never_exceed_the_limit() {
         total = total + (join_wait(h) ?? 0);
     }
     assert(total == 50, "allowed " + to_str(total));
+}
+
+fn test_allowed_requests_carry_ratelimit_headers() {
+    let r = rl_router(3, 60000000000);
+    let first = rl_get(r, "alice");
+    assert(resp_status(first) == 200);
+    assert(resp_header(first, "ratelimit-limit") == "3");
+    assert(resp_header(first, "ratelimit-remaining") == "2");
+    assert(resp_header(first, "ratelimit-reset") == "60", resp_header(first, "ratelimit-reset"));
+    assert(resp_header(rl_get(r, "alice"), "ratelimit-remaining") == "1");
+    assert(resp_header(rl_get(r, "alice"), "ratelimit-remaining") == "0");
+    let refused = rl_get(r, "alice");
+    assert(resp_status(refused) == 429);
+    assert(resp_header(refused, "ratelimit-remaining") == "0");
+    assert(resp_header(refused, "ratelimit-limit") == "3");
+    assert(resp_header(refused, "retry-after") == resp_header(refused, "ratelimit-reset"));
+}
+
+fn test_check_at_reports_remaining_and_reset() {
+    let l = new_rate_limiter(2, 1000);
+    let a = l.check_at("k", 100);
+    assert(a.wait == 0 && a.remaining == 1 && a.reset == 1000);
+    let b = l.check_at("k", 400);
+    assert(b.wait == 0 && b.remaining == 0 && b.reset == 700, to_str(b.reset));
+    let c = l.check_at("k", 500);
+    assert(c.wait == 600 && c.remaining == 0);
+}
+
+fn rl_client_before(c: Ctx[RlApp]) -> opt[http.Response] {
+    return rate_limit_client(c, c.state.limiter);
+}
+
+fn test_rate_limit_client_keys_on_the_resolved_address() {
+    let r = new_router(RlApp { limiter: new_rate_limiter(1, 60000000000) });
+    r.before(rl_client_before);
+    r.get("/ping", rl_ping);
+    let req = request(Method.GET, "/ping").header("X-Client-Id", "spoofed").build();
+    assert(resp_status(r.serve_id_for(req, "", "10.0.0.1")) == 200);
+    assert(resp_status(r.serve_id_for(req, "", "10.0.0.1")) == 429,
+           "the same address, whatever headers it sends");
+    assert(resp_status(r.serve_id_for(req, "", "10.0.0.2")) == 200, "another address has its own limit");
+}
+
+fn rl_add_two(c: Ctx[RlApp]) -> opt[http.Response] {
+    c.add_header("X-One", "1");
+    c.add_header("x-two", "2");
+    return none;
+}
+
+fn rl_add_and_stop(c: Ctx[RlApp]) -> opt[http.Response] {
+    c.add_header("x-from-before", "yes");
+    return some(respond(c.errors, "forbidden", c.request_id));
+}
+
+fn test_add_header_reaches_the_final_response() {
+    let r = new_router(RlApp { limiter: new_rate_limiter(10, 1000) });
+    r.before(rl_add_two);
+    r.get("/ping", rl_ping);
+    let resp = r.serve(get_request("/ping").build());
+    assert(resp_header(resp, "x-one") == "1" && resp_header(resp, "x-two") == "2");
+    let r2 = new_router(RlApp { limiter: new_rate_limiter(10, 1000) });
+    r2.before(rl_add_and_stop);
+    r2.get("/ping", rl_ping);
+    let stopped = r2.serve(get_request("/ping").build());
+    assert(resp_status(stopped) == 403);
+    assert(resp_header(stopped, "x-from-before") == "yes", "a short-circuit carries it too");
+    let plain = new_router(RlApp { limiter: new_rate_limiter(10, 1000) });
+    plain.get("/ping", rl_ping);
+    assert(resp_header(plain.serve(get_request("/ping").build()), "x-one") == "");
 }

@@ -191,6 +191,7 @@ fn test_ctx_json_body() {
         route: "/x",
         request_id: "r1",
         client_ip: "",
+        out: none,
         locals: none,
         errors: new_registry()
     };
