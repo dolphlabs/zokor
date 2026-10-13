@@ -25,13 +25,15 @@
 //
 // Signed is not encrypted: never put a secret in a cookie value.
 //
-// There is no Expires attribute: it needs an HTTP date, and Max-Age says
-// the same thing to every browser in use.
+// Max-Age says how long to keep a cookie to every browser in use; set
+// `expires` as well for clients that only read Expires (some HTTP client
+// libraries). When both are sent, Max-Age wins (RFC 6265 5.3).
 
 import "crypto";
 import "encoding";
 import "http";
 import "strings";
+import "timez";
 
 pub enum SameSite {
     LAX,
@@ -47,6 +49,9 @@ pub gc struct Cookie {
     domain: str,
     // Seconds. -1 is a session cookie (no Max-Age); 0 deletes it.
     max_age: int,
+    // An instant to drop the cookie at, written as Expires. none sends
+    // no Expires.
+    expires: opt[timez.Time],
     secure: bool,
     http_only: bool,
     same_site: SameSite,
@@ -61,6 +66,7 @@ pub fn new_cookie(name: str, value: str) -> Cookie {
         path: "/",
         domain: "",
         max_age: -1,
+        expires: none,
         secure: true,
         http_only: true,
         same_site: SameSite.LAX,
@@ -135,6 +141,12 @@ pub fn cookie_problem(c: Cookie) -> str {
     if c.max_age < -1 {
         push(out, "max age must be -1 (session), 0 (delete) or a number of seconds");
     }
+    if let at = c.expires {
+        // RFC 6265's cookie-date parser rejects a year before 1601
+        if at.year() < 1601 {
+            push(out, "expires must be in or after 1601; use max age 0 to delete");
+        }
+    }
     if c.same_site == SameSite.NONE && !c.secure {
         push(out, "SameSite=None needs Secure; browsers drop it otherwise");
     }
@@ -172,6 +184,9 @@ pub fn cookie_string(c: Cookie) -> str {
     if c.max_age >= 0 {
         s = s + "; Max-Age=" + to_str(c.max_age);
     }
+    if let at = c.expires {
+        s = s + "; Expires=" + at.http_date();
+    }
     if c.secure {
         s = s + "; Secure";
     }
@@ -202,6 +217,8 @@ pub fn clear_cookie(resp: http.Response, name: str, path: str,
     c.path = path;
     c.domain = domain;
     c.max_age = 0;
+    // the 1970 date, for clients that read only Expires
+    c.expires = some(timez.unix(0));
     return set_cookie(resp, c);
 }
 

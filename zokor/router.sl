@@ -170,6 +170,8 @@ pub gc struct Router[S] {
     security: Security,
     // Off until `r.mongo_sanitize(mode)`; see sanitize.sl.
     sanitize: SanitizeMode,
+    // Off until `r.etags()`; see conditional.sl.
+    auto_etag: bool,
     // The none every Ctx's `out` starts as.
     no_lines: opt[[str]],
 }
@@ -195,6 +197,7 @@ pub fn new_router[S](state: S) -> Router[S] {
         cors: cors_off(),
         security: security_compile(default_security_headers()),
         sanitize: SanitizeMode.OFF,
+        auto_etag: false,
         no_lines: none
     };
 }
@@ -457,6 +460,16 @@ impl Router[S] {
     pub fn after(self: Router[S], f: fn(Ctx[S], http.Response) -> http.Response) -> int {
         push(self.afters, f);
         return len(self.afters);
+    }
+
+    // Tags every 200 answer to a GET or HEAD with a strong ETag -- a hash
+    // of the body it sends -- and answers a matching If-None-Match with a
+    // 304 and no body. Off by default: it hashes every such body. A
+    // response that already carries an ETag (a handler's own, from
+    // `with_validators`) is left alone. Static routes are not tagged.
+    pub fn etags(self: Router[S]) -> int {
+        self.auto_etag = true;
+        return 0;
     }
 
     // Replaces the security headers (see security.sl);
@@ -1141,6 +1154,11 @@ impl Router[S] {
             let a = self.afters[i];
             out = a(c, out);
             i = i + 1;
+        }
+        // After the afters, so the tag is of the body that is sent.
+        if self.auto_etag && out.status == 200 && len(out.body) > 0 &&
+           is_read(c.req.method) && !http.has_resp_header(out, "etag") {
+            out = tag_response(c.header("if-none-match"), out);
         }
         // Last, so every answer carries it -- a 404, a 422, a `before`'s
         // 401 -- unless an `after` already wrote its own.
