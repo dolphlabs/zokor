@@ -453,7 +453,11 @@ println("ok");
 
 `new_rate_limiter(limit, window_ns)`: at most `limit` requests per key in
 any rolling window; refused requests aren't counted; `Retry-After` is
-whole seconds, at least 1, and the body is your envelope. Header names
+whole seconds, at least 1, and the body is your envelope. Every answer
+carries `RateLimit-Limit`/`-Remaining`/`-Reset`. Key on the client's real
+address with `zokor.rate_limit_client(c, c.state.limiter)` (honours
+`TRUSTED_PROXIES`). A `before` adds headers to the eventual response with
+`c.add_header(name, value)`. Header names
 are case-insensitive. Other headers: `zokor.no_store(resp)`,
 `zokor.cache_for(resp, secs)`, `c.content_type()`, `c.bearer()`.
 

@@ -69,6 +69,11 @@ pub gc struct Ctx[S] {
     // proxy the address its forwarding header names (client.sl). "" when
     // the request did not come through the serve loop (tests, fixtures).
     client_ip: str,
+    // Headers a hook or handler asked for with `add_header`, written onto
+    // whatever response this request ends with. none until the first
+    // add_header: a shared none, so a request that adds none allocates
+    // nothing.
+    out: opt[[str]],
     // What middleware hands to the handler. Authentication resolves a
     // token and puts the user here; a tenant resolver puts the tenant
     // here. Without it a `before` can only stop a request, never
@@ -165,6 +170,8 @@ pub gc struct Router[S] {
     security: Security,
     // Off until `r.mongo_sanitize(mode)`; see sanitize.sl.
     sanitize: SanitizeMode,
+    // The none every Ctx's `out` starts as.
+    no_lines: opt[[str]],
 }
 
 // An application builds its router from its state alone; everything else
@@ -187,7 +194,8 @@ pub fn new_router[S](state: S) -> Router[S] {
         ready: Readiness[S] { live_path: "", ready_path: "", checks: [], timeout: default_ready_timeout(), logger: no_logger() },
         cors: cors_off(),
         security: security_compile(default_security_headers()),
-        sanitize: SanitizeMode.OFF
+        sanitize: SanitizeMode.OFF,
+        no_lines: none
     };
 }
 
@@ -829,6 +837,7 @@ impl Router[S] {
                     route: r.pattern,
                     request_id: request_id,
                     client_ip: client_ip,
+                    out: self.no_lines,
                     locals: r.no_map,
                     errors: self.errors
                 };
@@ -881,6 +890,7 @@ impl Router[S] {
                     route: r.pattern,
                     request_id: request_id,
                     client_ip: client_ip,
+                    out: self.no_lines,
                     locals: r.no_map,
                     errors: self.errors
                 };
@@ -924,6 +934,7 @@ impl Router[S] {
                 route: "",
                 request_id: request_id,
                 client_ip: client_ip,
+                out: self.no_lines,
                 locals: none,
                 errors: self.errors
             };
@@ -989,6 +1000,7 @@ impl Router[S] {
                 route: r.pattern,
                 request_id: request_id,
                 client_ip: client_ip,
+                out: self.no_lines,
                 locals: r.no_map,
                 errors: self.errors
             };
@@ -1008,6 +1020,7 @@ impl Router[S] {
             route: "",
             request_id: request_id,
             client_ip: client_ip,
+            out: self.no_lines,
             locals: none,
             errors: self.errors
         };
@@ -1120,6 +1133,9 @@ impl Router[S] {
         if len(c.request_id) > 0 && !http.has_resp_header(out, "x-request-id") {
             out = http.with_header(out, "x-request-id", c.request_id);
         }
+        if let lines = c.out {
+            out = http.with_headers(out, lines);
+        }
         let i = 0;
         while i < len(self.afters) {
             let a = self.afters[i];
@@ -1173,6 +1189,7 @@ fn static_probe[S](state: S, errors: Registry) -> Ctx[S] {
         route: "",
         request_id: "",
         client_ip: "",
+        out: none,
         locals: none,
         errors: errors
     };
@@ -1351,6 +1368,21 @@ impl Ctx[S] {
 
     pub fn header(self: Ctx[S], name: str) -> str {
         return http.header(self.req, name) ?? "";
+    }
+
+    // Adds a header to whatever response this request ends with: the
+    // handler's, or a `before`'s short-circuit, or an error. How a
+    // `before` that lets the request through still puts a header on its
+    // answer (a rate limit's remaining count, a refreshed cookie).
+    pub fn add_header(self: Ctx[S], name: str, value: str) -> int {
+        let line = strings.to_lower(name) + ": " + value;
+        if let lines = self.out {
+            push(lines, line);
+            return len(lines);
+        }
+        let fresh: [str] = [line];
+        self.out = some(fresh);
+        return 1;
     }
 
     // The value of cookie `name`, "" when the request carried none.

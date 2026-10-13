@@ -793,12 +793,28 @@ fn auth(c: zokor.Ctx[App]) -> opt[http.Response] {
 }
 ```
 
-`rate_limit` answers a refused request with the registered
-`rate_limited` code (`429`, through your renderer if you set one) and
-`Retry-After` in whole seconds; refused requests do not count against
-the window. The key is yours to choose (an API key, a user, an
-address); an empty key shares one "anonymous" budget. `take_at(key,
-now)` takes the clock as a parameter, so tests need no sleeps.
+- **Refusals.** `rate_limit` answers a refused request with the
+  registered `rate_limited` code (`429`, through your renderer if you set
+  one) and `Retry-After` in whole seconds. Refused requests don't count
+  against the window.
+- **Headers on every answer.** Allowed or refused, a response carries
+  `RateLimit-Limit`, `RateLimit-Remaining` and `RateLimit-Reset` (seconds
+  until the next request frees up), so well-behaved clients can pace
+  themselves.
+- **Keys.** The key is yours to choose: an API key, a user, an address.
+  An empty key shares one "anonymous" budget. `rate_limit_client(c, l)`
+  keys on the client's address, resolved through `TRUSTED_PROXIES`, so a
+  client can't escape its limit or spend someone else's by sending a
+  header.
+- **Concurrency.** The limiter is split into 16 shards, each with its own
+  lock, so tasks checking different clients don't wait on each other.
+  With 8 tasks: 2.0 µs a check, against 17.3 µs with a single lock.
+- **Testing.** `take_at(key, now)` and `check_at(key, now)` take the
+  clock as a parameter, so tests need no sleeps.
+
+A `before` hook that lets a request through can still add headers to its
+answer with `c.add_header(name, value)`: the limiter uses it, and so can
+a hook that refreshes a cookie.
 
 `TokenStore.issue(subject)` returns a 64-hex-character token from
 `crypto.rand`; `lookup(token)` gives the subject back (expired tokens
