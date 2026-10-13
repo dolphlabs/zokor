@@ -727,6 +727,15 @@ a `mutex` field (`make_mutex()`); never `return` between `mutex_lock` and
 `spawn` is the same object the router holds. A real worker loops
 forever; this one stops when the channel closes.
 
+## Static files
+
+`zokor.files_at("/assets", "./public")` -> `result[FileMount, str]`; then
+`r.files(mount)`. GET/HEAD under the prefix that no route claims serve the
+file: traversal-safe (`..`, dot-files, encoded separators and symlinks out
+of the root are 404), index.html for directories, ETag/Last-Modified/304,
+one byte Range (206/416), Content-Type by extension. `mount.max_age` and
+`mount.immutable` set Cache-Control.
+
 ## Compression
 
 `r.compress(zokor.compression())` gzips 2xx JSON/text bodies of 1 KB or

@@ -23,6 +23,7 @@ fn g_router() -> Router[GState] {
         static_paths: {},
         idem: none,
         gzip: none,
+        mounts: [],
         no_lines: none
     };
 }
