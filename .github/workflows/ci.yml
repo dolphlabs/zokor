@@ -81,6 +81,11 @@ jobs:
           .slang/slangc --version || true
           git -C .slang log -1 --format='slang dev at %h %s'
 
+      # zokor pins dolphlabs/jwt (slang.project); fetch it into the cache
+      # the lock names before anything compiles.
+      - name: Fetch packages
+        run: $SLANGC get
+
       - name: Tests
         timeout-minutes: 10
         run: make test SLANGC="$SLANGC"
