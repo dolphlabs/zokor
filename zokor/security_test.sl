@@ -70,13 +70,21 @@ fn test_static_routes_are_rendered_with_them_both_ways() {
     let k = to_str(ka.keep_alive);
     let c = to_str(cl.keep_alive);
     assert(strings.contains(k, "x-content-type-options: nosniff\r\n") &&
-           strings.contains(k, "Connection: keep-alive\r\n\r\nfixed"), k);
+           strings.contains(k, "Connection: keep-alive\r\ndate: ") &&
+           strings.has_suffix(k, " GMT\r\n\r\nfixed"), k);
     assert(strings.contains(c, "x-content-type-options: nosniff\r\n") &&
-           strings.contains(c, "Connection: close\r\n\r\nfixed"), c);
+           strings.contains(c, "Connection: close\r\ndate: ") &&
+           strings.has_suffix(c, " GMT\r\n\r\nfixed"), c);
     // turning them off afterwards re-renders what is already registered
     r.security_headers(no_security_headers());
     guard let ka2 = r.routes[len(r.routes) - 1].static_hit else { panic("no static"); }
     assert(!strings.contains(to_str(ka2.keep_alive), "nosniff"));
+}
+
+fn test_a_static_no_content_route_has_no_length_or_body() {
+    let k = to_str(static_render_with(204, "text/plain", ["x-a: 1"], b"ignored", true));
+    assert(!strings.contains(k, "Content-Length"), k);
+    assert(strings.has_suffix(k, " GMT\r\n\r\n"), k);
 }
 
 fn test_bad_settings_are_refused_with_the_fix() {
