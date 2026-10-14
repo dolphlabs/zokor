@@ -24,7 +24,8 @@ fn g_router() -> Router[GState] {
         idem: none,
         gzip: none,
         mounts: [],
-        no_lines: none
+        no_lines: none,
+        observations: none
     };
 }
 

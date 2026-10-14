@@ -258,7 +258,7 @@ fn closing(r: http.Response) -> http.Response {
 // `r.serve_frame(f, "")` directly.
 fn dispatch[S](r: Router[S], f: http.WireFrame, request_id: str,
                client_ip: str) -> Served {
-    return r.serve_frame_routed(f, request_id, client_ip);
+    return r.serve_frame_core(f, request_id, client_ip);
 }
 
 // Whether this connection writes request records: decided once per
@@ -332,11 +332,13 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
                 log_request(lg, "-", "", "-", st, time.mono(), 0, "", peer_ip);
             }
             if is_headers_too_large(e) {
+                if let m = r.observations { m.enter(); m.leave("OTHER", "", 431, (time.mono() - now) as int); }
                 let resp431 = r.security.apply(too_large_response(431,
                     "Request Header Fields Too Large", "headers_too_large"));
                 let _w = http.write(&mut c, resp431, &mut sa,
                                     write_deadline(sc));
             } else if is_body_too_large(e) {
+                if let m = r.observations { m.enter(); m.leave("OTHER", "", 413, (time.mono() - now) as int); }
                 let resp413 = r.security.apply(too_large_response(413,
                     "Content Too Large", "payload_too_large"));
                 let _w = http.write(&mut c, resp413, &mut sa,
@@ -350,6 +352,14 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
         let t0 = now;
         if logging {
             t0 = time.mono();
+        }
+        let measured = false;
+        if let m = r.observations {
+            if !metrics_scrape(wf.method, wf.path, m) {
+                m.enter();
+                measured = true;
+                if !logging { t0 = time.mono(); }
+            }
         }
         // The request that HITS max_requests_per_conn is still
         // answered normally -- only the one after it would not be.
@@ -399,6 +409,11 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
                 resp500 = r.security.apply(resp500);
                 let _w5 = http.write(&mut c, resp500, &mut sa,
                                      write_deadline(sc));
+                if let m = r.observations {
+                    if measured {
+                        m.leave(wf.method, r.metrics_pattern(wf.method, wf.path), 500, (time.mono() - t0) as int);
+                    }
+                }
                 if logging {
                     lg.error("HTTP", "handler panicked: " + pe +
                              request_suffix(rid));
@@ -424,6 +439,11 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
                 log_request(lg, wf.method, routed.route, wf.path,
                             out.status as int, t0, len(out.body), rid, client);
             }
+            if let m = r.observations {
+                if measured {
+                    m.leave(wf.method, routed.route, out.status as int, (time.mono() - t0) as int);
+                }
+            }
             guard let _n = wr else {
                 return;
             }
@@ -448,9 +468,19 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
             hit = r.routes[si].static_close_hit;
         }
         guard let resp = hit else {
+            if let m = r.observations {
+                if measured {
+                    m.leave(wf.method, r.routes[si].pattern, 500, (time.mono() - t0) as int);
+                }
+            }
             return;
         }
         let sw = http.write_static(&mut c, resp, &mut sa, false, write_deadline(sc));
+        if let m = r.observations {
+            if measured {
+                m.leave(wf.method, r.routes[si].pattern, resp.status as int, (time.mono() - t0) as int);
+            }
+        }
         if logging {
             let sclient = peer_ip;
             if !sc.trusted_proxies.is_empty() {
