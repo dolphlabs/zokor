@@ -334,7 +334,10 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
             // never terminated), so answering before closing cannot
             // desync anything -- there is no next request on this
             // connection either way, since it closes right after.
-            let edge = trace_edge_registry(r);
+            let edge = r.errors;
+            if is_headers_too_large(e) || is_body_too_large(e) {
+                edge = trace_edge_registry(r);
+            }
             if logging && (is_headers_too_large(e) || is_body_too_large(e)) {
                 let st = 413;
                 if is_headers_too_large(e) {
