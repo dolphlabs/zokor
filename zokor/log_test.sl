@@ -64,7 +64,7 @@ fn test_json_request_line() {
     let f = new_log_format(4242);
     let got = f.json(lt_req("/users/:id", "/users/42?token=secret", 200));
     let want = "{\"time\":\"2025-10-12T18:27:01.123Z\",\"level\":\"log\",\"pid\":4242," +
-               "\"context\":\"HTTP\",\"msg\":\"GET /users/:id 200 28B 10.0.0.4 " +
+               "\"context\":\"HTTP\",\"trace_id\":\"\",\"msg\":\"GET /users/:id 200 28B 10.0.0.4 " +
                "req_854dcb44626ad7d4b3184491243e922d\",\"method\":\"GET\"," +
                "\"route\":\"/users/:id\",\"status\":200,\"duration_ms\":0.412," +
                "\"bytes\":28,\"request_id\":\"req_854dcb44626ad7d4b3184491243e922d\"," +
@@ -98,7 +98,7 @@ fn test_json_message_line_escapes_the_message() {
     ev.time = 0;
     ev.level = LogLevel.WARN;
     assert(f.json(ev) == "{\"time\":\"1970-01-01T00:00:00.000Z\",\"level\":\"warn\",\"pid\":1," +
-           "\"context\":\"Server\",\"msg\":\"said \\\"hi\\\"\\nthen left\"}", f.json(ev));
+           "\"context\":\"Server\",\"trace_id\":\"\",\"msg\":\"said \\\"hi\\\"\\nthen left\"}", f.json(ev));
 }
 
 fn test_pretty_request_line_without_colour() {

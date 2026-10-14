@@ -197,8 +197,15 @@ library, made and merged there first.
   exposition, concurrent updates and a real blocked-handler scrape are
   tested. Default-off probe: +1 startup allocation (64 bytes), none per
   request; 974 -> 1,000.5 ns medians in ABBA x4, inside the run spread.
-- [ ] **Tracing**: W3C `traceparent` in, propagated to outbound calls, and the
-  trace id on every log line and error envelope.
+- [x] **Tracing**: opt-in W3C `traceparent`/`tracestate` parsing, explicit
+  request contexts and outbound request copies with child spans. Context
+  survives frame fallback, static dispatch and handler panic isolation.
+  Request-bound logging and error registries avoid shared mutation;
+  custom renderers receive the trace id. Disabled probe (ABBA x4):
+  728.5 -> 714.5 ns medians, inside the spread; +2 startup allocations
+  (144 bytes), none per request. Idempotent replay bodies retain their
+  original trace id, while each replay's log records its new trace.
+  No span exporter is included.
 - [x] **Background work**: `new_jobs` -- cron schedules read in a time zone
   (timez), one run at a time per job, missed turns not replayed, each run
   its own task (a panic is that run's failure); an in-memory queue with
