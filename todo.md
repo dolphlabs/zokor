@@ -183,13 +183,29 @@ library, made and merged there first.
   The routed calls keep the body; the serve loop writes a HEAD answer
   with slang's `http.write_head` (the length, no body); the public
   `serve`/`serve_frame`/`serve_id` still hand back an empty body.
-- [ ] **Migrations**: ordered, checksummed, applied in a transaction, with an
-  advisory lock so two instances do not race, and a `zokor migrate` command.
-- [ ] **Metrics**: Prometheus text format at `/metrics`; request count and
-  latency histogram by route pattern, in-flight gauge, and hooks for a
-  service's own.
-- [ ] **Tracing**: W3C `traceparent` in, propagated to outbound calls, and the
-  trace id on every log line and error envelope.
+- [x] **Migrations**: `load_migrations` reads bounded `N_description.sql`
+  files in numeric order; `migrate` validates immutable SHA-256 history
+  and applies the pending batch in one transaction under a Postgres
+  advisory lock. `make cli` builds `bin/zokor migrate [directory]`.
+  Tests cover replay, changed/missing history, rollback across files,
+  concurrent runners, SQL boundaries, file limits and embedded NULs.
+- [x] **Metrics**: `new_metrics` (check its result) and `r.metrics`
+  opt into Prometheus `/metrics`, request
+  counts and cumulative latency histograms by method/pattern/status,
+  and an in-flight gauge balanced on static, dynamic and panic paths.
+  Bounded series/custom metrics, counter/gauge registration, escaped
+  exposition, concurrent updates and a real blocked-handler scrape are
+  tested. Default-off probe: +1 startup allocation (64 bytes), none per
+  request; 974 -> 1,000.5 ns medians in ABBA x4, inside the run spread.
+- [x] **Tracing**: opt-in W3C `traceparent`/`tracestate` parsing, explicit
+  request contexts and outbound request copies with child spans. Context
+  survives frame fallback, static dispatch and handler panic isolation.
+  Request-bound logging and error registries avoid shared mutation;
+  custom renderers receive the trace id. Disabled probe (ABBA x4):
+  728.5 -> 714.5 ns medians, inside the spread; +2 startup allocations
+  (144 bytes), none per request. Idempotent replay bodies retain their
+  original trace id, while each replay's log records its new trace.
+  No span exporter is included.
 - [x] **Background work**: `new_jobs` -- cron schedules read in a time zone
   (timez), one run at a time per job, missed turns not replayed, each run
   its own task (a panic is that run's failure); an in-memory queue with
@@ -197,10 +213,21 @@ library, made and merged there first.
   hour); stops starting runs on SIGTERM. Tests drive it with `tick` on a
   fixed clock. Not done: a durable queue (Redis or Postgres) -- queued
   work is lost on restart.
-- [ ] **OpenAPI**: generate a document from `routes_list` plus the declared
-  DTOs and the error registry.
-- [ ] **Config profiles** (`dev`, `test`, `prod`), and `.env.test` selection
-  from the profile.
+- [x] **OpenAPI**: generate a startup OpenAPI 3.1.1 document from
+  `routes_list`, explicit JSON wire DTO definitions and the error registry.
+  Request/response/parameter metadata, local recursive schema references,
+  explicit private/unsupported-route omissions and custom error contracts.
+  Bounded generation collects metadata failures; unknown responses are
+  labelled undeclared. Deterministic output and template collisions tested;
+  generated fixture accepted by openapi-spec-validator 0.9.0. No automatic
+  endpoint or reflection, and no request-path changes.
+- [x] **Config profiles**: `dev`/`test`/`prod` selected by `ZOKOR_PROFILE`
+  (default dev) or an explicit loader; base .env then profile file then
+  environment. Fix accessors reading live environment: values now form
+  a startup snapshot, including empty overrides. Pure value-map factory
+  supports fakes. Caller-bounded regular-file reads reject NUL and collect
+  failures from both files; tests cover selection, precedence, snapshots,
+  invalid profiles, limits and aggregate errors.
 - [ ] Content negotiation (`Accept`) and redirect helpers.
 - [ ] **`zokor check`**: the layout checker. Import direction, only the
   database adapter imports `pg`, no SQL built by concatenation, every

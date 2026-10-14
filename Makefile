@@ -1,7 +1,7 @@
 SLANGC ?= slangc
 TESTFLAGS ?=
 
-.PHONY: test example check snippets api api-check
+.PHONY: test example check snippets api api-check cli cli-test
 
 # Every package dir is listed explicitly: a new package without its own
 # line here is a package with no tests, and that fails review.
@@ -15,6 +15,16 @@ test:
 	$(SLANGC) test zokor/internal/multipart $(TESTFLAGS)
 	$(SLANGC) test zokor/internal/ws $(TESTFLAGS)
 	$(SLANGC) test zokor/internal/sio $(TESTFLAGS)
+	$(SLANGC) test zokor/internal/migration $(TESTFLAGS)
+	$(SLANGC) test zokor/internal/trace $(TESTFLAGS)
+	$(SLANGC) test zokor/internal/openapi $(TESTFLAGS)
+
+cli:
+	mkdir -p bin
+	$(SLANGC) cmd/zokor/main.sl -o bin/zokor
+
+cli-test: cli
+	sh tests/cli.sh
 
 example:
 	$(SLANGC) examples/hello/main.sl --run
@@ -37,4 +47,4 @@ api-check:
 	docs/gen_api.sh --check
 
 # Everything CI runs.
-check: test example example-chat snippets api-check
+check: test example example-chat snippets api-check cli-test

@@ -127,6 +127,9 @@ jobs:
           make example SLANGC="$SLANGC"
           make example-chat SLANGC="$SLANGC"
 
+      - name: CLI builds and runs
+        run: make cli-test SLANGC="$SLANGC"
+
       - name: Guide programs compile and run
         timeout-minutes: 10
         run: make snippets SLANGC="$SLANGC"

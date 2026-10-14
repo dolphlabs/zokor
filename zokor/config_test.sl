@@ -1,8 +1,9 @@
 import "internal/envfile";
 
 fn cfg_of(text: str) -> Config {
-    let probs: [Problem] = [];
-    return Config { values: envfile.parse(text), problems: probs, source: ".env" };
+    let cfg = config_from_values(envfile.parse(text));
+    cfg.source = ".env";
+    return cfg;
 }
 
 fn test_reads_values() {
@@ -106,4 +107,151 @@ fn says(hay: str, needle: str) -> bool {
         i = i + 1;
     }
     return false;
+}
+
+fn config_test_restore_env(key: str, prior: opt[str]) {
+    if let value = prior { os.setenv(key, value); } else { os.unsetenv(key); }
+}
+
+fn test_config_environment_is_a_startup_snapshot() {
+    let key = "ZOKOR_TEST_CONFIG_SNAPSHOT";
+    let prior = proc.getenv(key);
+    os.setenv(key, "before");
+    let cfg = load_config_from("");
+    os.setenv(key, "after");
+    let value = str_or(cfg, key, "missing");
+    config_test_restore_env(key, prior);
+    assert(value == "before", "loaded configuration changed after the environment changed: " + value);
+}
+
+fn config_test_options(profile: str) -> ConfigLoad {
+    let options = config_load();
+    options.directory = "testdata/config-profiles";
+    options.profile = profile;
+    return options;
+}
+
+fn test_config_profile_files_overlay_base_for_each_profile() {
+    let key = "ZOKOR_TEST_PROFILE_VALUE";
+    let prior = proc.getenv(key);
+    os.unsetenv(key);
+    for profile in ["dev", "test", "prod"] {
+        let cfg = load_config_with(config_test_options(profile));
+        let checked_ = check(cfg);
+        guard let _valid = checked_ else let e = err_of(checked_) { panic(e); }
+        assert(cfg.profile == profile && str_or(cfg, key, "missing") == profile);
+        assert(str_or(cfg, "ZOKOR_TEST_PROFILE_BASE", "missing") == "present");
+        assert(len(cfg.sources) == 2 && cfg.source == "testdata/config-profiles/.env." + profile);
+        assert(cfg.sources[0] == "testdata/config-profiles/.env");
+    }
+    config_test_restore_env(key, prior);
+}
+
+fn test_config_environment_wins_including_empty_values_and_explicit_profile_wins() {
+    let selector = proc.getenv("ZOKOR_PROFILE");
+    let override = proc.getenv("ZOKOR_TEST_PROFILE_OVERRIDE");
+    os.setenv("ZOKOR_PROFILE", "prod");
+    os.setenv("ZOKOR_TEST_PROFILE_OVERRIDE", "environment");
+    let cfg = load_config_with(config_test_options("test"));
+    let chosen = cfg.profile;
+    let before = str_or(cfg, "ZOKOR_TEST_PROFILE_OVERRIDE", "missing");
+    os.setenv("ZOKOR_TEST_PROFILE_OVERRIDE", "");
+    let empty = load_config_with(config_test_options("test"));
+    let empty_value = str_or(empty, "ZOKOR_TEST_PROFILE_OVERRIDE", "missing");
+    let held = str_or(cfg, "ZOKOR_TEST_PROFILE_OVERRIDE", "missing");
+    config_test_restore_env("ZOKOR_PROFILE", selector);
+    config_test_restore_env("ZOKOR_TEST_PROFILE_OVERRIDE", override);
+    assert(chosen == "test" && before == "environment" && held == before);
+    assert(has_key(empty, "ZOKOR_TEST_PROFILE_OVERRIDE") && empty_value == "");
+}
+
+fn test_config_automatic_profile_uses_startup_selector() {
+    let selector = proc.getenv("ZOKOR_PROFILE");
+    let value = proc.getenv("ZOKOR_TEST_PROFILE_VALUE");
+    os.unsetenv("ZOKOR_TEST_PROFILE_VALUE");
+    os.setenv("ZOKOR_PROFILE", "test");
+    let options = config_test_options("");
+    let cfg = load_config_with(options);
+    os.setenv("ZOKOR_PROFILE", "prod");
+    let held = cfg.profile;
+    let held_value = str_or(cfg, "ZOKOR_TEST_PROFILE_VALUE", "missing");
+    config_test_restore_env("ZOKOR_PROFILE", selector);
+    config_test_restore_env("ZOKOR_TEST_PROFILE_VALUE", value);
+    assert(held == "test" && held_value == "test");
+}
+
+fn test_config_profile_defaults_to_dev_without_selector() {
+    let selector = proc.getenv("ZOKOR_PROFILE");
+    let value = proc.getenv("ZOKOR_TEST_PROFILE_VALUE");
+    os.unsetenv("ZOKOR_PROFILE"); os.unsetenv("ZOKOR_TEST_PROFILE_VALUE");
+    let cfg = load_config_with(config_test_options(""));
+    config_test_restore_env("ZOKOR_PROFILE", selector);
+    config_test_restore_env("ZOKOR_TEST_PROFILE_VALUE", value);
+    assert(cfg.profile == "dev" && str_or(cfg, "ZOKOR_TEST_PROFILE_VALUE", "missing") == "dev");
+}
+
+fn test_config_profile_rejects_traversal_and_collects_all_load_options() {
+    let options = config_test_options("../prod");
+    options.directory = "";
+    options.max_file_bytes = 0;
+    let cfg = load_config_with(options);
+    let checked_ = check(cfg);
+    guard let _ok = checked_ else let e = err_of(checked_) {
+        assert(len(cfg.problems) == 3 && says(e, "ZOKOR_PROFILE") && says(e, "directory") && says(e, "max_file_bytes"));
+        assert(cfg.profile == "" && len(cfg.sources) == 0);
+        return;
+    }
+    panic("invalid options accepted");
+}
+
+fn test_config_load_errors_collect_each_file_and_required_fields() {
+    let options = config_test_options("test");
+    options.max_file_bytes = 1;
+    let cfg = load_config_with(options);
+    require(cfg, "ZOKOR_TEST_CONFIG_MISSING_REQUIRED");
+    let checked_ = check(cfg);
+    guard let _ok = checked_ else let e = err_of(checked_) {
+        assert(len(cfg.problems) == 3 && says(e, "testdata/config-profiles/.env exceeds max_file_bytes") && says(e, "testdata/config-profiles/.env.test exceeds max_file_bytes"));
+        assert(says(e, "ZOKOR_TEST_CONFIG_MISSING_REQUIRED is required"));
+        return;
+    }
+    panic("loading failures were discarded");
+}
+
+fn test_config_single_file_and_pure_values_do_not_select_profiles() {
+    let selector = proc.getenv("ZOKOR_PROFILE");
+    let value = proc.getenv("ZOKOR_TEST_PROFILE_VALUE");
+    os.setenv("ZOKOR_PROFILE", "prod"); os.unsetenv("ZOKOR_TEST_PROFILE_VALUE");
+    let cfg = load_config_from("testdata/config-profiles/.env.test");
+    let pure_values: map[str]str = { "NAME": "owned" };
+    let pure = config_from_values(pure_values);
+    pure_values["NAME"] = "changed";
+    config_test_restore_env("ZOKOR_PROFILE", selector);
+    config_test_restore_env("ZOKOR_TEST_PROFILE_VALUE", value);
+    assert(cfg.profile == "" && len(cfg.sources) == 1 && str_or(cfg, "ZOKOR_TEST_PROFILE_VALUE", "missing") == "test");
+    assert(str_or(pure, "NAME", "missing") == "owned" && len(pure.values) == 1 && pure.profile == "");
+}
+
+fn test_config_file_refuses_non_regular_and_nul_inputs() {
+    let dir = load_config_file("testdata/config-profiles", 1024);
+    let nul = load_config_file("testdata/migrations-nul/1_nul.sql", 1024);
+    assert(len(dir.problems) == 1 && says(dir.problems[0].reason, "regular file"));
+    assert(len(nul.problems) == 1 && says(nul.problems[0].reason, "NUL"));
+    assert(dir.problems[0].shown == "" && nul.problems[0].shown == "");
+}
+
+fn test_config_base_file_can_select_profile_but_environment_wins() {
+    let selector = proc.getenv("ZOKOR_PROFILE");
+    let value = proc.getenv("ZOKOR_TEST_PROFILE_VALUE");
+    os.unsetenv("ZOKOR_PROFILE"); os.unsetenv("ZOKOR_TEST_PROFILE_VALUE");
+    let options = config_load();
+    options.directory = "testdata/config-selected";
+    let selected = load_config_with(options);
+    os.setenv("ZOKOR_PROFILE", "prod");
+    let overridden = load_config_with(options);
+    config_test_restore_env("ZOKOR_PROFILE", selector);
+    config_test_restore_env("ZOKOR_TEST_PROFILE_VALUE", value);
+    assert(selected.profile == "test" && str_or(selected, "ZOKOR_TEST_PROFILE_VALUE", "missing") == "selected");
+    assert(overridden.profile == "prod" && str_or(overridden, "ZOKOR_TEST_PROFILE_VALUE", "missing") == "base");
+    assert(len(overridden.sources) == 1, "missing profile files are optional");
 }

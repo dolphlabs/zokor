@@ -96,7 +96,7 @@ declare, and every handler receives it.
 |---|---|
 | `Router[S]`, `Ctx[S]` | every HTTP method, `:params`, `*wildcards`, before/after middleware, automatic `HEAD` and `OPTIONS`, `Allow` on a 405 |
 | `Registry`, `respond*` | every HTTP failure code, one JSON envelope, field-level validation errors |
-| `load_config`, `require_*` | `.env` then the environment, per-variable validation, **every** problem reported at once |
+| `load_config`, `require_*` | `.env` plus profiles, startup environment snapshot, per-variable validation, **every** problem reported at once |
 | `parse_form`, `c.upload` | multipart/form-data: limits, type and extension allowlists, filenames made safe |
 | `snake_keys`, `decode_failed`, `checker` | DTOs: wire names, decode errors as field errors, validation |
 | `Json`, `parse`, `jobj` | JSON you did not declare: walk it, build it, render it |
@@ -123,8 +123,9 @@ behaviour without a deploy and cannot be tested without setting process
 state.
 
 ```slang
-let cfg = zokor.load_config();                 // ".env", then the environment
-// or: zokor.load_config_from(".env.test")
+let cfg = zokor.load_config();                 // .env + .env.<profile>, then environment
+// or: zokor.load_config_profile("test")
+// or: zokor.load_config_from("/etc/app/env")    // one explicit file
 
 let port = zokor.require_port(cfg, "PORT");
 let dsn  = zokor.require_dsn(cfg, "DATABASE_URL");
@@ -137,6 +138,30 @@ guard let _ok = ready else let e = err_of(ready) {
     exit(1);
 }
 ```
+
+Profiles are `dev`, `test` and `prod`. `load_config()` selects
+`ZOKOR_PROFILE` from the startup environment or base file, defaulting to
+`dev`, and
+loads `.env` followed by `.env.<profile>` if present. The profile file
+wins over the base file; environment values win over both, including
+empty values. `load_config_profile("test")` explicitly selects the test
+file even if the environment selector says otherwise. `cfg.profile`
+is the effective file-selection profile; `cfg.sources` lists the regular
+files attempted in precedence order.
+
+Values are captured once: changing the process environment after loading
+does not change `get`, `str_or` or the other accessors. For tests and
+fakes, `config_from_values(map)` owns a copy of supplied values and reads
+no environment. `load_config_from(path)` still loads exactly one file,
+with no profile overlay, and captures environment overrides once.
+
+`config_load()` supplies options for `load_config_with(options)`:
+`profile` (empty selects the startup selector), `directory` (`.`), and
+`max_file_bytes` (1 MiB per file). `load_config_file(path, limit)` is the
+single-file variant with a caller-selected bound. Missing files are
+optional; directories, NUL bytes, unreadable files and oversized files
+are errors. All loading and required-value problems reach `check(cfg)`
+together. Profile names cannot select arbitrary paths.
 
 Every problem comes back together, because a service with six unset
 variables should say so once instead of failing six times:
@@ -1088,6 +1113,146 @@ a hook that refreshes a cookie.
 are dropped), `revoke(token)` logs one session out and
 `revoke_subject(subject)` all of them. Tokens live in memory: they do
 not survive a restart and are not shared between instances.
+
+## Migrations
+
+`make cli` builds `bin/zokor`. Run `bin/zokor migrate [directory]` with
+`DATABASE_URL` configured; the default directory is `migrations`. Files
+are numbered forward-only SQL, for example `001_create_users.sql`.
+Versions must be positive and unique; descriptions use ASCII letters,
+digits, underscores or hyphens. Files are ordered numerically.
+
+The runner checks every applied filename and SHA-256 checksum, takes a
+Postgres transaction advisory lock, and applies the whole pending batch
+in one transaction. A failure rolls back SQL and history together. Keep
+applied files unchanged and present; add a new file for every change.
+SQL can contain multiple statements, comments and dollar-quoted function
+bodies. Explicit transaction/session commands and COPY are refused;
+nontransactional operations such as CREATE INDEX CONCURRENTLY belong in
+a separate operational procedure.
+
+Services can call `load_migrations(dir, migration_limits())` and
+`migrate(pool, migrations, deadline)` at startup. File limits are caller
+configurable; the CLI reads `MIGRATION_MAX_FILES` (1000),
+`MIGRATION_MAX_FILE_BYTES` (1 MiB), `MIGRATION_MAX_TOTAL_BYTES` (16 MiB),
+and `MIGRATION_TIMEOUT_SECONDS` (60, maximum 86400). Errors exit nonzero;
+success prints the applied count, including zero for an unchanged schema.
+
+## Metrics
+
+Metrics are opt-in: build `new_metrics(metrics_config())`, check its
+result, then call `r.metrics(metrics)`. The default endpoint is
+`GET /metrics` (HEAD also works), in Prometheus text format 0.0.4. It
+answers on a routing miss, so an explicit service route wins; the
+built-in scrape skips `before` hooks and does not count itself.
+
+`zokor_http_requests_total` and `zokor_http_request_duration_seconds`
+(cumulative histogram buckets, sum and count) label by method, registered
+route pattern and status. Client ids and unmatched paths never become
+labels: misses use `__unmatched__`, unknown methods use `OTHER`.
+`zokor_http_in_flight` covers dispatch and response writing, including
+static responses; panics complete as 500. Idle connections are excluded.
+
+`MetricsConfig` chooses the path, `max_series` (1000), `max_custom` (100),
+and increasing `buckets_ns`; exposition uses seconds. Configuration errors
+name every bad field. Beyond the series cap, completions increment
+`zokor_http_observations_dropped_total`; in-flight accounting still ends.
+Counters saturate at the largest integer rather than wrapping.
+
+Register service signals with `metrics.counter("jobs_completed_total",
+"Completed jobs")` or `metrics.gauge("queue_depth", "Queued jobs")`;
+each returns a checked `Metric`. `add(delta)` rejects negative counter
+deltas and overflow; `set(value)` is for gauges. Names use Prometheus
+ASCII identifiers, with `zokor_` reserved. Registration, updates and
+scrapes are concurrency-safe, and the framework reads no environment
+while serving.
+
+## Tracing
+
+Tracing is opt-in: check `new_tracer(trace_config())`, then call
+`r.tracing(tracer)` at startup. `c.trace()` returns the request's
+`TraceContext` (trace id, incoming parent id, current span id, sampled
+bit and vendor state). Missing, invalid or duplicate `traceparent`
+headers start a fresh trace; malformed `tracestate` is dropped without
+changing a valid parent. Limits default to 256 parent bytes, 512 state
+bytes and 32 state members, and can be lowered in `TraceConfig`.
+
+Use `c.trace_request(request)` before an `httpc` call. Check its result;
+it returns a copy with lowercase W3C headers and a fresh child span,
+without changing the original request or headers. For background work,
+pass `c.trace()` explicitly and call `trace_request(context, request)`.
+No context lives in thread-local storage.
+
+`c.logger(logger)` binds application log lines to the trace and request
+id; `traced_logger(logger, context)` does the same for an explicit
+context. Server request records and panic lines carry the same trace id.
+JSON logs always include `trace_id` (empty outside a trace); pretty logs
+append it when present. Framework errors use the request's `c.errors`
+registry: the default envelope includes `error.trace_id` when traced,
+and custom renderers receive it in `ErrorView.trace_id`. The startup
+registry remains shared and is never mutated per request. Use
+`trace_registry(registry, context)` for errors outside a handler.
+
+Sampling is propagated as a flag; this feature supplies context and
+correlation, without exporting spans. Entropy failures return an error
+from propagation helpers and a registered 500 from request dispatch.
+Tracing off creates no per-request context, registry or locals map.
+Idempotent replays retain the original response body, including its
+original error trace id; the replay's request log records the new trace.
+
+## OpenAPI
+
+Build an OpenAPI 3.1.1 document at startup from `r.routes_list()` and
+explicit JSON wire schemas. The generator reads no environment, creates
+no endpoint, and does no reflection over slang types.
+
+```slang
+let api = zokor.new_openapi("Users API", "1.0.0");
+api.schema("User", "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"}},\"required\":[\"id\"]}");
+let op = zokor.api_operation(zokor.Method.GET, "/users/:id");
+op.operation_id = "getUser";
+push(op.parameters, zokor.api_parameter("id", "path", "integer"));
+push(op.responses, zokor.api_response(200, "User"));
+push(op.errors, "not_found");
+api.operation(op);
+let generated = zokor.openapi_document(r.routes_list(), r.errors, api);
+// Check generated before saving or serving its JSON text.
+```
+
+`ApiOperation` declares an optional `request_schema`, request media type
+and required flag, response status/media/schema pairs, parameters, tags,
+summary and description. Schema names refer to registered DTOs;
+`string`, `integer`, `number`, `boolean`, `object`, `array` and `null`
+are inline primitives. `api_ref(name)` builds a reference definition.
+Schemas may use local component JSON pointers and recursive references;
+the generator preserves composition, formats and examples. It checks
+schema structure and references; services should also validate the full
+JSON Schema dialect in their contract checks.
+
+`:id` becomes `{id}` with a required string path parameter unless its
+metadata supplies another type. Routes without response metadata get a
+`default` response labelled as undeclared; success status and shape are
+never inferred. Exact duplicate registrations use the first route,
+matching the router. Colliding templates, duplicate operations or ids,
+unregistered metadata, invalid parameters, unknown schemas and unknown
+error codes are reported together. Unsupported `CONNECT` or wildcard
+routes must be explicitly excluded with `api.omit(method, pattern)`.
+Use the same method to exclude private routes from a published document.
+
+The document includes registered error codes, statuses and messages in
+`x-zokor-error-codes`; an operation's `errors` adds responses grouped by
+status. Error body contracts are explicit. For the default renderer,
+register `api_default_error_schema()` under your chosen name and set
+`api.error_schema` to that name. A custom renderer supplies its own schema
+and `api.error_media_type`. Without one, error responses make no body
+claim. Authentication metadata is not inferred from hooks; services can
+extend the generated JSON with their security schemes and requirements.
+
+`api.limits` defaults to 1000 routes, schemas and entries per metadata
+collection, 1 MiB per schema, 16 MiB total schema text and metadata text,
+schema depth 32 (maximum 64), and 16 MiB of generated JSON. Limits are
+caller-selected. Output preserves route registration order and sorts
+schema/error names, so map insertion order does not change it.
 
 ## WebSocket
 
