@@ -186,6 +186,7 @@ pub gc struct Router[S] {
     mounts: [FileMount],
     // The none every Ctx's `out` starts as.
     no_lines: opt[[str]],
+    observations: opt[Metrics],
 }
 
 // An application builds its router from its state alone; everything else
@@ -215,7 +216,8 @@ pub fn new_router[S](state: S) -> Router[S] {
         idem: none,
         gzip: none,
         mounts: [],
-        no_lines: none
+        no_lines: none,
+        observations: none
     };
 }
 
@@ -653,6 +655,27 @@ impl Router[S] {
         return out;
     }
 
+    // Opt-in Prometheus endpoint; a service's explicit route still wins.
+    pub fn metrics(self: Router[S], m: Metrics) -> int {
+        self.observations = some(m);
+        return 0;
+    }
+
+    fn metrics_pattern(self: Router[S], verb: str, raw: str) -> str {
+        let parsed = Method.from_str(verb);
+        guard let method = parsed else { return ""; }
+        let segs = path.split(path.strip_query(raw));
+        if len(self.rindex) > 0 {
+            let i = rindex_best(self.routes, self.rindex[0], segs, 0, method, self.auto_head && method == Method.HEAD);
+            if i >= 0 { return self.routes[i].pattern; }
+            return "";
+        }
+        for route in self.routes {
+            if route_fits(route.method, method, self.auto_head && method == Method.HEAD) && self.match_only(route, segs) { return route.pattern; }
+        }
+        return "";
+    }
+
     // Does this route's pattern match these segments? Binds parameters
     // into `params` only on a match, so a near miss costs no map.
     //
@@ -837,6 +860,20 @@ impl Router[S] {
     }
 
     pub fn serve_static(self: Router[S], f: http.WireFrame) -> result[http.StaticBody, http.Response] {
+        if let metrics = self.observations {
+            let i = self.static_index(f);
+            if i >= 0 && path.strip_query(f.path) != metrics.path {
+                let start = time.mono();
+                metrics.enter();
+                let hit = self.routes[i].static_hit;
+                guard let body = hit else {
+                    metrics.leave(f.method, self.routes[i].pattern, 500, (time.mono() - start) as int);
+                    return err(respond(self.errors, "internal", ""));
+                }
+                metrics.leave(f.method, self.routes[i].pattern, body.status as int, (time.mono() - start) as int);
+                return ok(body);
+            }
+        }
         let m = self.match_static(f);
         guard let sb = m else {
             return err(self.serve_frame(f, ""));
@@ -862,6 +899,12 @@ impl Router[S] {
     // so returning the pattern costs no allocation.
     pub fn serve_frame_routed(self: Router[S], f: http.WireFrame,
                               request_id: str, client_ip: str) -> Served {
+        if let m = self.observations { return metrics_frame(self, m, f, request_id, client_ip); }
+        return self.serve_frame_core(f, request_id, client_ip);
+    }
+
+    fn serve_frame_core(self: Router[S], f: http.WireFrame,
+                         request_id: str, client_ip: str) -> Served {
         // Method without from_str: the frame path already holds the
         // method str, and only the enum comparison matters below.
         // Compare inline (GET/POST/HEAD cover the bench + almost all
@@ -878,19 +921,19 @@ impl Router[S] {
         } else if !mget {
             let parsed = Method.from_str(f.method);
             guard let m = parsed else {
-                return self.serve_id_routed(http.wire_request(f), request_id, client_ip);
+                return self.serve_id_core(http.wire_request(f), request_id, client_ip);
             }
             method = m;
             if self.cors.on && method == Method.OPTIONS {
                 // A preflight is answered before routing, in serve_id.
-                return self.serve_id_routed(http.wire_request(f), request_id, client_ip);
+                return self.serve_id_core(http.wire_request(f), request_id, client_ip);
             }
         }
         let head_of_get = self.auto_head && method == Method.HEAD;
         let req = http.wire_request(f);
         if len(self.rindex) > 0 {
             // a big router: one trie walk instead of the per-route scan
-            return self.serve_id_routed(req, request_id, client_ip);
+            return self.serve_id_core(req, request_id, client_ip);
         }
         // Query strings never route: strip once, compare the rest.
         // strip_query returns the SAME str when there is no "?" --
@@ -989,7 +1032,7 @@ impl Router[S] {
         }
         // General routes (wildcards, multi-param) or no frame hit:
         // the Request is already built -- use the classic path.
-        return self.serve_id_routed(req, request_id, client_ip);
+        return self.serve_id_core(req, request_id, client_ip);
     }
 
     pub fn serve_id(self: Router[S], req: http.Request,
@@ -1004,6 +1047,12 @@ impl Router[S] {
 
     pub fn serve_id_routed(self: Router[S], req: http.Request,
                            request_id: str, client_ip: str) -> Served {
+        if let m = self.observations { return metrics_request(self, m, req, request_id, client_ip); }
+        return self.serve_id_core(req, request_id, client_ip);
+    }
+
+    fn serve_id_core(self: Router[S], req: http.Request,
+                      request_id: str, client_ip: str) -> Served {
         let p = path.strip_query(req.path);
         let segs = path.split(p);
         // An unknown verb cannot match any route, and is not a 404: the
@@ -1119,6 +1168,16 @@ impl Router[S] {
             errors: self.errors
         };
         if !path_seen {
+            if let m = self.observations {
+                if p == m.path {
+                    c.route = m.path;
+                    let resp = metrics_response(m);
+                    if method != Method.GET && method != Method.HEAD {
+                        resp = http.with_header(respond(self.errors, "method_not_allowed", request_id), "allow", "GET, HEAD");
+                    }
+                    return Served { resp: self.finish(c, resp), route: m.path };
+                }
+            }
             if len(self.ready.live_path) > 0 &&
                (p == self.ready.live_path || p == self.ready.ready_path) {
                 c.route = p;

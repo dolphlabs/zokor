@@ -189,9 +189,14 @@ library, made and merged there first.
   advisory lock. `make cli` builds `bin/zokor migrate [directory]`.
   Tests cover replay, changed/missing history, rollback across files,
   concurrent runners, SQL boundaries, file limits and embedded NULs.
-- [ ] **Metrics**: Prometheus text format at `/metrics`; request count and
-  latency histogram by route pattern, in-flight gauge, and hooks for a
-  service's own.
+- [x] **Metrics**: `new_metrics` (check its result) and `r.metrics`
+  opt into Prometheus `/metrics`, request
+  counts and cumulative latency histograms by method/pattern/status,
+  and an in-flight gauge balanced on static, dynamic and panic paths.
+  Bounded series/custom metrics, counter/gauge registration, escaped
+  exposition, concurrent updates and a real blocked-handler scrape are
+  tested. Default-off probe: +1 startup allocation (64 bytes), none per
+  request; 974 -> 1,000.5 ns medians in ABBA x4, inside the run spread.
 - [ ] **Tracing**: W3C `traceparent` in, propagated to outbound calls, and the
   trace id on every log line and error envelope.
 - [x] **Background work**: `new_jobs` -- cron schedules read in a time zone

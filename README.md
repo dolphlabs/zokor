@@ -1113,6 +1113,35 @@ configurable; the CLI reads `MIGRATION_MAX_FILES` (1000),
 and `MIGRATION_TIMEOUT_SECONDS` (60, maximum 86400). Errors exit nonzero;
 success prints the applied count, including zero for an unchanged schema.
 
+## Metrics
+
+Metrics are opt-in: build `new_metrics(metrics_config())`, check its
+result, then call `r.metrics(metrics)`. The default endpoint is
+`GET /metrics` (HEAD also works), in Prometheus text format 0.0.4. It
+answers on a routing miss, so an explicit service route wins; the
+built-in scrape skips `before` hooks and does not count itself.
+
+`zokor_http_requests_total` and `zokor_http_request_duration_seconds`
+(cumulative histogram buckets, sum and count) label by method, registered
+route pattern and status. Client ids and unmatched paths never become
+labels: misses use `__unmatched__`, unknown methods use `OTHER`.
+`zokor_http_in_flight` covers dispatch and response writing, including
+static responses; panics complete as 500. Idle connections are excluded.
+
+`MetricsConfig` chooses the path, `max_series` (1000), `max_custom` (100),
+and increasing `buckets_ns`; exposition uses seconds. Configuration errors
+name every bad field. Beyond the series cap, completions increment
+`zokor_http_observations_dropped_total`; in-flight accounting still ends.
+Counters saturate at the largest integer rather than wrapping.
+
+Register service signals with `metrics.counter("jobs_completed_total",
+"Completed jobs")` or `metrics.gauge("queue_depth", "Queued jobs")`;
+each returns a checked `Metric`. `add(delta)` rejects negative counter
+deltas and overflow; `set(value)` is for gauges. Names use Prometheus
+ASCII identifiers, with `zokor_` reserved. Registration, updates and
+scrapes are concurrency-safe, and the framework reads no environment
+while serving.
+
 ## WebSocket
 
 A connection is a **state machine, not a socket**: you hand it the bytes
