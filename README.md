@@ -1175,6 +1175,60 @@ Tracing off creates no per-request context, registry or locals map.
 Idempotent replays retain the original response body, including its
 original error trace id; the replay's request log records the new trace.
 
+## OpenAPI
+
+Build an OpenAPI 3.1.1 document at startup from `r.routes_list()` and
+explicit JSON wire schemas. The generator reads no environment, creates
+no endpoint, and does no reflection over slang types.
+
+```slang
+let api = zokor.new_openapi("Users API", "1.0.0");
+api.schema("User", "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"}},\"required\":[\"id\"]}");
+let op = zokor.api_operation(zokor.Method.GET, "/users/:id");
+op.operation_id = "getUser";
+push(op.parameters, zokor.api_parameter("id", "path", "integer"));
+push(op.responses, zokor.api_response(200, "User"));
+push(op.errors, "not_found");
+api.operation(op);
+let generated = zokor.openapi_document(r.routes_list(), r.errors, api);
+// Check generated before saving or serving its JSON text.
+```
+
+`ApiOperation` declares an optional `request_schema`, request media type
+and required flag, response status/media/schema pairs, parameters, tags,
+summary and description. Schema names refer to registered DTOs;
+`string`, `integer`, `number`, `boolean`, `object`, `array` and `null`
+are inline primitives. `api_ref(name)` builds a reference definition.
+Schemas may use local component JSON pointers and recursive references;
+the generator preserves composition, formats and examples. It checks
+schema structure and references; services should also validate the full
+JSON Schema dialect in their contract checks.
+
+`:id` becomes `{id}` with a required string path parameter unless its
+metadata supplies another type. Routes without response metadata get a
+`default` response labelled as undeclared; success status and shape are
+never inferred. Exact duplicate registrations use the first route,
+matching the router. Colliding templates, duplicate operations or ids,
+unregistered metadata, invalid parameters, unknown schemas and unknown
+error codes are reported together. Unsupported `CONNECT` or wildcard
+routes must be explicitly excluded with `api.omit(method, pattern)`.
+Use the same method to exclude private routes from a published document.
+
+The document includes registered error codes, statuses and messages in
+`x-zokor-error-codes`; an operation's `errors` adds responses grouped by
+status. Error body contracts are explicit. For the default renderer,
+register `api_default_error_schema()` under your chosen name and set
+`api.error_schema` to that name. A custom renderer supplies its own schema
+and `api.error_media_type`. Without one, error responses make no body
+claim. Authentication metadata is not inferred from hooks; services can
+extend the generated JSON with their security schemes and requirements.
+
+`api.limits` defaults to 1000 routes, schemas and entries per metadata
+collection, 1 MiB per schema, 16 MiB total schema text and metadata text,
+schema depth 32 (maximum 64), and 16 MiB of generated JSON. Limits are
+caller-selected. Output preserves route registration order and sorts
+schema/error names, so map insertion order does not change it.
+
 ## WebSocket
 
 A connection is a **state machine, not a socket**: you hand it the bytes
