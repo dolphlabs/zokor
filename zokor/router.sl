@@ -187,6 +187,9 @@ pub gc struct Router[S] {
     // The none every Ctx's `out` starts as.
     no_lines: opt[[str]],
     observations: opt[Metrics],
+    tracer: opt[Tracer],
+    no_tracer: opt[Tracer],
+    request_locals: opt[map[str]str],
 }
 
 // An application builds its router from its state alone; everything else
@@ -198,6 +201,7 @@ pub fn new_router[S](state: S) -> Router[S] {
     let no_routes: [Route[S]] = [];
     let no_befores: [fn(Ctx[S]) -> opt[http.Response]] = [];
     let no_afters: [fn(Ctx[S], http.Response) -> http.Response] = [];
+    let no_tracer: opt[Tracer] = none;
     return Router[S] {
         routes: no_routes,
         befores: no_befores,
@@ -217,7 +221,10 @@ pub fn new_router[S](state: S) -> Router[S] {
         gzip: none,
         mounts: [],
         no_lines: none,
-        observations: none
+        observations: none,
+        tracer: no_tracer,
+        no_tracer: no_tracer,
+        request_locals: none
     };
 }
 
@@ -661,6 +668,11 @@ impl Router[S] {
         return 0;
     }
 
+    pub fn tracing(self: Router[S], driver: Tracer) -> int {
+        self.tracer = some(driver);
+        return 0;
+    }
+
     fn metrics_pattern(self: Router[S], verb: str, raw: str) -> str {
         let parsed = Method.from_str(verb);
         guard let method = parsed else { return ""; }
@@ -905,6 +917,12 @@ impl Router[S] {
 
     fn serve_frame_core(self: Router[S], f: http.WireFrame,
                          request_id: str, client_ip: str) -> Served {
+        if let driver = self.tracer {
+            let generated = trace_context(driver, f.headers);
+            guard let context = generated else { return trace_failed(self, http.wire_request(f), request_id, client_ip); }
+            let scoped = trace_router(self, context);
+            return scoped.serve_frame_core(f, request_id, client_ip);
+        }
         // Method without from_str: the frame path already holds the
         // method str, and only the enum comparison matters below.
         // Compare inline (GET/POST/HEAD cover the bench + almost all
@@ -972,7 +990,7 @@ impl Router[S] {
                     request_id: request_id,
                     client_ip: client_ip,
                     out: self.no_lines,
-                    locals: r.no_map,
+                    locals: self.request_locals,
                     errors: self.errors
                 };
                 let resp = self.run(c, r);
@@ -1022,7 +1040,7 @@ impl Router[S] {
                     request_id: request_id,
                     client_ip: client_ip,
                     out: self.no_lines,
-                    locals: r.no_map,
+                    locals: self.request_locals,
                     errors: self.errors
                 };
                 let resp = self.run(c, r);
@@ -1053,6 +1071,12 @@ impl Router[S] {
 
     fn serve_id_core(self: Router[S], req: http.Request,
                       request_id: str, client_ip: str) -> Served {
+        if let driver = self.tracer {
+            let generated = trace_context(driver, req.raw_headers);
+            guard let context = generated else { return trace_failed(self, req, request_id, client_ip); }
+            let scoped = trace_router(self, context);
+            return scoped.serve_id_core(req, request_id, client_ip);
+        }
         let p = path.strip_query(req.path);
         let segs = path.split(p);
         // An unknown verb cannot match any route, and is not a 404: the
@@ -1069,7 +1093,7 @@ impl Router[S] {
                 request_id: request_id,
                 client_ip: client_ip,
                 out: self.no_lines,
-                locals: none,
+                locals: self.request_locals,
                 errors: self.errors
             };
             return Served { resp: self.finish(uc, respond(self.errors, "not_implemented",
@@ -1147,7 +1171,7 @@ impl Router[S] {
                 request_id: request_id,
                 client_ip: client_ip,
                 out: self.no_lines,
-                locals: r.no_map,
+                locals: self.request_locals,
                 errors: self.errors
             };
             let resp = self.run(c, r);
@@ -1164,7 +1188,7 @@ impl Router[S] {
             request_id: request_id,
             client_ip: client_ip,
             out: self.no_lines,
-            locals: none,
+            locals: self.request_locals,
             errors: self.errors
         };
         if !path_seen {
@@ -1337,17 +1361,17 @@ impl Router[S] {
     // reports a failure with `r.fail(c, "org.not_found")`, never by
     // writing JSON.
     pub fn fail(self: Router[S], c: Ctx[S], code: str) -> http.Response {
-        return respond(self.errors, code, c.request_id);
+        return respond(c.errors, code, c.request_id);
     }
 
     pub fn fail_with(self: Router[S], c: Ctx[S], code: str,
                      detail: str) -> http.Response {
-        return respond_with(self.errors, code, detail, c.request_id);
+        return respond_with(c.errors, code, detail, c.request_id);
     }
 
     pub fn fail_fields(self: Router[S], c: Ctx[S], code: str,
                        fields: [FieldError]) -> http.Response {
-        return respond_fields(self.errors, code, fields, c.request_id);
+        return respond_fields(c.errors, code, fields, c.request_id);
     }
 }
 
@@ -1532,6 +1556,24 @@ impl Group[S] {
 }
 
 impl Ctx[S] {
+    // Empty identifiers when tracing is off. Reserved __zokor_ locals
+    // reuse the hook context without increasing every untraced Ctx.
+    pub fn trace(self: Ctx[S]) -> TraceContext {
+        return TraceContext { trace_id: self.local("__zokor_trace_id"),
+            parent_id: self.local("__zokor_parent_id"), span_id: self.local("__zokor_span_id"),
+            sampled: self.local("__zokor_sampled") == "1", state: self.local("__zokor_tracestate") };
+    }
+
+    pub fn trace_request(self: Ctx[S], req: httpc.Request) -> result[httpc.Request, str] {
+        return trace_request(self.trace(), req);
+    }
+
+    pub fn logger(self: Ctx[S], log: Logger) -> TraceLogger {
+        let bound = traced_logger(log, self.trace());
+        bound.request_id = self.request_id;
+        return bound;
+    }
+
     pub fn param(self: Ctx[S], name: str) -> str {
         if len(self.param1_name) > 0 && self.param1_name == name {
             return self.param1_value;

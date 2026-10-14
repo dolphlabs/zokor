@@ -98,6 +98,7 @@ pub gc struct LogEvent {
     size: int,
     request_id: str,
     client_ip: str,
+    trace_id: str,
     // For a flush marker only: the writer sends 1 here once everything
     // before the marker is written.
     ack: opt[chan[int]],
@@ -368,6 +369,7 @@ fn line_event(level: LogLevel, context: str, message: str) -> LogEvent {
         size: 0,
         request_id: "",
         client_ip: "",
+        trace_id: "",
         ack: none
     };
 }
@@ -401,6 +403,7 @@ pub fn request_event(method: str, route: str, raw_path: str, status: int,
         size: size,
         request_id: request_id,
         client_ip: client_ip,
+        trace_id: "",
         ack: none
     };
 }
@@ -653,6 +656,8 @@ impl LogFormat {
           .write(self.millis(ev.time)).write("Z\",\"level\":\"")
           .write(level_name(ev.level)).write("\",\"pid\":").write(self.pid)
           .write(",\"context\":").write(self.quoted_route(ev.context));
+        sb.write(",\"trace_id\":");
+        quote_into(sb, ev.trace_id);
         if !ev.request {
             sb.write(",\"msg\":");
             quote_into(sb, ev.message);
@@ -735,6 +740,9 @@ impl LogFormat {
             self.duration_into(sb, ev.duration_ns);
         } else if since_ns > 0 {
             sb.write(" +").write(self.num(since_ns / 1000000)).write("ms");
+        }
+        if len(ev.trace_id) > 0 {
+            sb.write(" trace=").write(ev.trace_id);
         }
         if color {
             sb.write(esc_seq("39"));
