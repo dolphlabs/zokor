@@ -32,6 +32,20 @@ fn forbidden(word: str) -> bool {
         word == "prepare" || word == "set" || word == "reset" || word == "discard" || word == "copy";
 }
 
+fn dollar_end(b: bytes, start: int, tag_start: int, tag_len: int) -> int {
+    let i = start;
+    while i <= len(b) - tag_len {
+        if b[i] != 36 { i = i + 1; continue; }
+        let j = 1;
+        while j < tag_len && b[i + j] == b[tag_start + j] { j = j + 1; }
+        if j == tag_len { return i + tag_len; }
+        // A tag has no interior '$', so no possible opening delimiter
+        // is skipped. Each body byte is examined at most twice.
+        i = i + j;
+    }
+    return -1;
+}
+
 // Split outside quotes/comments. Each result is sent through pg.query,
 // whose extended protocol refuses multiple commands in one statement.
 // Transaction/session control belongs to the runner, never to a file.
@@ -97,11 +111,9 @@ pub fn statements(sql: str) -> result[[str], str] {
                 while end < len(b) && (letter(b[end] as int) || digit(b[end] as int)) { end = end + 1; }
             }
             if end < len(b) && b[end] == 36 {
-                let tag = strings.slice(sql, i, end + 1);
-                let tail = strings.slice(sql, end + 1, len(b));
-                let at = strings.find(tail, tag);
-                if at < 0 { return err("unterminated dollar quote; add " + tag); }
-                i = end + 1 + at + len(tag);
+                let at = dollar_end(b, end + 1, i, end + 1 - i);
+                if at < 0 { return err("unterminated dollar quote; add " + strings.slice(sql, i, end + 1)); }
+                i = at;
                 continue;
             }
         }
