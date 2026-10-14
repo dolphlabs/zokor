@@ -221,8 +221,13 @@ library, made and merged there first.
   labelled undeclared. Deterministic output and template collisions tested;
   generated fixture accepted by openapi-spec-validator 0.9.0. No automatic
   endpoint or reflection, and no request-path changes.
-- [ ] **Config profiles** (`dev`, `test`, `prod`), and `.env.test` selection
-  from the profile.
+- [x] **Config profiles**: `dev`/`test`/`prod` selected by `ZOKOR_PROFILE`
+  (default dev) or an explicit loader; base .env then profile file then
+  environment. Fix accessors reading live environment: values now form
+  a startup snapshot, including empty overrides. Pure value-map factory
+  supports fakes. Caller-bounded regular-file reads reject NUL and collect
+  failures from both files; tests cover selection, precedence, snapshots,
+  invalid profiles, limits and aggregate errors.
 - [ ] Content negotiation (`Accept`) and redirect helpers.
 - [ ] **`zokor check`**: the layout checker. Import direction, only the
   database adapter imports `pg`, no SQL built by concatenation, every
