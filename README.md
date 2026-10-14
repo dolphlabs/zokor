@@ -96,7 +96,7 @@ declare, and every handler receives it.
 |---|---|
 | `Router[S]`, `Ctx[S]` | every HTTP method, `:params`, `*wildcards`, before/after middleware, automatic `HEAD` and `OPTIONS`, `Allow` on a 405 |
 | `Registry`, `respond*` | every HTTP failure code, one JSON envelope, field-level validation errors |
-| `load_config`, `require_*` | `.env` then the environment, per-variable validation, **every** problem reported at once |
+| `load_config`, `require_*` | `.env` plus profiles, startup environment snapshot, per-variable validation, **every** problem reported at once |
 | `parse_form`, `c.upload` | multipart/form-data: limits, type and extension allowlists, filenames made safe |
 | `snake_keys`, `decode_failed`, `checker` | DTOs: wire names, decode errors as field errors, validation |
 | `Json`, `parse`, `jobj` | JSON you did not declare: walk it, build it, render it |
@@ -123,8 +123,9 @@ behaviour without a deploy and cannot be tested without setting process
 state.
 
 ```slang
-let cfg = zokor.load_config();                 // ".env", then the environment
-// or: zokor.load_config_from(".env.test")
+let cfg = zokor.load_config();                 // .env + .env.<profile>, then environment
+// or: zokor.load_config_profile("test")
+// or: zokor.load_config_from("/etc/app/env")    // one explicit file
 
 let port = zokor.require_port(cfg, "PORT");
 let dsn  = zokor.require_dsn(cfg, "DATABASE_URL");
@@ -137,6 +138,30 @@ guard let _ok = ready else let e = err_of(ready) {
     exit(1);
 }
 ```
+
+Profiles are `dev`, `test` and `prod`. `load_config()` selects
+`ZOKOR_PROFILE` from the startup environment or base file, defaulting to
+`dev`, and
+loads `.env` followed by `.env.<profile>` if present. The profile file
+wins over the base file; environment values win over both, including
+empty values. `load_config_profile("test")` explicitly selects the test
+file even if the environment selector says otherwise. `cfg.profile`
+is the effective file-selection profile; `cfg.sources` lists the regular
+files attempted in precedence order.
+
+Values are captured once: changing the process environment after loading
+does not change `get`, `str_or` or the other accessors. For tests and
+fakes, `config_from_values(map)` owns a copy of supplied values and reads
+no environment. `load_config_from(path)` still loads exactly one file,
+with no profile overlay, and captures environment overrides once.
+
+`config_load()` supplies options for `load_config_with(options)`:
+`profile` (empty selects the startup selector), `directory` (`.`), and
+`max_file_bytes` (1 MiB per file). `load_config_file(path, limit)` is the
+single-file variant with a caller-selected bound. Missing files are
+optional; directories, NUL bytes, unreadable files and oversized files
+are errors. All loading and required-value problems reach `check(cfg)`
+together. Profile names cannot select arbitrary paths.
 
 Every problem comes back together, because a service with six unset
 variables should say so once instead of failing six times:

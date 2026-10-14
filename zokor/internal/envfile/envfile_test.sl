@@ -37,3 +37,9 @@ fn test_crlf() {
     assert(m["A"] == "1");
     assert(m["B"] == "2");
 }
+
+fn test_environment_snapshot_keeps_empty_values_first_duplicate_and_equals() {
+    let values = environment(["A=first", "A=second", "EMPTY=", "TOKEN=a=b=c", "invalid", "=empty-key"]);
+    assert(values["A"] == "first" && values["EMPTY"] == "" && values["TOKEN"] == "a=b=c");
+    assert(len(values) == 3);
+}
