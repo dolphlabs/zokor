@@ -125,3 +125,18 @@ pub fn trim(v: str) -> str {
     }
     return to_str(b[s..e]);
 }
+
+// POSIX getenv selects the first repeated key; keep that order in a snapshot.
+// Splitting at the first equals preserves equals signs inside values.
+pub fn environment(entries: [str]) -> map[str]str {
+    let out: map[str]str = {};
+    for entry in entries {
+        let b = to_bytes(entry);
+        let i = 0;
+        while i < len(b) && b[i] != 61 { i += 1; }
+        if i == 0 || i == len(b) { continue; }
+        let key = to_str(b[0..i]);
+        if !has(out, key) { out[key] = to_str(b[i + 1..len(b)]); }
+    }
+    return out;
+}

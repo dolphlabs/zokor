@@ -150,7 +150,7 @@ fn count(c: zokor.Ctx[App], r: http.Response) -> http.Response {
 }
 
 // Configuration is read once, here, and validated before anything runs.
-let cfg = zokor.load_config();          // ".env", then the environment
+let cfg = zokor.load_config();          // base, profile, startup environment
 
 let app = App {
     name: zokor.str_or(cfg, "SERVICE_NAME", "hello"),

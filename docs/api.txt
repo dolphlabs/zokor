@@ -64,13 +64,16 @@ preconditions[S](c: Ctx[S], etag: str, last_modified: opt[timez.Time]) -> opt[ht
 
 ## config.sl -- Configuration: read once, validated once, then held as a value.
 gc struct Problem { key: str, reason: str, shown: str }
-gc struct Config { values: map[str]str, problems: [Problem], source: str }
-default_env_path() -> str
-    The default file name, used by `load_config`.
-load_config() -> Config
-    `.env` if present, then the environment -- which always wins, so a shell override does what it looks like it does and a...
-load_config_from(path: str) -> Config
-    The same, from a path of your choosing (".env.test", "/etc/app/env").
+gc struct Config { values: map[str]str, problems: [Problem], source: str, profile: str, sources: [str] }
+gc struct ConfigLoad { profile: str, directory: str, max_file_bytes: int }
+    Profile selection and file limits, chosen before startup loading.
+config_load() -> ConfigLoad
+config_from_values(values: map[str]str) -> Config
+    Own a copy of supplied values, with no process-state reads: useful for fakes.
+default_env_path() -> str { return ".env"; } // Base .env, then .env.<profile>, then one environment snapshot. pub fn load_config() -> Config { return load_config_with(config_load()); } // Explicit dev/test/prod overrides ZOKOR_PROFILE for file selection. pub fn load_config_profile(profile: str) -> Config
+load_config_with(options: ConfigLoad) -> Config
+load_config_from(path: str) -> Config { return load_config_file(path, config_load().max_file_bytes); } pub fn load_config_file(path: str, max_file_bytes: int) -> Config
+    Load one explicit file, then apply the captured environment; no profile overlay.
 get(c: Config, key: str) -> opt[str]
 has_key(c: Config, key: str) -> bool
 str_or(c: Config, key: str, fallback: str) -> str
