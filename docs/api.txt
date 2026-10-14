@@ -380,6 +380,26 @@ LogFormat.json(ev: LogEvent) -> str
     The same as single strings, without the newline: for a consumer that wants one line at a time.
 LogFormat.pretty(ev: LogEvent, color: bool, since_ns: int) -> str
 
+## metrics.sl -- Opt-in Prometheus metrics with bounded request series and custom scalars.
+gc struct MetricsConfig { path: str, max_series: int, max_custom: int, buckets_ns: [int] }
+metrics_config() -> MetricsConfig
+enum MetricKind { Counter, Gauge }
+gc struct Metric { name: str, help: str, kind: MetricKind, lock: mutex, value: int }
+gc struct Metrics { path: str, max_series: int, max_custom: int, bounds: [int], lock: mutex, active: int, dropped: int, routes: map[str]int, series_index: map[int]int, series: [RequestSeries], custom: [Metric] }
+new_metrics(cfg: MetricsConfig) -> result[Metrics, str]
+    Copies configuration so later caller mutations cannot change bucket shapes.
+Metrics.enter()
+Metrics.leave(method: str, route: str, status: int, ns: int)
+    One completion for each enter, including a panic or failed socket write.
+Metrics.counter(name: str, help: str) -> result[Metric, str]
+Metrics.gauge(name: str, help: str) -> result[Metric, str]
+Metric.add(delta: int) -> result[bool, str]
+    Counters only increase; gauges can add a signed delta.
+Metric.set(value: int) -> result[bool, str]
+Metric.read() -> int
+metrics_text(m: Metrics) -> str
+    A consistent snapshot is copied under the lock; text formatting happens after unlocking so scrapes do not hold up request...
+
 ## migrations.sl -- Forward-only SQL migrations: immutable history and an atomic pending batch.
 gc struct Migration { version: int, name: str, sql: str, checksum: str }
 gc struct MigrationLimits { max_files: int, max_file_bytes: int, max_total_bytes: int }
@@ -496,7 +516,7 @@ gc struct Ctx[S] { state: S, req: http.Request, params: opt[map[str]str], param1
 struct Served { resp: http.Response, route: str }
     A response and the route pattern that produced it, for the request log.
 gc struct Route[S] { method: Method, pattern: str, befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], segs: [str], names: [str], wild: int, fkind: int, fpath: str, handler: fn(Ctx[S]) -> http.Response, has_static: bool, static_status: i32, static_ctype: str, static_body: bytes, static_rendered: bytes, static_hit: opt[http.StaticBody], static_close_hit: opt[http.StaticBody], no_map: opt[map[str]str] }
-gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security, sanitize: SanitizeMode, auto_etag: bool, rindex: [RNode], static_paths: map[str]int, idem: opt[Idempotency], gzip: opt[Compression], mounts: [FileMount], no_lines: opt[[str]] }
+gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security, sanitize: SanitizeMode, auto_etag: bool, rindex: [RNode], static_paths: map[str]int, idem: opt[Idempotency], gzip: opt[Compression], mounts: [FileMount], no_lines: opt[[str]], observations: opt[Metrics] }
     A `before` runs ahead of the handler and may end the request by returning a response; `none` carries on.
 new_router[S](state: S) -> Router[S]
     An application builds its router from its state alone; everything else starts empty or at the default a correct server should...
@@ -549,6 +569,8 @@ Router.ready_timeout(ns: int) -> int
     How long /readyz waits for its checks, in nanoseconds; below 1ms is raised to 1ms.
 Router.routes_list() -> [str]
     "METHOD /pattern" per route, in registration order: for a boot log, for `zokor check`, and for a test that pins down the...
+Router.metrics(m: Metrics) -> int
+    Opt-in Prometheus endpoint; a service's explicit route still wins.
 Router.allowed(p: str) -> [Method]
     The methods registered for a path, for `Allow` on a 405 and for an automatic OPTIONS.
 Router.serve(req: http.Request) -> http.Response
