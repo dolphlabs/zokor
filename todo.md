@@ -240,11 +240,21 @@ library, made and merged there first.
   database adapter imports `pg`, no SQL built by concatenation, every
   package has tests, routes private by default, tenant id an explicit
   parameter. `tyto`'s `AGENTS.md` is the seed and the reason this exists.
-- [ ] **Ports and fakes**, documented as *the* dependency pattern: a struct of
+- [x] **Ports and fakes**, documented as *the* dependency pattern: a struct of
   `fn` values wired at startup, and a fake for tests. slang has no reflection
   or closures, so this is the answer to what Spring and Nest do with a
   container; it needs a guide and a worked example, not a framework. The
-  logger (section 1) is its first instance.
+  logger (section 1) is its first instance. Done: existing README recipe
+  and examples/ports, with explicit generic adapter context, tenant-bound
+  calls, immutable memory wiring and test-only success/absence/failure fakes.
+  All four packages are tested; authentication, tenant binding, validation
+  and registered HTTP error mapping are exercised hermetically.
+
+Compiler follow-up: a generic HTTP helper whose argument contained its
+own generic `App[C]` failed with `<package> is not an imported package`
+when calling generic Ctx helpers. Reproduced with both http and web package
+names. The example uses concrete route contexts and passes explicit values
+to its generic response helper. No compiler change is included here.
 
 ## 4. Realtime and transport
 

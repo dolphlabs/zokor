@@ -126,6 +126,7 @@ jobs:
         run: |
           make example SLANGC="$SLANGC"
           make example-chat SLANGC="$SLANGC"
+          make example-ports SLANGC="$SLANGC"
 
       - name: CLI builds and runs
         run: make cli-test SLANGC="$SLANGC"

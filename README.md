@@ -1457,6 +1457,52 @@ guide's snippets (`docs/llms-small.txt`, via `make snippets`), and
 `make api-check`, so neither the guide nor the API reference can drift
 from the code. CI runs the same against slangc built from slang `dev`.
 
+## Dependencies: ports and fakes
+
+Use a struct of function values, wired once at startup. A service holds
+that port and calls it; concrete database or HTTP clients live in adapters.
+Slang has no closures, so pass adapter state explicitly rather than hiding
+it in globals:
+
+```slang
+pub gc struct StockPort[C] {
+    context: C,
+    lookup: fn(C, str, str) -> result[opt[Stock], str],
+}
+// A top-level adapter function has the same signature:
+// lookup(context, tenant_id, sku). Startup injects its function and context.
+```
+
+The application defines the port. Infrastructure imports that definition
+and implements it; application code imports domain types and never the
+adapter. The bootstrap imports both and connects them. Tenant identity
+remains an explicit argument through each call. An optional result
+separates a missing record from an unavailable dependency. The HTTP edge
+maps failures to registered errors without exposing adapter diagnostics.
+
+[examples/ports/src/main.sl](examples/ports/src/main.sl) is the worked
+example: a tenant-scoped stock service, an immutable memory adapter,
+a protected route, and startup configuration. `make example-ports` drives
+the real router pipeline without opening sockets. It prints an
+unauthenticated 401, the seeded stock, and a registered missing-stock 404.
+The existing hello/chat examples keep their behavior.
+
+Application fakes live in `fakes_test.sl`, so the compiler excludes them
+from service builds. They supply the same function signature with their
+own explicit state, return canned success/absence/failure, and record calls.
+Tests prove that invalid input never reaches a port, tenant identity is
+passed through, another tenant's record is rejected, unauthenticated HTTP
+requests cannot invoke the port, and adapter details do not reach clients.
+`make test` lists all four example packages; `make check` also runs its
+startup wiring.
+
+For generic application services, use small concrete top-level route
+functions in the bootstrap to call the generic HTTP helpers. The example
+uses this ordinary function-value pattern for registration and gives tests
+their own wrappers. Each adapter owns its concurrency rules: the example
+copies its seed data once and never mutates it after startup; a mutable
+adapter must synchronize its state.
+
 ## Agent guide
 
 An agent writing a service reads slang's `llms-small.txt` then
