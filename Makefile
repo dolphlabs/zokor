@@ -18,6 +18,8 @@ test:
 	$(SLANGC) test zokor/internal/migration $(TESTFLAGS)
 	$(SLANGC) test zokor/internal/trace $(TESTFLAGS)
 	$(SLANGC) test zokor/internal/openapi $(TESTFLAGS)
+	$(SLANGC) test zokor/internal/accept $(TESTFLAGS)
+	$(SLANGC) test zokor/internal/location $(TESTFLAGS)
 
 cli:
 	mkdir -p bin

@@ -717,6 +717,51 @@ Files are read into memory, up to `max_size` (64 MB), and the read
 blocks a worker: serve an app's own assets this way, and put a CDN in
 front of large or busy ones.
 
+## Content negotiation and redirects
+
+Compile the representations a handler can serve at startup:
+
+```slang
+let made = zokor.new_negotiator(["application/json", "text/html"], zokor.accept_limits());
+guard let formats = made else let e = err_of(made) { println(e); exit(1); }
+// Keep formats in the router's state. In the handler:
+let picked = zokor.negotiate(c, c.state.formats);
+guard let media = picked else let bad = err_of(picked) { return bad; }
+// Render the selected representation, then return it with media as Content-Type.
+```
+
+`negotiate` combines repeated Accept lines, preserving quoted parameters.
+It honors q weights, wildcards and parameter specificity: a specific
+`q=0` excludes that representation even when a wildcard permits others.
+Equal preferences use specificity, client range order, then startup offer
+order. An absent header selects the first offer; an empty header or no
+acceptable offer produces the registered `not_acceptable` 406. Malformed
+or over-limit headers produce `bad_request` 400 with an `Accept` field.
+All these responses carry `Vary: Accept`, alongside compression and CORS
+fields. `Negotiator.choose` provides selection without a request context.
+
+`accept_limits()` defaults to 8 KB of combined header values, 64 list
+members, 32 parameters per range (including q), 32 offers and 1 KB per
+offer. Set these before constructing the negotiator. Configure once and
+treat its compiled vectors as immutable.
+
+```slang
+let response = zokor.redirect_to("/orders/123"); // checked 303, POST/redirect/GET
+let rules = zokor.redirect_rules();             // relative references, 8 KB limit
+rules.allow_external = true;
+let moved = zokor.redirect_checked(307, "https://app.example.com/orders", rules);
+```
+
+Checked helpers return a result; they validate 301/302/303/307/308 and
+preserve the destination with an empty body. Relative paths, queries and
+fragments are accepted. External HTTP(S) URLs require explicit opt-in;
+network-path references (`//host`), credentials, raw whitespace, controls,
+backslashes and malformed percent escapes are refused. Other bytes must
+be percent-encoded. Errors name the field without echoing the destination.
+For variable external destinations, the application chooses its permitted
+hosts. The existing `redirect(status, location)` remains the raw
+constructor for destinations the application already controls.
+
 ## Compression
 
 ```slang
