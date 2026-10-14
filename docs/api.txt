@@ -415,6 +415,18 @@ load_migrations(dir: str, limits: MigrationLimits) -> result[[Migration], str]
 migrate(p: pg.Pool, ms: [Migration], deadline: until) -> result[int, str]
     Validate all historical files, then apply the pending batch in one transaction under a database-wide advisory lock.
 
+## negotiation.sl -- Startup-compiled representations and bounded RFC 9110 Accept negotiation.
+gc struct AcceptLimits { max_bytes: int, max_ranges: int, max_params: int, max_offers: int, max_offer_bytes: int }
+accept_limits() -> AcceptLimits
+gc struct Negotiator { offers: [str], types: [str], subtypes: [str], params: [[str]], max_bytes: int, max_ranges: int, max_params: int }
+    Treat the compiled vectors as immutable after startup.
+new_negotiator(offers: [str], limits: AcceptLimits) -> result[Negotiator, str]
+    Offer order breaks otherwise equal preferences.
+Negotiator.choose(header: opt[str]) -> result[opt[str], str]
+    none means no acceptable offer; err means malformed Accept.
+negotiate[S](c: Ctx[S], n: Negotiator) -> result[str, http.Response]
+    A selected media type, or a registered 400/406 response.
+
 ## openapi.sl -- Startup OpenAPI generation from registered routes and explicit wire schemas.
 gc struct OpenApiLimits { max_routes: int, max_schemas: int, max_schema_bytes: int, max_total_schema_bytes: int, max_schema_depth: int, max_document_bytes: int, max_collection_entries: int, max_metadata_bytes: int }
     Resource limits for startup metadata and the generated document.
@@ -503,6 +515,15 @@ rate_limit[S](c: Ctx[S], l: RateLimiter, key: str) -> opt[http.Response]
     The body of a rate-limiting `before`: `none` to continue, or the registered `rate_limited` failure (429 unless re-registered)...
 rate_limit_client[S](c: Ctx[S], l: RateLimiter) -> opt[http.Response]
     rate_limit keyed on the client's address: the socket's peer, or, behind a proxy listed in TRUSTED_PROXIES, the address that...
+
+## redirect.sl -- Checked redirects for variable destinations; redirect remains the raw constructor.
+gc struct RedirectRules { max_location_bytes: int, allow_external: bool }
+redirect_rules() -> RedirectRules
+    Relative references by default.
+redirect_checked(status: i32, location: str, rules: RedirectRules) -> result[http.Response, str]
+    Validate status and destination together without including destination secrets in errors.
+redirect_to(location: str) -> result[http.Response, str]
+    A checked 303 for the usual POST/redirect/GET flow, using relative references.
 
 ## redis.sl -- Redis, wired to zokor's config system.
 redis_from_config(cfg: Config) -> result[redis.Pool, str]
