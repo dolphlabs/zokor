@@ -412,7 +412,14 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
             if must_close {
                 out = closing(dyn_resp);
             }
-            let wr = http.write(&mut c, out, &mut sa, write_deadline(sc));
+            // A HEAD answer keeps the body GET would have had until here:
+            // write_head frames its length and sends none of it.
+            let wr: result[int, fault] = ok(0);
+            if wf.method == "HEAD" {
+                wr = http.write_head(&mut c, out, &mut sa, write_deadline(sc));
+            } else {
+                wr = http.write(&mut c, out, &mut sa, write_deadline(sc));
+            }
             if logging {
                 log_request(lg, wf.method, routed.route, wf.path,
                             out.status as int, t0, len(out.body), rid, client);

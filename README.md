@@ -102,6 +102,12 @@ declare, and every handler receives it.
 | `Json`, `parse`, `jobj` | JSON you did not declare: walk it, build it, render it |
 | `upgrade`, `receive`, `sio_*` | WebSocket (RFC 6455) and Socket.IO, as a state machine you feed bytes |
 | `ok_json`, `created`, … | success responses with the headers they should carry |
+| `files_at`, `r.files(mount)` | static files: traversal-safe, ranges, validators, cache headers |
+| `r.compress(compression())` | gzip for clients that accept it, on bodies worth it |
+| `r.idempotency(store)` | idempotency keys: a retried POST gets the first answer, in memory or Redis |
+| `page_of`, `offset_page`, `cursor_page` | pagination: offset or keyset pages, one envelope, `Link` headers |
+| `new_jobs`, `every`, `handle`, `enqueue` | background jobs: cron schedules in a time zone, a retrying in-memory queue |
+| `preconditions`, `etag_of`, `r.etags()` | conditional requests: `304 Not Modified`, `412` on a lost update, ETag and Last-Modified |
 | `redis_from_config` | a Redis pool from `REDIS_URL`, optional by default |
 | `ServerConfig`, `listen_and_serve_with` | idle/header/body/write timeouts, safe defaults, all overridable |
 | `RateLimiter`, `rate_limit` | per-client sliding-window limits: `429`, `Retry-After`, the registered envelope |
@@ -154,6 +160,64 @@ Validators: `require`, `require_int`, `require_range`, `require_port`,
 `require_one_of`, `require_duration`, `require_min_len`,
 `require_max_len`, and `optional_url` / `optional_one_of` / `optional_dsn`
 for values that must be valid *when set*.
+
+## Postgres
+
+slang's `pg` package is the driver. zokor adds what every service writes on
+top of it, and nothing that bypasses it:
+
+```slang
+let pr = zokor.pg_from_config(cfg);          // DATABASE_URL, DB_POOL_SIZE (10)
+guard let db = pr else let e = err_of(pr) { log.error(e); exit(1); }
+
+struct User { id: int, email: str, name: opt[str] }
+
+fn list_users(c: zokor.Ctx[App]) -> http.Response {
+    let r: result[[User], str] = zokor.query_all(c.state.db,
+        "select id, email, name from users where org = $1",
+        [pg.arg_int(c.param_int("org", 0))], until_of(time.mono() + 2000000000));
+    guard let users = r else let e = err_of(r) {
+        return zokor.db_failure(c.errors, e, c.request_id);
+    }
+    return zokor.ok_json(json.encode(users));
+}
+```
+
+- **Rows into structs, by column name.** `query_all`, `query_one` (none
+  when there's no row), `conn_query_all` inside a transaction, and
+  `rows_as`:
+  - integers, floats and numerics become numbers (NaN and infinity become
+    strings)
+  - booleans stay booleans
+  - `json`/`jsonb` decode into nested structs
+  - NULL becomes `none`, so use an `opt` field
+  - `bytea` becomes base64
+  - `timestamptz` and `timestamp` become RFC 3339 strings, so a
+    `timez.Time` field reads them (a `timestamp` without a zone as UTC),
+    and a `str` field gets the text an API would send
+  - text and uuid become strings
+
+  A column your struct doesn't name is ignored. A field the query doesn't
+  return must be an `opt`, or the result names the missing field.
+- **Transactions.** `transaction(db, arg, body, deadline)` runs
+  `body(conn, arg)` between `BEGIN` and `COMMIT`. An `err`, a failed
+  `COMMIT` or a panic in the body rolls back, and the connection goes back
+  to the pool every way out. There are no closures, so what the body
+  needs comes in as `arg`.
+- **Failures in your envelope.** `db_failure(reg, e, rid)` picks the
+  status from the SQLSTATE:
+  - unique violation: `409 already_exists`
+  - foreign key: `409 conflict`
+  - not null, check, or a bad value: `422`
+  - serialization, deadlock or timeout: `503`
+  - anything else: `500`
+
+  The server's message, which names tables, columns and values, never
+  reaches the client. `is_unique_violation(e)` is there for the common
+  branch.
+- **Parameterised queries only.** Every helper takes `$1`-style SQL and
+  `pg.Arg` values, and nothing builds SQL from strings. That's the SQL
+  injection defence.
 
 ## Redis
 
@@ -413,9 +477,17 @@ return zokor.set_cookie(resp, ck) ?? resp;         // err names what is wrong
   - more than 4,096 bytes
 - **Reading.** `c.cookie(name)` and `c.cookies()` skip malformed pairs the
   way browsers do, and the first of two same-named cookies wins.
-- **Deleting.** `clear_cookie(resp, name, path, domain)` removes a cookie.
-- **No `Expires`.** `Max-Age` (seconds, `0` deletes) says the same thing
-  to every browser in use.
+- **Deleting.** `clear_cookie(resp, name, path, domain)` removes a cookie
+  (`Max-Age=0`, and an `Expires` in 1970 for clients that read only that).
+- **Lifetime.** `max_age` (seconds; `-1`, the default, is a session
+  cookie) is what every browser uses. Set `expires` too, an instant from
+  `timez`, for HTTP clients that only read `Expires`; when both are sent
+  `Max-Age` wins:
+
+  ```slang
+  ck.max_age = 3600;
+  ck.expires = some(timez.now().add(timez.HOUR));   // Expires=<HTTP date>
+  ```
 
 **Signed cookies** carry an HMAC-SHA256 over their name and value, so a
 client can read them but not change them, or move one to another name:
@@ -431,6 +503,43 @@ key first and keep the old one until the cookies it signed have expired;
 nobody is logged out. Keys must be at least 32 bytes. Signatures are
 compared in constant time. Signed is not encrypted: never put a secret in
 a cookie.
+
+## Conditional requests
+
+A client that already holds the current version gets `304 Not Modified`
+and no body; a write made against a version that is no longer current
+gets `412` instead of overwriting someone else's change (RFC 9110 §13):
+
+```slang
+fn get_doc(c: zokor.Ctx[App]) -> http.Response {
+    let doc = load(c);                                 // has .version, .updated_at
+    let tag = zokor.etag_of(to_bytes(to_str(doc.version)));
+    if let stop = zokor.preconditions(c, tag, some(doc.updated_at)) {
+        return stop;                                   // 304, or 412 on a write
+    }
+    let resp = zokor.ok_json(json.encode(doc));
+    return zokor.with_validators(resp, tag, some(doc.updated_at));
+}
+```
+
+- **One call for reads and writes.** `preconditions` evaluates `If-Match`,
+  `If-Unmodified-Since`, `If-None-Match` and `If-Modified-Since` in the
+  order RFC 9110 §13.2.2 sets. A PUT that sends back the ETag it read in
+  `If-Match` updates only if nobody changed the resource since: optimistic
+  concurrency, no lock. Pass `""` as the tag for a resource that does not
+  exist yet, and `If-None-Match: *` means "create, never replace".
+- **Comparisons as the RFC has them.** `If-Match` compares strongly, so a
+  `W/` tag never matches; `If-None-Match` compares weakly. Tag lists,
+  `*`, and all three HTTP date forms are read; a date that is not a valid
+  HTTP date is ignored, and a malformed tag never matches.
+- **`r.etags()`**, opt in: every `200` answer to a GET or HEAD gets an
+  ETag hashed from its body, and a matching `If-None-Match` gets a `304`
+  that keeps the other headers (`Cache-Control`, `Vary`, …). A response
+  with its own ETag is left alone. It hashes every such body, measured in
+  process (`bench/conditional`): about 1.5 µs a request at 128 bytes,
+  2.7 µs at 1 KB and 20 µs at 16 KB. With nothing turned on, the request
+  path costs what it did. For a large body, a version you already have
+  (`preconditions`) is far cheaper than hashing the bytes.
 
 ## Security headers
 
@@ -550,6 +659,164 @@ sending traffic before the drain.
   claims them, so your own `/healthz` wins. No `before` runs on them,
   since an auth hook would fail the probes. `r.health_at(live, ready)`
   mounts them elsewhere.
+
+## Static files
+
+```slang
+let mr = zokor.files_at("/assets", "./public");     // err if not a directory
+guard let assets = mr else let e = err_of(mr) { println(e); exit(1); }
+assets.max_age = 31536000;                          // hashed names: a year
+assets.immutable = true;
+r.files(assets);
+```
+
+A GET or HEAD under the prefix that no route claims is a file from the
+directory:
+
+- **Traversal-safe.** An encoded separator (`%2f`, `%5c`), a `..`, `.` or
+  dot-file segment (`.env`, `.git`), a backslash or a NUL is a 404, and
+  the file's real path, every symlink resolved, must be inside the
+  directory's real path or it is a 404 too: a link cannot lead out.
+- **Index files.** A directory answers `index.html` (`mount.index`).
+- **Validators.** ETag from size and modification time, Last-Modified,
+  and `304`/`412` through `preconditions`.
+- **Ranges.** One `Range: bytes=` range is a `206` with `Content-Range`
+  (`If-Range` honoured); one past the end a `416`; several ranges get the
+  whole file, as RFC 9110 allows.
+- **Headers.** Content-Type by extension (unknown types are
+  `application/octet-stream`, which `nosniff` keeps from being rendered),
+  `Cache-Control` from `max_age` (`no-cache` by default: revalidate every
+  time, cheap with the validators) and `Accept-Ranges`.
+
+Files are read into memory, up to `max_size` (64 MB), and the read
+blocks a worker: serve an app's own assets this way, and put a CDN in
+front of large or busy ones.
+
+## Compression
+
+```slang
+r.compress(zokor.compression());       // min_size 1 KB, level 1, text-like types
+```
+
+A response is gzipped when the client's `Accept-Encoding` allows it (q
+values honoured: `gzip;q=0` refuses it), it is a 2xx other than 204/206
+to a method other than HEAD, its body is at least `min_size`, its type is
+text, JSON, JavaScript, XML, SVG or form data (or ends in `+json`/`+xml`),
+and it has no `Content-Encoding` of its own. Every response that could
+have been gzipped carries `Vary: Accept-Encoding`; a strong ETag becomes
+weak. Level 1 is the default: on API JSON it keeps nearly all of level
+5's saving (14 KB: 36 µs to 10% of the size, against 74 µs) for half the
+CPU. Static routes are sent as rendered.
+
+**BREACH.** Over TLS, compressing a response that holds a secret next to
+input an attacker controls lets them recover the secret from sizes. Keep
+pages that mix the two (a CSRF token and reflected search terms) on a
+router without compression.
+
+## Idempotency keys
+
+A client that retries a POST after a timeout must not charge twice. With
+`Idempotency-Key` (the IETF draft), it gets the first answer instead:
+
+```slang
+let store = zokor.idempotency_redis(redis_pool);   // or idempotency_in_memory()
+store.scope_local = "user_id";                       // set by your auth `before`
+r.idempotency(store);
+```
+
+- **Runs once.** A POST or PATCH with the header runs; its answer is kept
+  for 24 hours (`store.ttl`). The same request again gets that answer,
+  with `Idempotent-Replayed: true`, and the handler does not run.
+- **Refuses misuse.** The key again while the first is still running:
+  `409`. The key with a different method, path or body: `422`. A key that
+  is not 1–255 printable characters: `400`. `store.required = true` makes
+  the header mandatory on POST and PATCH.
+- **Scoped.** Keys are per method, route and caller (`scope_local` names
+  the local your authentication sets), so one user cannot replay
+  another's answer.
+- **Only final answers.** A 5xx, 408 or 429 is not kept: the next retry
+  runs again. Neither is a body over `store.max_body` (1 MB). A handler
+  that panics leaves its key "running" for `store.lock_ttl` (30 s).
+- **Shared.** The Redis store claims a key with `SET NX PX`, so instances
+  behind a balancer agree; if Redis cannot be reached the request is
+  refused with 503 rather than risk running twice. The in-memory store is
+  for a single instance.
+
+## Pagination
+
+Offset pages (`?limit=20&offset=40`) and keyset pages (`?limit=20&cursor=…`)
+answer in the same envelope, so a client reads every list the same way:
+
+```slang
+fn list_orders(c: zokor.Ctx[App]) -> http.Response {
+    let pr = zokor.page_of(c, 20, 100);            // default 20, at most 100
+    guard let p = pr else let bad = err_of(pr) { return bad; }   // 422, named
+    let after = zokor.cursor_parts(p);             // [] on the first page
+    // WHERE (created, id) < ($1, $2) ORDER BY created DESC, id DESC LIMIT p.fetch()
+    let rows = load_orders(c, after, p.fetch());
+    return zokor.cursor_page(c, p, rows, order_key);
+}
+
+fn order_key(o: Order) -> [str] { return [o.created, to_str(o.id)]; }
+```
+
+```json
+{"data":[...],"page":{"limit":20,"cursor":"WyIyMDI2...","next":"WyIyMDI2...","total":null}}
+```
+
+- **One row past the page.** `p.fetch()` is `limit + 1`: an extra row
+  means there is a next page, without a `COUNT(*)`. `offset_page` takes an
+  optional total when the handler has one.
+- **Links.** A `Link` header (RFC 8288) carries `rel="next"` (and
+  `rel="prev"` for offset pages), keeping the request's other query
+  parameters.
+- **Checked.** `limit` must be 1 to the maximum; `offset` 0 to 1,000,000
+  (deeper: use a cursor); not both `offset` and `cursor`; a cursor this
+  API did not issue is refused. Each problem is a named field in a 422.
+- **Keyset is the one to use on big tables**: the next page is an index
+  range, and rows inserted between requests are neither skipped nor
+  repeated. A cursor is opaque base64url of the last row's sort key; a
+  client can forge one, but only to read another position of a list it
+  may read anyway, so authorise the list, and never put a secret in a key.
+
+## Background jobs
+
+Work on a schedule, and work queued to run later, on slang's tasks:
+
+```slang
+let jobs = zokor.new_jobs(state);
+jobs.logger = sc.logger;
+jobs.zone = timez.load_zone("Europe/Berlin") ?? timez.utc_zone();
+jobs.every("digest", "0 9 * * MON-FRI", send_digest, 60 * timez.SECOND);
+jobs.handle("welcome_email", send_welcome, 5);        // up to 5 attempts
+jobs.start();
+// ... in a handler:
+jobs.enqueue("welcome_email", to_str(user.id), timez.now());
+```
+
+A job is `fn(JobCtx[S]) -> result[int, str]`; the context carries the
+state, the job's name, a queued job's payload and attempt, when the run
+was due, and a `deadline` to pass to every call that can block.
+
+- **Schedules in a time zone.** Five-field cron (names, ranges, steps,
+  `@daily` and friends) read on the zone's clocks, so 09:00 in Berlin
+  stays 09:00 across daylight-saving changes (slang's `timez`).
+- **One run at a time per job.** A scheduled job due while its last run
+  is still going skips that turn, with a warning. Missed turns are not
+  replayed after downtime, as in cron.
+- **Isolated runs.** Each run is its own task: a panic fails that run,
+  logged with the job's name, and the scheduler carries on.
+- **Retries.** A queued job that returns `err` or panics is retried after
+  1 s, 2 s, 4 s ... (capped at an hour) until its attempts run out, then
+  logged and dropped.
+- **Shutdown.** On SIGTERM the scheduler stops starting runs within a
+  quarter second; runs in progress get the server's shutdown drain.
+- **In memory.** Queued jobs are lost when the process stops. Work that
+  must survive a restart belongs in a table or a Redis list that a
+  scheduled job drains.
+
+Tests set `jobs.clock = timez.fixed_clock(...)` and call
+`jobs.tick(instant)` and `jobs.wait_runs(timeout)`: no sleeping.
 
 ## Errors
 
@@ -1003,11 +1270,9 @@ The full list, ordered and checkable, is [todo.md](todo.md). In short:
   shutdown, panic recovery and a connection cap are done (see above).
   Still owed: TLS.
 - **Middleware**, none of it blocked:
-  cookies, JWT and basic auth, ETag/304, compression, static
-  files. (A rate limiter and a
+  compression, static files. (A rate limiter and a
   bearer-token store exist; `RateLimit-*` headers and sharding do not.)
-- **Enterprise**: Postgres helpers with transactions, migrations,
-  metrics, tracing, background jobs, pagination, OpenAPI, and
+- **Enterprise**: migrations, metrics, tracing, pagination, OpenAPI, and
   `zokor check`, the layout checker.
 - **Socket.IO over HTTP long-polling**, so a client needs
   `transports: ["websocket"]`; and binary attachment frames.

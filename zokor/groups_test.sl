@@ -18,6 +18,12 @@ fn g_router() -> Router[GState] {
         cors: cors_off(),
         security: security_compile(default_security_headers()),
         sanitize: SanitizeMode.OFF,
+        auto_etag: false,
+        rindex: [],
+        static_paths: {},
+        idem: none,
+        gzip: none,
+        mounts: [],
         no_lines: none
     };
 }

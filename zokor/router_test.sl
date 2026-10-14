@@ -396,10 +396,14 @@ fn test_static_bytes_serves_without_a_handler_call() {
     assert(b.status == 200);
     assert(b.content_type == "text/plain; charset=utf-8");
     assert(b.body == b"Hello, World!");
-    // the prebuilt rendering is byte-identical to the dynamic emit,
-    // security headers included
-    assert(b.keep_alive == http.serialize(r.security.apply(http.text_response_bytes(
+    // the prebuilt rendering carries every header the dynamic emit does,
+    // security headers included, and the same body; only the Date line's
+    // place differs (last, where write_static refreshes it)
+    let dynamic = to_str(http.serialize(r.security.apply(http.text_response_bytes(
         200, "OK", "text/plain; charset=utf-8", b"Hello, World!"))));
+    let rendered = to_str(b.keep_alive);
+    assert(same_header_set(dynamic, rendered), rendered);
+    assert(strings.has_suffix(rendered, "\r\n\r\nHello, World!"));
     // a dynamic route alongside still works through the same entry
     r.get("/users/:id", h_param);
     let one = frame_req("GET", "/users/42");
@@ -547,4 +551,39 @@ fn test_params_none_is_empty() {
     let r = new_test_router();
     r.get("/p", h_param_missing);
     assert(to_str(r.serve(req("GET", "/p")).body) == "empty");
+}
+
+// Whether two serialized responses carry the same header lines, in any
+// order, Date compared by presence only.
+fn same_header_set(a: str, b: str) -> bool {
+    let la = header_lines(a);
+    let lb = header_lines(b);
+    if len(la) != len(lb) {
+        return false;
+    }
+    for l in la {
+        let found = false;
+        for m in lb {
+            if l == m {
+                found = true;
+            }
+        }
+        if !found {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn header_lines(raw: str) -> [str] {
+    let out: [str] = [];
+    let head = strings.slice(raw, 0, strings.find(raw, "\r\n\r\n"));
+    for l in strings.split(head, "\r\n") {
+        if strings.has_prefix(l, "date: ") {
+            push(out, "date: *");
+        } else {
+            push(out, l);
+        }
+    }
+    return out;
 }
