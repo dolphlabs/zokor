@@ -213,8 +213,14 @@ library, made and merged there first.
   hour); stops starting runs on SIGTERM. Tests drive it with `tick` on a
   fixed clock. Not done: a durable queue (Redis or Postgres) -- queued
   work is lost on restart.
-- [ ] **OpenAPI**: generate a document from `routes_list` plus the declared
-  DTOs and the error registry.
+- [x] **OpenAPI**: generate a startup OpenAPI 3.1.1 document from
+  `routes_list`, explicit JSON wire DTO definitions and the error registry.
+  Request/response/parameter metadata, local recursive schema references,
+  explicit private/unsupported-route omissions and custom error contracts.
+  Bounded generation collects metadata failures; unknown responses are
+  labelled undeclared. Deterministic output and template collisions tested;
+  generated fixture accepted by openapi-spec-validator 0.9.0. No automatic
+  endpoint or reflection, and no request-path changes.
 - [ ] **Config profiles** (`dev`, `test`, `prod`), and `.env.test` selection
   from the profile.
 - [ ] Content negotiation (`Accept`) and redirect helpers.
