@@ -380,6 +380,18 @@ LogFormat.json(ev: LogEvent) -> str
     The same as single strings, without the newline: for a consumer that wants one line at a time.
 LogFormat.pretty(ev: LogEvent, color: bool, since_ns: int) -> str
 
+## migrations.sl -- Forward-only SQL migrations: immutable history and an atomic pending batch.
+gc struct Migration { version: int, name: str, sql: str, checksum: str }
+gc struct MigrationLimits { max_files: int, max_file_bytes: int, max_total_bytes: int }
+    Limits for reading files, chosen by the caller before startup.
+migration_limits() -> MigrationLimits
+migration_checksum(sql: str) -> str
+new_migration(version: int, name: str, sql: str) -> Migration
+load_migrations(dir: str, limits: MigrationLimits) -> result[[Migration], str]
+    Load N_description.sql files, sort numerically, and reject duplicates.
+migrate(p: pg.Pool, ms: [Migration], deadline: until) -> result[int, str]
+    Validate all historical files, then apply the pending batch in one transaction under a database-wide advisory lock.
+
 ## pagination.sl -- Pagination: offset pages and keyset (cursor) pages, one envelope for both, so a client reads every list the same way:
 struct Page { limit: int, offset: int, cursor: str, by_cursor: bool }
     What the request asked for, checked.

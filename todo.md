@@ -183,8 +183,12 @@ library, made and merged there first.
   The routed calls keep the body; the serve loop writes a HEAD answer
   with slang's `http.write_head` (the length, no body); the public
   `serve`/`serve_frame`/`serve_id` still hand back an empty body.
-- [ ] **Migrations**: ordered, checksummed, applied in a transaction, with an
-  advisory lock so two instances do not race, and a `zokor migrate` command.
+- [x] **Migrations**: `load_migrations` reads bounded `N_description.sql`
+  files in numeric order; `migrate` validates immutable SHA-256 history
+  and applies the pending batch in one transaction under a Postgres
+  advisory lock. `make cli` builds `bin/zokor migrate [directory]`.
+  Tests cover replay, changed/missing history, rollback across files,
+  concurrent runners, SQL boundaries, file limits and embedded NULs.
 - [ ] **Metrics**: Prometheus text format at `/metrics`; request count and
   latency histogram by route pattern, in-flight gauge, and hooks for a
   service's own.
