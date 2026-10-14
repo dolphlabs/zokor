@@ -168,7 +168,8 @@ assert(port == 8080);
 println("ok");
 ```
 
-`load_config` reads `.env`, then the environment wins. `require_*`
+`load_config` reads `.env` and `.env.<profile>` (`ZOKOR_PROFILE`, default
+`dev`), then captures environment overrides once. Empty overrides win. `require_*`
 records problems instead of throwing; `check` reports them all at
 once. Nothing reads the environment while serving -- handlers take
 config through `App`. (This block runs with `PORT=8080`.)

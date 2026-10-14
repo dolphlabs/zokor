@@ -12,7 +12,7 @@
 // on the next -- six restarts to learn six facts. Each `require_*` call
 // records what it found; `check` returns every failure together.
 //
-//     let cfg = zokor.load_config();                 // ".env", then the environment
+//     let cfg = zokor.load_config();                 // base, profile, startup environment
 //     let port = zokor.require_port(cfg, "PORT");
 //     let dsn  = zokor.require_dsn(cfg, "DATABASE_URL");
 //     let from = zokor.require_email(cfg, "ALERT_FROM");
@@ -24,7 +24,8 @@
 
 import "fs";
 import "os";
-import "proc";
+import "strings";
+import "builder";
 import "internal/envfile";
 import "internal/validate" as valid;
 
@@ -37,71 +38,140 @@ pub gc struct Problem {
 }
 
 pub gc struct Config {
-    values: map[str]str,   // what the file provided
+    values: map[str]str,   // effective startup snapshot: files, then environment
     problems: [Problem],
-    source: str,           // the file it read, or "" for environment only
+    source: str,           // last regular file attempted, or "" for environment only
+    profile: str,          // effective profile, or "" for a single-file load
+    sources: [str],        // regular files attempted, in precedence order
 }
 
-// The default file name, used by `load_config`. An application that
-// wants another path calls `load_config_from`.
-pub fn default_env_path() -> str {
-    return ".env";
+// Profile selection and file limits, chosen before startup loading.
+// Empty profile selects ZOKOR_PROFILE, defaulting to dev; explicit wins.
+pub gc struct ConfigLoad {
+    profile: str,
+    directory: str,
+    max_file_bytes: int,
 }
 
-// `.env` if present, then the environment -- which always wins, so a
-// shell override does what it looks like it does and a deployment that
-// ships no file behaves the same way.
-pub fn load_config() -> Config {
-    return load_config_from(default_env_path());
+pub fn config_load() -> ConfigLoad {
+    return ConfigLoad { profile: "", directory: ".", max_file_bytes: 1048576 };
 }
 
-// The same, from a path of your choosing (".env.test", "/etc/app/env").
-// A missing file is not an error: the environment alone is a valid
-// source, and that is what production usually looks like.
-pub fn load_config_from(path: str) -> Config {
-    let probs: [Problem] = [];
-    let empty: map[str]str = {};
-    if len(path) == 0 || !os.is_file(path) {
-        return Config { values: empty, problems: probs, source: "" };
-    }
-    let text = read_file(path);
-    guard let body = text else let e = err_of(text) {
-        push(probs, Problem { key: path, reason: e, shown: "" });
-        return Config { values: empty, problems: probs, source: path };
-    }
-    return Config {
-        values: envfile.parse(body),
-        problems: probs,
-        source: path
-    };
+// Own a copy of supplied values, with no process-state reads: useful for fakes.
+pub fn config_from_values(values: map[str]str) -> Config {
+    let copy: map[str]str = {};
+    for key, value in values { copy[key] = value; }
+    return Config { values: copy, problems: [], source: "", profile: "", sources: [] };
 }
 
-fn read_file(path: str) -> result[str, str] {
-    let sr = os.size(path);
-    guard let n = sr else let e = err_of(sr) {
-        return err("cannot read " + path + ": " + e);
+pub fn default_env_path() -> str { return ".env"; }
+
+// Base .env, then .env.<profile>, then one environment snapshot.
+pub fn load_config() -> Config { return load_config_with(config_load()); }
+
+// Explicit dev/test/prod overrides ZOKOR_PROFILE for file selection.
+pub fn load_config_profile(profile: str) -> Config {
+    if len(profile) == 0 {
+        let cfg = load_config_from("");
+        record(cfg, "ZOKOR_PROFILE", profile, "must be one of: dev, test, prod");
+        return cfg;
     }
-    let orr = fs.open(path);
-    guard let fd = orr else let e = err_of(orr) {
-        return err("cannot open " + path + ": " + e);
+    let options = config_load();
+    options.profile = profile;
+    return load_config_with(options);
+}
+
+fn config_environment() -> map[str]str { return envfile.environment(os.environ()); }
+
+fn config_profile_ok(profile: str) -> bool {
+    return profile == "dev" || profile == "test" || profile == "prod";
+}
+
+fn config_path(directory: str, name: str) -> str {
+    if directory == "." { return name; }
+    if strings.has_suffix(directory, "/") { return directory + name; }
+    return directory + "/" + name;
+}
+
+// Missing files are optional; present files must be regular and within limits.
+fn config_read(path: str, cap: int) -> result[str, str] {
+    let opened = fs.open(path);
+    guard let fd = opened else let e = err_of(opened) { return err("cannot open " + path + ": " + e); }
+    let st = fs.fstat(fd);
+    if len(st) != 4 || st[0] != 0 {
+        fs.close(fd); return err("must be a regular file");
     }
-    let out: bytes = b"";
-    let left = n;
-    while left > 0 {
-        let rr = fs.read(fd, left);
-        guard let chunk = rr else let e = err_of(rr) {
-            fs.close(fd);
-            return err("cannot read " + path + ": " + e);
-        }
-        if len(chunk) == 0 {
-            left = 0;
-        } else {
-            out = out + chunk;
-            left = left - len(chunk);
-        }
+    if st[1] > cap { fs.close(fd); return err("exceeds max_file_bytes"); }
+    let bb = builder.new_bytes();
+    let read = 0;
+    while read <= cap {
+        let want = cap - read + 1;
+        if want > 65536 { want = 65536; }
+        let rr = fs.read(fd, want);
+        guard let chunk = rr else let e = err_of(rr) { fs.close(fd); return err("cannot read " + path + ": " + e); }
+        if len(chunk) == 0 { fs.close(fd); return ok(to_str(bb.finish())); }
+        for byte in chunk { if byte == 0 { fs.close(fd); return err("contains NUL; remove it"); } }
+        read += len(chunk);
+        if read > cap { fs.close(fd); return err("exceeds max_file_bytes"); }
+        bb.write(chunk);
     }
     fs.close(fd);
-    return ok(to_str(out));
+    return err("exceeds max_file_bytes");
+}
+
+fn config_apply_file(cfg: Config, path: str, cap: int) {
+    if !os.exists(path) { return; }
+    if !os.is_file(path) { push(cfg.problems, Problem { key: path, reason: "must be a regular file", shown: "" }); return; }
+    push(cfg.sources, path);
+    cfg.source = path;
+    let loaded = config_read(path, cap);
+    guard let text = loaded else let e = err_of(loaded) { push(cfg.problems, Problem { key: path, reason: e, shown: "" }); return; }
+    for key, value in envfile.parse(text) { cfg.values[key] = value; }
+}
+
+fn config_apply_environment(cfg: Config, snapshot: map[str]str) {
+    // Empty values are real overrides; require_* reports them as invalid.
+    for key, value in snapshot { cfg.values[key] = value; }
+}
+
+pub fn load_config_with(options: ConfigLoad) -> Config {
+    let snapshot = config_environment();
+    let empty_values: map[str]str = {};
+    let cfg = config_from_values(empty_values);
+    if len(options.directory) == 0 { record(cfg, "directory", "", "must not be empty"); }
+    if options.max_file_bytes < 1 || options.max_file_bytes == 9223372036854775807 {
+        record(cfg, "max_file_bytes", to_str(options.max_file_bytes), "must be positive and below the integer maximum");
+    }
+    let can_read = len(options.directory) > 0 && options.max_file_bytes >= 1 && options.max_file_bytes < 9223372036854775807;
+    if can_read { config_apply_file(cfg, config_path(options.directory, default_env_path()), options.max_file_bytes); }
+    let profile = options.profile;
+    if len(profile) == 0 {
+        profile = "dev";
+        if has(snapshot, "ZOKOR_PROFILE") { profile = snapshot["ZOKOR_PROFILE"]; }
+        else if has(cfg.values, "ZOKOR_PROFILE") { profile = cfg.values["ZOKOR_PROFILE"]; }
+    }
+    if !config_profile_ok(profile) { record(cfg, "ZOKOR_PROFILE", profile, "must be one of: dev, test, prod"); }
+    else {
+        cfg.profile = profile;
+        if can_read { config_apply_file(cfg, config_path(options.directory, ".env." + profile), options.max_file_bytes); }
+    }
+    config_apply_environment(cfg, snapshot);
+    return cfg;
+}
+
+// Load one explicit file, then apply the captured environment; no profile overlay.
+// A missing file is valid. For a caller-selected limit, use the bounded variant.
+pub fn load_config_from(path: str) -> Config { return load_config_file(path, config_load().max_file_bytes); }
+
+pub fn load_config_file(path: str, max_file_bytes: int) -> Config {
+    let snapshot = config_environment();
+    let empty_values: map[str]str = {};
+    let cfg = config_from_values(empty_values);
+    if max_file_bytes < 1 || max_file_bytes == 9223372036854775807 {
+        record(cfg, "max_file_bytes", to_str(max_file_bytes), "must be positive and below the integer maximum");
+    } else if len(path) > 0 { config_apply_file(cfg, path, max_file_bytes); }
+    config_apply_environment(cfg, snapshot);
+    return cfg;
 }
 
 // ---------------------------------------------------------------- //
@@ -109,10 +179,6 @@ fn read_file(path: str) -> result[str, str] {
 // ---------------------------------------------------------------- //
 
 pub fn get(c: Config, key: str) -> opt[str] {
-    let env = proc.getenv(key) ?? "";
-    if len(env) > 0 {
-        return some(env);
-    }
     if has(c.values, key) {
         return some(c.values[key]);
     }
@@ -405,9 +471,8 @@ pub fn check(c: Config) -> result[bool, str] {
         return ok(true);
     }
     let where = "the environment";
-    if len(c.source) > 0 {
-        where = c.source + " and the environment";
-    }
+    if len(c.sources) > 0 { where = strings.join(c.sources, ", ") + " and the environment"; }
+    else if len(c.source) > 0 { where = c.source + " and the environment"; }
     let out = "configuration is not usable (read from " + where + "):";
     let i = 0;
     while i < len(c.problems) {
