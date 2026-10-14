@@ -241,6 +241,30 @@ Never logged: query strings, bodies, headers. `zokor.no_logger()` turns
 it off. A full queue drops records and counts them; a request never waits
 on the log.
 
+## Postgres
+
+```slang
+import "zokor";
+
+// zokor.pg_from_config(cfg) builds a pool from DATABASE_URL (+ DB_POOL_SIZE).
+// let r: result[[User], str] = zokor.query_all(db, "select id, email from users where org = $1",
+//                                               [pg.arg_int(org)], deadline);
+// zokor.query_one -> result[opt[T], str]; zokor.transaction(db, arg, body, deadline)
+// runs body(conn, arg) in BEGIN/COMMIT and rolls back on err or panic.
+let reg = zokor.new_registry();
+let dup = zokor.db_failure(reg, "duplicate key (SQLSTATE 23505)", "req_1");
+assert(zokor.resp_status(dup) == 409);
+assert(zokor.resp_error_code(dup) == "already_exists");
+println("ok");
+```
+
+Rows map into your struct by column name (NULL is none: use `opt` fields;
+jsonb decodes into a nested struct; timestamptz into a `timez.Time` field,
+bound with `pg.arg_time(t)`). `db_failure` turns a pg error into the
+envelope by SQLSTATE (409 unique/foreign key, 422 constraint/bad value, 503
+serialization/deadlock/timeout, else 500) without the server's message.
+Parameterised SQL only.
+
 ## Authentication
 
 ```slang
@@ -332,7 +356,60 @@ New cookies are `HttpOnly; Secure; SameSite=Lax; Path=/`; `set_cookie` returns
 value, `SameSite=None` without `Secure`, broken `__Host-` rules). Signed
 cookies: `zokor.signed_value(c, name, keys)` is none when forged; COOKIE_KEYS
 lists 32+ byte keys, newest first (rotation keeps old cookies valid). Signed
-is not encrypted.
+is not encrypted. `ck.max_age` is seconds (-1 session, 0 delete); also set
+`ck.expires = some(timez.now().add(timez.HOUR))` for clients that read only
+Expires.
+
+## Conditional requests (304, 412)
+
+```slang
+import "http";
+import "timez";
+import "zokor";
+
+gc struct Doc {
+    version: int,
+    updated: timez.Time,
+}
+
+fn tag(d: Doc) -> str {
+    return zokor.etag_of(to_bytes(to_str(d.version)));
+}
+
+fn get_doc(c: zokor.Ctx[Doc]) -> http.Response {
+    if let stop = zokor.preconditions(c, tag(c.state), some(c.state.updated)) {
+        return stop;                                   // 304 Not Modified
+    }
+    return zokor.with_validators(zokor.text(200, "v" + to_str(c.state.version)),
+                                 tag(c.state), some(c.state.updated));
+}
+
+fn put_doc(c: zokor.Ctx[Doc]) -> http.Response {
+    if let stop = zokor.preconditions(c, tag(c.state), some(c.state.updated)) {
+        return stop;                                   // 412: changed since read
+    }
+    c.state.version = c.state.version + 1;
+    return zokor.text(200, "saved");
+}
+
+let r = zokor.new_router(Doc { version: 1, updated: timez.unix(1792000000) });
+r.get("/doc", get_doc);
+r.put("/doc", put_doc);
+let first = r.serve(zokor.get_request("/doc").build());
+let etag = zokor.resp_header(first, "etag");
+let again = r.serve(zokor.get_request("/doc").header("If-None-Match", etag).build());
+assert(again.status == 304);
+let put = zokor.request(zokor.Method.PUT, "/doc").header("If-Match", etag).build();
+assert(r.serve(put).status == 200);
+assert(r.serve(put).status == 412);                    // the same stale tag
+println("ok");
+```
+
+`preconditions(c, etag, last_modified)` runs RFC 9110's order (If-Match,
+If-Unmodified-Since, If-None-Match, If-Modified-Since): some(304|412) to
+return, none to go on; pass "" when the resource does not exist.
+`r.etags()` (opt in) tags every 200 GET by hashing its body and answers a
+matching If-None-Match with 304; it costs a hash of every body.
 
 ## Security headers
 
@@ -649,6 +726,170 @@ a `mutex` field (`make_mutex()`); never `return` between `mutex_lock` and
 `mutex_unlock`. A `gc struct` is shared by reference, so `App` passed to
 `spawn` is the same object the router holds. A real worker loops
 forever; this one stops when the channel closes.
+
+## Static files
+
+`zokor.files_at("/assets", "./public")` -> `result[FileMount, str]`; then
+`r.files(mount)`. GET/HEAD under the prefix that no route claims serve the
+file: traversal-safe (`..`, dot-files, encoded separators and symlinks out
+of the root are 404), index.html for directories, ETag/Last-Modified/304,
+one byte Range (206/416), Content-Type by extension. `mount.max_age` and
+`mount.immutable` set Cache-Control.
+
+## Compression
+
+`r.compress(zokor.compression())` gzips 2xx JSON/text bodies of 1 KB or
+more for clients whose Accept-Encoding allows gzip, adds `Vary:
+Accept-Encoding`, and weakens a strong ETag. Never compress pages that put
+a secret (CSRF token) next to reflected input (BREACH).
+
+## Idempotency keys
+
+```slang
+import "http";
+import "zokor";
+
+gc struct App {
+    orders: int,
+}
+
+fn create_order(c: zokor.Ctx[App]) -> http.Response {
+    c.state.orders += 1;
+    return zokor.created("{\"order\":" + to_str(c.state.orders) + "}", "/orders");
+}
+
+let r = zokor.new_router(App { orders: 0 });
+r.post("/orders", create_order);
+r.idempotency(zokor.idempotency_in_memory());       // or idempotency_redis(pool)
+let send = zokor.request(zokor.Method.POST, "/orders").header("Idempotency-Key", "abc-1").body_str("{}");
+let first = r.serve(send.build());
+let again = r.serve(send.build());                   // a client retry
+assert(zokor.resp_text(again) == zokor.resp_text(first));
+assert(zokor.resp_header(again, "idempotent-replayed") == "true");
+assert(r.state.orders == 1);                         // the handler ran once
+println("ok");
+```
+
+POST/PATCH with `Idempotency-Key` run once; retries get the kept answer
+(24h). 409 while still running, 422 for the key with another body. Set
+`store.scope_local` to the local your auth sets, so keys are per caller.
+5xx/408/429 are not kept.
+
+## Pagination
+
+```slang
+import "http";
+import "strings";
+import "zokor";
+
+struct Row {
+    id: int,
+}
+
+gc struct App {
+    rows: [Row],
+}
+
+fn page_from(all: [Row], after: int, n: int) -> [Row] {
+    let out: [Row] = [];
+    for r in all {
+        if r.id > after && len(out) < n {
+            push(out, r);
+        }
+    }
+    return out;
+}
+
+fn row_key(r: Row) -> [str] {
+    return [to_str(r.id)];
+}
+
+fn list(c: zokor.Ctx[App]) -> http.Response {
+    let pr = zokor.page_of(c, 2, 50);                   // ?limit (default 2, max 50), ?cursor
+    guard let p = pr else let bad = err_of(pr) { return bad; }
+    let parts = zokor.cursor_parts(p);                   // [] on the first page
+    let after = 0;
+    if len(parts) == 1 {
+        after = to_int(parts[0]) ?? 0;
+    }
+    let rows = page_from(c.state.rows, after, p.fetch()); // limit + 1: tells if there is a next
+    return zokor.cursor_page(c, p, rows, row_key);
+}
+
+let app = App { rows: [Row { id: 1 }, Row { id: 2 }, Row { id: 3 }] };
+let r = zokor.new_router(app);
+r.get("/rows", list);
+let first = r.serve(zokor.get_request("/rows").build());
+assert(strings.contains(zokor.resp_text(first), "\"data\":[{\"id\":1},{\"id\":2}]"));
+let link_text = zokor.resp_header(first, "link");        // </rows?limit=2&cursor=...>; rel="next"
+let next = strings.slice(link_text, 1, strings.find(link_text, ">"));
+let second = r.serve(zokor.get_request(next).build());
+assert(strings.contains(zokor.resp_text(second), "\"data\":[{\"id\":3}]"));
+assert(zokor.resp_status(r.serve(zokor.get_request("/rows?limit=0").build())) == 422);
+println("ok");
+```
+
+`page_of(c, default, max)` checks `limit` and `offset` or `cursor` (422 per
+bad field). `offset_page(c, p, rows, total)` and `cursor_page(c, p, rows,
+key_fn)` answer `{"data":[...],"page":{...}}` with a Link header. Fetch
+`p.fetch()` rows (limit + 1). Prefer cursors on large tables.
+
+## Scheduled and queued jobs
+
+```slang
+import "timez";
+import "zokor";
+
+gc struct App {
+    sent: [str],
+    lock: mutex,
+}
+
+fn digest(j: zokor.JobCtx[App]) -> result[int, str] {
+    mutex_lock(j.state.lock);
+    push(j.state.sent, "digest " + j.due.rfc3339());
+    mutex_unlock(j.state.lock);
+    return ok(0);
+}
+
+fn welcome(j: zokor.JobCtx[App]) -> result[int, str] {
+    if j.attempt < 2 {
+        return err("mail server busy");            // retried after 1s
+    }
+    mutex_lock(j.state.lock);
+    push(j.state.sent, "welcome " + j.payload);
+    mutex_unlock(j.state.lock);
+    return ok(0);
+}
+
+let app = App { sent: [], lock: make_mutex() };
+let jobs = zokor.new_jobs(app);
+let start = timez.utc(2026, 10, 13, 8, 59, 0, 0) ?? timez.unix(0);
+jobs.clock = timez.fixed_clock(start);              // tests: no sleeping
+assert(is_ok(jobs.every("digest", "0 9 * * MON-FRI", digest, 30 * timez.SECOND)));
+assert(is_ok(jobs.handle("welcome", welcome, 3)));
+assert(is_ok(jobs.enqueue("welcome", "user-7", start)));
+jobs.tick(start);                                   // learns the 09:00 turn; runs welcome try 1
+assert(jobs.wait_runs(timez.SECOND));
+jobs.clock.set(start.add(timez.MINUTE));
+jobs.tick(start.add(timez.MINUTE));                 // 09:00: digest, and welcome try 2
+assert(jobs.wait_runs(timez.SECOND));
+assert(len(app.sent) == 2);
+println("ok");
+
+fn is_ok(r: result[int, str]) -> bool {
+    if let _v = r { return true; }
+    return false;
+}
+```
+
+`jobs.every(name, cron, f, timeout)` runs `f` on the schedule, read in
+`jobs.zone` (UTC unless set; DST-aware); a run still going skips its next
+turn; missed turns are not replayed. `jobs.handle(kind, f, attempts)` and
+`jobs.enqueue(kind, payload, at)` queue one-off work, retried with
+backoff (1s, 2s, 4s ... capped at 1h). In a server: `jobs.logger =
+sc.logger; jobs.start();` before `listen_and_serve`; it stops on SIGTERM.
+The queue is in memory.
 
 ## Serving for real
 

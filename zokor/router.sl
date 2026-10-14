@@ -170,6 +170,20 @@ pub gc struct Router[S] {
     security: Security,
     // Off until `r.mongo_sanitize(mode)`; see sanitize.sl.
     sanitize: SanitizeMode,
+    // Off until `r.etags()`; see conditional.sl.
+    auto_etag: bool,
+    // The route index (route_index.sl): empty below index_from() routes,
+    // else one trie root kept in step with `routes` at registration.
+    rindex: [RNode],
+    // With an index: the first static GET route for each exact path, so
+    // static_index needs no scan.
+    static_paths: map[str]int,
+    // Off until `r.idempotency(store)`; see idempotency.sl.
+    idem: opt[Idempotency],
+    // Off until `r.compress(compression())`; see compression.sl.
+    gzip: opt[Compression],
+    // Directories served by `r.files(mount)`; see files.sl.
+    mounts: [FileMount],
     // The none every Ctx's `out` starts as.
     no_lines: opt[[str]],
 }
@@ -195,6 +209,12 @@ pub fn new_router[S](state: S) -> Router[S] {
         cors: cors_off(),
         security: security_compile(default_security_headers()),
         sanitize: SanitizeMode.OFF,
+        auto_etag: false,
+        rindex: [],
+        static_paths: {},
+        idem: none,
+        gzip: none,
+        mounts: [],
         no_lines: none
     };
 }
@@ -304,7 +324,34 @@ impl Router[S] {
             static_close_hit: none,
             no_map: none
         });
+        self.index_route(len(self.routes) - 1);
         return len(self.routes);
+    }
+
+    // Keeps the route index in step with `routes`: built whole when the
+    // router passes index_from() routes, then one insert per route.
+    fn index_route(self: Router[S], i: int) {
+        if len(self.rindex) == 0 {
+            if len(self.routes) <= index_from() {
+                return;
+            }
+            push(self.rindex, rnode());
+            let k = 0;
+            while k < len(self.routes) {
+                self.index_one(k);
+                k = k + 1;
+            }
+            return;
+        }
+        self.index_one(i);
+    }
+
+    fn index_one(self: Router[S], k: int) {
+        let r = self.routes[k];
+        rindex_insert(self.rindex[0], k, r.segs, r.names, r.wild);
+        if r.has_static && r.method == Method.GET && r.fkind == 1 && !has(self.static_paths, r.fpath) {
+            self.static_paths[r.fpath] = k;
+        }
     }
 
     // The full set of HTTP methods, so no service has to fall back to
@@ -386,6 +433,7 @@ impl Router[S] {
             }),
             no_map: none
         });
+        self.index_route(len(self.routes) - 1);
         return len(self.routes);
     }
     pub fn get(self: Router[S], p: str, h: fn(Ctx[S]) -> http.Response) -> int {
@@ -457,6 +505,39 @@ impl Router[S] {
     pub fn after(self: Router[S], f: fn(Ctx[S], http.Response) -> http.Response) -> int {
         push(self.afters, f);
         return len(self.afters);
+    }
+
+    // Tags every 200 answer to a GET or HEAD with a strong ETag -- a hash
+    // of the body it sends -- and answers a matching If-None-Match with a
+    // 304 and no body. Off by default: it hashes every such body. A
+    // response that already carries an ETag (a handler's own, from
+    // `with_validators`) is left alone. Static routes are not tagged.
+    pub fn etags(self: Router[S]) -> int {
+        self.auto_etag = true;
+        return 0;
+    }
+
+    // Answers a retried POST or PATCH that carries an Idempotency-Key
+    // with the first answer, from `store` (see idempotency.sl). Runs
+    // after the `before`s, so a key can be scoped to the authenticated
+    // caller.
+    pub fn idempotency(self: Router[S], store: Idempotency) -> int {
+        self.idem = some(store);
+        return 0;
+    }
+
+    // Gzips answers worth it for clients that accept it (see
+    // compression.sl). Static routes are sent as rendered.
+    pub fn compress(self: Router[S], z: Compression) -> int {
+        self.gzip = some(z);
+        return 0;
+    }
+
+    // Serves the directory of `m` under its prefix (see files.sl): a GET
+    // or HEAD no route claims. Routes registered under the prefix win.
+    pub fn files(self: Router[S], m: FileMount) -> int {
+        push(self.mounts, m);
+        return len(self.mounts);
     }
 
     // Replaces the security headers (see security.sl);
@@ -737,6 +818,12 @@ impl Router[S] {
             return -1;
         }
         if f.method == "GET" {
+            if len(self.rindex) > 0 {
+                if has(self.static_paths, f.path) {
+                    return self.static_paths[f.path];
+                }
+                return -1;
+            }
             let i = 0;
             while i < len(self.routes) {
                 let r = self.routes[i];
@@ -767,7 +854,7 @@ impl Router[S] {
     // serve_frame, with the client's address for Ctx.client_ip.
     pub fn serve_frame_for(self: Router[S], f: http.WireFrame,
                            request_id: str, client_ip: str) -> http.Response {
-        return self.serve_frame_routed(f, request_id, client_ip).resp;
+        return head_dropped(f.method, self.serve_frame_routed(f, request_id, client_ip).resp);
     }
 
     // What the serve loop calls: the response, and the route pattern that
@@ -801,6 +888,10 @@ impl Router[S] {
         }
         let head_of_get = self.auto_head && method == Method.HEAD;
         let req = http.wire_request(f);
+        if len(self.rindex) > 0 {
+            // a big router: one trie walk instead of the per-route scan
+            return self.serve_id_routed(req, request_id, client_ip);
+        }
         // Query strings never route: strip once, compare the rest.
         // strip_query returns the SAME str when there is no "?" --
         // one scan, no allocation on the common path.
@@ -842,9 +933,6 @@ impl Router[S] {
                     errors: self.errors
                 };
                 let resp = self.run(c, r);
-                if head_of_get && r.method == Method.GET {
-                    resp.body = to_bytes("");
-                }
                 return Served { resp: resp, route: r.pattern };
             }
             if r.fkind == 2 {
@@ -895,9 +983,6 @@ impl Router[S] {
                     errors: self.errors
                 };
                 let resp = self.run(c, r);
-                if head_of_get && r.method == Method.GET {
-                    resp.body = to_bytes("");
-                }
                 return Served { resp: resp, route: r.pattern };
             }
             i = i + 1;
@@ -914,7 +999,7 @@ impl Router[S] {
 
     pub fn serve_id_for(self: Router[S], req: http.Request,
                         request_id: str, client_ip: str) -> http.Response {
-        return self.serve_id_routed(req, request_id, client_ip).resp;
+        return head_dropped(req.method, self.serve_id_routed(req, request_id, client_ip).resp);
     }
 
     pub fn serve_id_routed(self: Router[S], req: http.Request,
@@ -962,6 +1047,18 @@ impl Router[S] {
         }
         let path_seen = false;
         let i = 0;
+        if len(self.rindex) > 0 {
+            // The trie names the route the scan below would stop at, so the
+            // scan starts there; none matching ends it at once, and only
+            // then is "does any method match" asked (405 against 404).
+            let best = rindex_best(self.routes, self.rindex[0], segs, 0, method, head_of_get);
+            if best >= 0 {
+                i = best;
+            } else {
+                i = len(self.routes);
+                path_seen = rindex_any(self.rindex[0], segs, 0);
+            }
+        }
         while i < len(self.routes) {
             let r = self.routes[i];
             // Shape first, bindings after: a near miss costs no map, and
@@ -1005,9 +1102,6 @@ impl Router[S] {
                 errors: self.errors
             };
             let resp = self.run(c, r);
-            if head_of_get && r.method == Method.GET {
-                resp.body = to_bytes("");
-            }
             return Served { resp: resp, route: r.pattern };
         }
 
@@ -1038,10 +1132,20 @@ impl Router[S] {
                     hr = ready_response(self.ready, self.state);
                 }
                 let fr = self.finish(c, hr);
-                if method == Method.HEAD {
-                    fr.body = to_bytes("");
-                }
                 return Served { resp: fr, route: c.route };
+            }
+            for m in self.mounts {
+                guard let rest = mount_rest(m, p) else {
+                    continue;
+                }
+                c.route = m.prefix + "/*";
+                if method != Method.GET && method != Method.HEAD {
+                    let na = respond(self.errors, "method_not_allowed", request_id);
+                    return Served { resp: self.finish(c, http.with_header(na, "allow", "GET, HEAD")),
+                                    route: c.route };
+                }
+                let ff = self.finish(c, serve_file(m, c, rest));
+                return Served { resp: ff, route: c.route };
             }
             return Served { resp: self.finish(c, respond(self.errors, "not_found", request_id)),
                             route: "" };
@@ -1110,6 +1214,17 @@ impl Router[S] {
             return self.finish_route(c, r, resp2);
         }
         let h = r.handler;
+        if let ip = self.idem {
+            if idem_method(c.req.method) {
+                let st = idem_start(ip, c, r.pattern);
+                if let stop = st.stop {
+                    return self.finish_route(c, r, stop);
+                }
+                let resp = h(c);
+                ip.finish(st, resp);
+                return self.finish_route(c, r, resp);
+            }
+        }
         return self.finish_route(c, r, h(c));
     }
 
@@ -1141,6 +1256,15 @@ impl Router[S] {
             let a = self.afters[i];
             out = a(c, out);
             i = i + 1;
+        }
+        // After the afters, so the tag is of the body that is sent.
+        if self.auto_etag && out.status == 200 && len(out.body) > 0 &&
+           is_read(c.req.method) && !http.has_resp_header(out, "etag") {
+            out = tag_response(c.header("if-none-match"), out);
+        }
+        // After the tag, which is of the uncompressed bytes (and made weak).
+        if let z = self.gzip {
+            out = maybe_gzip(z, c.header("accept-encoding"), c.req.method, out);
         }
         // Last, so every answer carries it -- a 404, a 422, a `before`'s
         // 401 -- unless an `after` already wrote its own.
@@ -1601,4 +1725,14 @@ pub fn query_as[S, T](c: Ctx[S]) -> result[T, http.Response] {
         return err(decode_failed(c.errors, e, c.request_id));
     }
     return ok(v);
+}
+
+// What the public serve calls hand back for a HEAD: the answer without
+// its body. The routed calls keep the body, so the serve loop can frame
+// its length (http.write_head) as RFC 9110 has a HEAD answer do.
+fn head_dropped(method: str, resp: http.Response) -> http.Response {
+    if method == "HEAD" {
+        resp.body = to_bytes("");
+    }
+    return resp;
 }

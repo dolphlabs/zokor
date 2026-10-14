@@ -46,6 +46,22 @@ peer_ip_of(rendered: str) -> str
 client_ip_of(peer_ip: str, headers: bytes, tp: TrustedProxies) -> str
     Who the request came from.
 
+## compression.sl -- Response compression: gzip through slang's `compress` (zlib), for clients that accept it, on bodies worth it.
+gc struct Compression { min_size: int, level: int, types: [str] }
+compression() -> Compression
+accepts_gzip(header: str) -> bool
+    Whether an Accept-Encoding value allows gzip.
+
+## conditional.sl -- Conditional requests (RFC 9110 section 13): answer "not modified" when the client already has the current version, and refuse...
+etag_of(data: bytes) -> str
+    A strong entity tag for `data`: its length and 64-bit FNV-1a hash, quoted.
+with_validators(resp: http.Response, etag: str, last_modified: opt[timez.Time]) -> http.Response
+    `resp` with ETag (when `etag` is not "") and Last-Modified (when known, to the second: an HTTP date has no fraction).
+not_modified(etag: str, last_modified: opt[timez.Time]) -> http.Response
+    The 304 for a read whose validators matched: no body, and the validators the 200 would have carried.
+preconditions[S](c: Ctx[S], etag: str, last_modified: opt[timez.Time]) -> opt[http.Response]
+    What a conditional request's headers decide, before the handler does its work: some(304) or some(412) to send as is, none to...
+
 ## config.sl -- Configuration: read once, validated once, then held as a value.
 gc struct Problem { key: str, reason: str, shown: str }
 gc struct Config { values: map[str]str, problems: [Problem], source: str }
@@ -90,7 +106,7 @@ check(c: Config) -> result[bool, str]
 
 ## cookies.sl -- Cookies.
 enum SameSite { LAX, STRICT, NONE }
-gc struct Cookie { name: str, value: str, path: str, domain: str, max_age: int, secure: bool, http_only: bool, same_site: SameSite, partitioned: bool }
+gc struct Cookie { name: str, value: str, path: str, domain: str, max_age: int, expires: opt[timez.Time], secure: bool, http_only: bool, same_site: SameSite, partitioned: bool }
 new_cookie(name: str, value: str) -> Cookie
 cookie_problem(c: Cookie) -> str
     What is wrong with `c`, or "".
@@ -164,8 +180,16 @@ default_render(v: ErrorView) -> http.Response
 quote(s: str) -> str
     A JSON string, escaped.
 quote_into(sb: builder.Str, s: str) -> builder.Str
-    The same, appended to a builder, which is what every renderer wants: a response is many quoted strings, and joining them here...
+    The same, appended to a builder.
 status_text(status: i32) -> str
+
+## files.sl -- Static files: a directory served under a path prefix, safely.
+gc struct FileMount { prefix: str, root: str, index: str, max_age: int, immutable: bool, max_size: int }
+files_at(prefix: str, dir: str) -> result[FileMount, str]
+    A mount of `dir` under `prefix`.
+content_type_for(name: str) -> str
+parse_range(header: str, size: int) -> [int]
+    One byte range of a file of `size`: [first, last] inclusive; [-1, -1] when the header is not one usable range (several,...
 
 ## health.sl -- Health and readiness.
 gc struct ReadyCheck[S] { name: str, check: fn(S) -> result[int, str], lock: mutex, started: int, finished: int, passed: bool, reported: str }
@@ -175,6 +199,13 @@ default_ready_timeout() -> int
 check_name_ok(name: str) -> bool
     A check name is 1-64 of [A-Za-z0-9_.-]: it is written into the JSON body and to stderr as is.
 
+## idempotency.sl -- Idempotency keys (the IETF Idempotency-Key header): a client retrying a POST or PATCH after a timeout gets the first answer...
+gc struct Idempotency { ttl: int, lock_ttl: int, max_body: int, scope_local: str, required: bool, shards: [IdemShard], remote: opt[redis.Pool] }
+idempotency_in_memory() -> Idempotency
+    Answers kept in this process: right for one instance.
+idempotency_redis(p: redis.Pool) -> Idempotency
+    Answers kept in Redis, shared by every instance behind the balancer.
+
 ## ids.sl -- Identifiers.
 new_request_id() -> str
     128 bits of randomness, hex, prefixed so it is recognisable in a log that carries other people's ids too.
@@ -182,6 +213,32 @@ new_session_id() -> str
     A longer one, for a session or a socket.io sid, where a collision matters more than the length does.
 request_id_for(headers: bytes) -> str
     The id a request is answered and logged under: the client's own X-Request-Id when it is 1-64 characters of [A-Za-z0-9._-], so...
+
+## jobs.sl -- Background jobs: work on a schedule, and work queued to run later.
+gc struct JobCtx[S] { state: S, name: str, payload: str, attempt: int, due: timez.Time, deadline: until }
+    What a run gets: the service's state, which run this is, and the deadline to pass to everything that can block.
+gc struct Jobs[S] { state: S, zone: timez.Zone, clock: timez.Clock, logger: Logger, default_timeout: int, scheduled: [ScheduledJob[S]], kinds: [JobKind[S]], queue: [QueuedJob], lock: mutex, in_flight: int, stopping: bool, failures: int }
+new_jobs[S](state: S) -> Jobs[S]
+job_backoff(attempt: int) -> int
+    The wait before try `attempt + 1`: 1 s, 2 s, 4 s ...
+Jobs.every(name: str, spec: str, run: fn(JobCtx[S]) -> result[int, str], timeout: int) -> result[int, str]
+    Runs `run` on the cron schedule `spec` (see timez.parse_cron), each run given `timeout` nanoseconds as its deadline.
+Jobs.handle(kind: str, run: fn(JobCtx[S]) -> result[int, str], attempts: int) -> result[int, str]
+    Registers what runs a queued job of `kind`, and how many tries it gets (at least 1).
+Jobs.enqueue(kind: str, payload: str, at: timez.Time) -> result[int, str]
+    Queues one run of `kind` with `payload`, due at `at` (now or in the past runs at the next tick).
+Jobs.queued() -> int
+    Queued runs not yet started.
+Jobs.running() -> int
+    Runs started and not yet finished.
+Jobs.tick(now: timez.Time) -> int
+    Starts every run due at `now` -- scheduled turns and queued jobs -- each in its own task, and returns how many it started.
+Jobs.start() -> int
+    Starts the scheduler: a task that ticks at each due time, and at least every quarter second so a stop or SIGTERM is seen quickly.
+Jobs.stop() -> int
+    Stops starting runs.
+Jobs.wait_runs(timeout: int) -> bool
+    Waits until no run is in progress, or `timeout` nanoseconds pass; true when none is.
 
 ## json.sl -- JSON, for the shapes you know and the ones you do not.
 enum JsonKind { Null, Bool, Number, String, Array, Object }
@@ -323,6 +380,45 @@ LogFormat.json(ev: LogEvent) -> str
     The same as single strings, without the newline: for a consumer that wants one line at a time.
 LogFormat.pretty(ev: LogEvent, color: bool, since_ns: int) -> str
 
+## pagination.sl -- Pagination: offset pages and keyset (cursor) pages, one envelope for both, so a client reads every list the same way:
+struct Page { limit: int, offset: int, cursor: str, by_cursor: bool }
+    What the request asked for, checked.
+Page.fetch() -> int
+    How many rows to ask the database for: one more than the page, so the response knows whether there is a next page without a count.
+page_of[S](c: Ctx[S], default_limit: int, max_limit: int) -> result[Page, http.Response]
+    The page `c` asks for: `limit` (default `default_limit`, at most `max_limit`), and either `offset` or `cursor`.
+encode_cursor(parts: [str]) -> str
+    The opaque cursor for a row whose sort key is `parts`.
+decode_cursor(cursor: str) -> result[[str], str]
+    The key parts of a cursor, err when it is not one encode_cursor made.
+cursor_parts(p: Page) -> [str]
+    The key parts of the cursor `p` came with ([] on the first page).
+offset_page[S, T](c: Ctx[S], p: Page, rows: [T], total: opt[int]) -> http.Response
+    An offset page of `rows` -- up to p.fetch() of them; one past the limit means there is a next page -- in the envelope, with Link.
+cursor_page[S, T](c: Ctx[S], p: Page, rows: [T], key: fn(T) -> [str]) -> http.Response
+    A keyset page of `rows` -- up to p.fetch(); one past the limit means there is a next page, whose cursor is `key` of the last...
+
+## postgres.sl -- Postgres, wired to zokor's config, results and error envelope.
+pg_from_config(cfg: Config) -> result[pg.Pool, str]
+    DATABASE_URL (postgres://user:pass@host:port/db?sslmode=require) and DB_POOL_SIZE (default 10).
+has_postgres(cfg: Config) -> bool
+pg_close(p: pg.Pool)
+row_json(rows: pg.Rows, r: int) -> str
+    Row `r` as a JSON object keyed by column name.
+rows_as[T](rows: pg.Rows) -> result[[T], str]
+    Every row as a T, matched by column name.
+query_all[T](p: pg.Pool, sql: str, args: [pg.Arg], deadline: until) -> result[[T], str]
+    Runs `sql` with `args` on a pooled connection and returns every row as a T.
+query_one[T](p: pg.Pool, sql: str, args: [pg.Arg], deadline: until) -> result[opt[T], str]
+    The first row as a T, none when the query returned no row.
+conn_query_all[T](c: pg.Conn, sql: str, args: [pg.Arg], deadline: until) -> result[[T], str]
+    The same on a connection you hold -- inside a transaction body.
+transaction[A, R](p: pg.Pool, arg: A, body: fn(pg.Conn, A) -> result[R, str], deadline: until) -> result[R, str]
+    Runs `body(conn, arg)` inside BEGIN ...
+is_unique_violation(e: str) -> bool
+db_failure(reg: Registry, e: str, request_id: str) -> http.Response
+    A database error as the answer to send, in the service's envelope.
+
 ## ratelimit.sl -- Rate limiting.
 gc struct RateShard { hits: map[str][int], lock: mutex, since_sweep: int }
 gc struct RateLimiter { limit: int, window: int, shards: [RateShard], sweep_every: int }
@@ -388,7 +484,7 @@ gc struct Ctx[S] { state: S, req: http.Request, params: opt[map[str]str], param1
 struct Served { resp: http.Response, route: str }
     A response and the route pattern that produced it, for the request log.
 gc struct Route[S] { method: Method, pattern: str, befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], segs: [str], names: [str], wild: int, fkind: int, fpath: str, handler: fn(Ctx[S]) -> http.Response, has_static: bool, static_status: i32, static_ctype: str, static_body: bytes, static_rendered: bytes, static_hit: opt[http.StaticBody], static_close_hit: opt[http.StaticBody], no_map: opt[map[str]str] }
-gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security, sanitize: SanitizeMode, no_lines: opt[[str]] }
+gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security, sanitize: SanitizeMode, auto_etag: bool, rindex: [RNode], static_paths: map[str]int, idem: opt[Idempotency], gzip: opt[Compression], mounts: [FileMount], no_lines: opt[[str]] }
     A `before` runs ahead of the handler and may end the request by returning a response; `none` carries on.
 new_router[S](state: S) -> Router[S]
     An application builds its router from its state alone; everything else starts empty or at the default a correct server should...
@@ -417,6 +513,14 @@ Router.guarded(method: Method, pattern: str, h: fn(Ctx[S]) -> http.Response, bef
     Middleware for one route, which is the other half of the same need: `r.guarded(Method.DELETE, "/orgs/:id", drop,...
 Router.before(f: fn(Ctx[S]) -> opt[http.Response]) -> int
 Router.after(f: fn(Ctx[S], http.Response) -> http.Response) -> int
+Router.etags() -> int
+    Tags every 200 answer to a GET or HEAD with a strong ETag -- a hash of the body it sends -- and answers a matching...
+Router.idempotency(store: Idempotency) -> int
+    Answers a retried POST or PATCH that carries an Idempotency-Key with the first answer, from `store` (see idempotency.sl).
+Router.compress(z: Compression) -> int
+    Gzips answers worth it for clients that accept it (see compression.sl).
+Router.files(m: FileMount) -> int
+    Serves the directory of `m` under its prefix (see files.sl): a GET or HEAD no route claims.
 Router.security_headers(h: SecurityHeaders) -> int
     Replaces the security headers (see security.sl); no_security_headers() turns them off.
 Router.mongo_sanitize(mode: SanitizeMode) -> int
@@ -535,7 +639,7 @@ security_compile(h: SecurityHeaders) -> Security
 Security.apply(resp: http.Response) -> http.Response
     `resp` with every line it does not already carry.
 static_render_with(status: i32, content_type: str, lines: [str], body: bytes, keep_alive: bool) -> bytes
-    A static route's bytes: status line, content type, the security lines, length, connection, body.
+    A static route's bytes: status line, content type, the security lines, length, connection, the date line, body.
 
 ## serve.sl -- The server edge: the accept loop that turns a Router into a running server.
 gc struct ServerConfig { idle_timeout: int, header_timeout: int, body_timeout: int, write_timeout: int, max_request_bytes: int, max_requests_per_conn: int, shutdown_timeout: int, request_ids: bool, trusted_proxies: TrustedProxies, logger: Logger, max_connections: int }

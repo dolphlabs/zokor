@@ -78,8 +78,9 @@ library, made and merged there first.
   cookies with a rotating key. Safe defaults, every attribute checked
   (`set_cookie` returns err), `Partitioned`, `__Host-`/`__Secure-` rules,
   HMAC-SHA256 over name and value with `COOKIE_KEYS` rotation and a
-  constant-time compare. Not done: `Expires` (needs an HTTP date from the
-  time package; `Max-Age` covers every browser in use).
+  constant-time compare. `expires` (an instant from slang's `timez`) is
+  written as `Expires` beside `Max-Age`, and `clear_cookie` sends the 1970
+  date for clients that read only `Expires`.
 - [x] **Input sanitisation against injection**, opt-in and configurable:
   - **NoSQL (Mongo-style operator injection)**, like `express-mongo-sanitize`:
     object keys starting with `$` or containing `.` in JSON bodies and
@@ -116,35 +117,72 @@ library, made and merged there first.
 
 ## 3. Building real services
 
-- [ ] **Postgres helpers**: pool setup from config, transactions
+- [x] **Postgres helpers**: pool setup from config, transactions
   (`tx.run(fn)` that commits or rolls back), rows into structs, and the
   error shape for a unique violation. Parameterised queries only; only one
-  package imports `pg`.
+  package imports `pg`. Done: `pg_from_config`, `query_all`/`query_one`/
+  `rows_as` (rows by column name through JSON), `transaction` (rollback on
+  err or panic, connection always returned), `db_failure` (SQLSTATE ->
+  409/422/503/500, message withheld). Live tests run on Linux CI against
+  postgres:16. Not done: retrying serialization failures, and streaming
+  large results into structs (use `pg.stream` directly).
+- [ ] **Map rows into structs without JSON text.** `rows_as` renders each
+  row as JSON and decodes it: 2.2 us a row over reading cells by hand
+  (bench/postgres: 1,000 rows 5.3 ms vs 3.0 ms). The rendering, not the
+  decode (0.33 us a row), is the cost: reading every cell as text and
+  writing it out again. A direct path needs either slang codegen for
+  "decode a struct from (name, value) pairs" or a json.decode that takes
+  a token stream; worth it only if row-heavy endpoints show it.
 - [ ] **MongoDB helpers**: a pool from `MONGODB_URI` through
   `dolphlabs/mongo` (optional, like `redis_from_config`), and the error
   shape for a duplicate key, so a service on Mongo gets what a service on
   Postgres does.
-- [ ] **[slang] A sufficient `time` package.** Today it has a monotonic
-  clock, wall time and sleep. Missing for real services: calendar time
-  (date and time of day, time zones from the system tz database), parsing
-  and formatting (RFC 3339 / ISO 8601, RFC 1123 for HTTP dates, custom
-  layouts), durations with units, date arithmetic (add months, start of
-  day) and comparisons. Built on the existing package, with C interop
-  (`localtime_r`, `timegm`, `strftime`) where libc already does it
-  right. Scoped and agreed in slang before code; several items below need
-  it (HTTP dates for conditional requests, cookie expiry, pagination
-  cursors, idempotency TTLs).
-- [ ] **Pagination**: offset and cursor forms, with the `Link` header and a
-  response envelope that does not change shape between them.
-- [ ] **Idempotency keys** for unsafe methods, stored so a retried `POST`
-  returns the first answer (in memory, or Redis through `redis_from_config`).
-- [ ] **Compression**: gzip through slang's `compress`, honouring
-  `Accept-Encoding`, with a size floor and a content-type allowlist so it is
-  never applied to something already compressed.
-- [ ] **Conditional requests**: `ETag`, `Last-Modified`, `If-None-Match`,
-  `If-Modified-Since`, `304`.
-- [ ] **Static files**: traversal-safe (`..`, symlinks, encoded separators),
-  `Range` requests, content types, cache headers, index files.
+- [x] **[slang] A sufficient `time` package**: slang's `timez` (slang
+  #409): calendar time, RFC 3339 / HTTP / RFC 2822 dates, strftime,
+  durations, IANA zones from the system tz database, test clocks and
+  cron. Pure slang, no C interop.
+- [x] **Pagination**: `page_of` reads and checks `limit` with `offset` or
+  `cursor` (a 422 naming each bad one); `offset_page` and `cursor_page`
+  answer in one envelope (`data`, `page.limit/offset|cursor/next/prev/
+  total`) with a `Link` header that keeps the other query parameters.
+  `fetch()` asks for one row past the page, so "is there a next" needs no
+  count. Keyset cursors are base64url JSON of the row's sort key.
+- [x] **Idempotency keys**: `r.idempotency(store)` -- in memory
+  (`idempotency_in_memory`, 16 shards, swept) or Redis
+  (`idempotency_redis`, `SET NX PX` so instances agree). A POST/PATCH with
+  `Idempotency-Key` runs once; a retry gets the kept answer
+  (`Idempotent-Replayed: true`), a retry while it runs 409, the key with
+  another body 422. Scoped by method, route and `scope_local` (the
+  caller). 5xx/408/429 and bodies over `max_body` are not kept; a panic
+  frees the key after `lock_ttl`.
+- [x] **Compression**: `r.compress(compression())` gzips 2xx bodies of
+  at least 1 KB with an allowlisted type (text, JSON, JS, XML, SVG, form,
+  +json/+xml) for clients whose Accept-Encoding allows gzip (q values
+  read; `gzip;q=0` refuses), adds `Vary: Accept-Encoding` to every
+  variant and weakens a strong ETag. Level 1 by default: 14 KB JSON in
+  36 us at 10% of its size (level 5: 74 us, 10%). Not done: static
+  routes are sent as rendered (pre-compressing them at registration).
+- [x] **Conditional requests**: `preconditions` (RFC 9110 13.2.2 order:
+  `If-Match`, `If-Unmodified-Since`, `If-None-Match`, `If-Modified-Since`;
+  304 for reads, 412 for writes), `etag_of`, `with_validators`, and an
+  opt-in `r.etags()` that hashes 200 GET bodies (`bench/conditional`:
+  +1.5 us at 128 B, +2.7 us at 1 KB, +20 us at 16 KB; nothing when off).
+  Not done: static routes are not tagged; a native fast hash in slang
+  would cut the per-byte cost about tenfold (FNV-1a in slang runs at
+  1.1 ns/byte).
+- [x] **Static files**: `files_at(prefix, dir)` and `r.files(mount)`.
+  Traversal-safe (encoded separators, `..`/`.`/dot-file segments,
+  backslashes, NULs: 404; the real path, every symlink resolved, must stay
+  under the real root); index files; ETag from size and mtime,
+  Last-Modified, 304/412; one `Range` (206, 416, If-Range), several get
+  the whole file; Content-Type by extension; Cache-Control per mount
+  (`max_age`, `immutable`). Needs slang's fs.realpath/fs.fstat. Not done:
+  streaming files larger than `max_size` (64 MB), pre-compressed `.gz`
+  variants.
+- [x] **A HEAD answer says the GET's `Content-Length`** (RFC 9110 9.3.2).
+  The routed calls keep the body; the serve loop writes a HEAD answer
+  with slang's `http.write_head` (the length, no body); the public
+  `serve`/`serve_frame`/`serve_id` still hand back an empty body.
 - [ ] **Migrations**: ordered, checksummed, applied in a transaction, with an
   advisory lock so two instances do not race, and a `zokor migrate` command.
 - [ ] **Metrics**: Prometheus text format at `/metrics`; request count and
@@ -152,8 +190,13 @@ library, made and merged there first.
   service's own.
 - [ ] **Tracing**: W3C `traceparent` in, propagated to outbound calls, and the
   trace id on every log line and error envelope.
-- [ ] **Background work**: a scheduler for periodic jobs and a channel-backed
-  queue with retry and backoff, on slang's tasks.
+- [x] **Background work**: `new_jobs` -- cron schedules read in a time zone
+  (timez), one run at a time per job, missed turns not replayed, each run
+  its own task (a panic is that run's failure); an in-memory queue with
+  per-kind attempts and exponential backoff (1 s doubling, capped at an
+  hour); stops starting runs on SIGTERM. Tests drive it with `tick` on a
+  fixed clock. Not done: a durable queue (Redis or Postgres) -- queued
+  work is lost on restart.
 - [ ] **OpenAPI**: generate a document from `routes_list` plus the declared
   DTOs and the error registry.
 - [ ] **Config profiles** (`dev`, `test`, `prod`), and `.env.test` selection
@@ -208,20 +251,16 @@ library, made and merged there first.
   `Ctx`/routing (~1-2 us). Needs a fresh measurement on a quiet host
   before more work. Unreproduced: one c=2000 run on Linux collapsed to
   356 rps with a 9 s p99; six runs after it did not.
-- [ ] **Index the routes instead of scanning them.** Matching walks
-  `Router.routes` in order and compares each route, so its cost grows with
-  the number of routes: bench/audit's router case (200 requests to the
-  last of *n* one-parameter routes) is ~60 us a request at 64 routes and
-  ~550 us at 512, on the general path. The frame path is cheaper per
-  route but still linear. Keep the list as the source of truth
-  (registration order, "first registered wins", `routes_list`) and add,
-  built at registration:
-  - a map from method + exact path to route, so static paths cost one
-    hash and one lookup;
-  - a segment tree for `:param` and `*rest` routes, so matching costs the
-    path's depth, not the route count (httprouter's and Fiber's approach).
-
-  `befores`/`afters` stay lists: they are an ordered sequence run in full,
-  with nothing to look up. Done when bench/audit's router case is flat
-  across 64-512 routes and the latency benchmark shows no regression at
-  2-3 routes, with both measurements recorded here.
+- [x] **Index the routes instead of scanning them** (route_index.sl).
+  Above 16 routes the router keeps a segment trie in step with `routes`
+  at registration; a lookup walks the path's literal and `:param`
+  children and takes the smallest matching index whose method fits --
+  the route a scan in registration order picks (a differential test
+  checks 3,200 random requests over random 60-route routers against the
+  scan). Static GETs get an exact path map. Measured, ns per request to
+  the last of n one-param routes, dev -> index: 64: 4,600-4,900 ->
+  2,100-3,000; 128: 8,300 -> 2,900-3,500; 256: 16,800-18,200 ->
+  3,200-3,700; 512: 33,900-34,600 -> 3,300-5,200. Three routes (not
+  indexed), ABBA x4: medians 1,612 vs 1,646 ns, inside the spread.
+  The frame path and the general one now agree on precedence for an
+  indexed router (the frame path used to skip general routes).
