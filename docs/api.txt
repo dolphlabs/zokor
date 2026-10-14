@@ -156,9 +156,9 @@ is_preflight(method: str, raw_headers: bytes) -> bool
 ## errors.sl -- Failure, as one shape.
 gc struct Code { name: str, status: i32, message: str }
 gc struct FieldError { field: str, reason: str }
-gc struct ErrorView { code: str, message: str, status: i32, request_id: str, fields: [FieldError] }
+gc struct ErrorView { code: str, message: str, status: i32, request_id: str, fields: [FieldError], trace_id: str }
     Everything the renderer is given.
-gc struct Registry { codes: map[str]Code, render: fn(ErrorView) -> http.Response }
+gc struct Registry { codes: map[str]Code, render: fn(ErrorView) -> http.Response, trace_id: str }
 new_registry() -> Registry
     Every HTTP failure status, under the name a handler will reach for.
 set_renderer(r: Registry, f: fn(ErrorView) -> http.Response) -> int
@@ -327,7 +327,7 @@ enum LogLevel { DEBUG, LOG, WARN, ERROR, OFF }
 level_rank(l: LogLevel) -> int
 level_name(l: LogLevel) -> str
 parse_level(s: str) -> opt[LogLevel]
-gc struct LogEvent { time: int, level: LogLevel, context: str, message: str, request: bool, method: str, route: str, path: str, status: int, duration_ns: int, size: int, request_id: str, client_ip: str, ack: opt[chan[int]] }
+gc struct LogEvent { time: int, level: LogLevel, context: str, message: str, request: bool, method: str, route: str, path: str, status: int, duration_ns: int, size: int, request_id: str, client_ip: str, trace_id: str, ack: opt[chan[int]] }
 gc struct Logger { events: opt[chan[LogEvent]], level: LogLevel, requests: bool, console: bool, json: bool, color: bool, capacity: int, lock: mutex, dropped: int, no_ack: opt[chan[int]] }
 default_log_capacity() -> int
     How many events may wait for the writer: enough to absorb a burst of a few thousand requests between two wake-ups.
@@ -516,7 +516,7 @@ gc struct Ctx[S] { state: S, req: http.Request, params: opt[map[str]str], param1
 struct Served { resp: http.Response, route: str }
     A response and the route pattern that produced it, for the request log.
 gc struct Route[S] { method: Method, pattern: str, befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], segs: [str], names: [str], wild: int, fkind: int, fpath: str, handler: fn(Ctx[S]) -> http.Response, has_static: bool, static_status: i32, static_ctype: str, static_body: bytes, static_rendered: bytes, static_hit: opt[http.StaticBody], static_close_hit: opt[http.StaticBody], no_map: opt[map[str]str] }
-gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security, sanitize: SanitizeMode, auto_etag: bool, rindex: [RNode], static_paths: map[str]int, idem: opt[Idempotency], gzip: opt[Compression], mounts: [FileMount], no_lines: opt[[str]], observations: opt[Metrics] }
+gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security, sanitize: SanitizeMode, auto_etag: bool, rindex: [RNode], static_paths: map[str]int, idem: opt[Idempotency], gzip: opt[Compression], mounts: [FileMount], no_lines: opt[[str]], observations: opt[Metrics], tracer: opt[Tracer], no_tracer: opt[Tracer], request_locals: opt[map[str]str] }
     A `before` runs ahead of the handler and may end the request by returning a response; `none` carries on.
 new_router[S](state: S) -> Router[S]
     An application builds its router from its state alone; everything else starts empty or at the default a correct server should...
@@ -571,6 +571,7 @@ Router.routes_list() -> [str]
     "METHOD /pattern" per route, in registration order: for a boot log, for `zokor check`, and for a test that pins down the...
 Router.metrics(m: Metrics) -> int
     Opt-in Prometheus endpoint; a service's explicit route still wins.
+Router.tracing(driver: Tracer) -> int
 Router.allowed(p: str) -> [Method]
     The methods registered for a path, for `Allow` on a 405 and for an automatic OPTIONS.
 Router.serve(req: http.Request) -> http.Response
@@ -606,6 +607,10 @@ Group.put(p: str, h: fn(Ctx[S]) -> http.Response) -> int
 Group.patch(p: str, h: fn(Ctx[S]) -> http.Response) -> int
 Group.delete(p: str, h: fn(Ctx[S]) -> http.Response) -> int
 Group.options(p: str, h: fn(Ctx[S]) -> http.Response) -> int
+Ctx.trace() -> TraceContext
+    Empty identifiers when tracing is off.
+Ctx.trace_request(req: httpc.Request) -> result[httpc.Request, str]
+Ctx.logger(log: Logger) -> TraceLogger
 Ctx.param(name: str) -> str
 Ctx.param_int(name: str, fallback: int) -> int
 Ctx.header(name: str) -> str
@@ -750,6 +755,30 @@ TokenStore.count() -> int
     How many tokens are held (expired ones count until swept).
 bearer_subject[S](c: Ctx[S], store: TokenStore) -> opt[str]
     The subject behind the request's `Authorization: Bearer <token>`, or none when the header is missing or the token is not live.
+
+## tracing.sl -- Request-scoped W3C context, carried explicitly across tasks and calls.
+gc struct TraceConfig { max_parent_bytes: int, max_state_bytes: int, max_state_members: int }
+    Startup limits for incoming W3C headers.
+gc struct Tracer { max_parent_bytes: int, max_state_bytes: int, max_state_members: int }
+    Validated, immutable startup tracing settings.
+struct TraceContext { trace_id: str, parent_id: str, span_id: str, sampled: bool, state: str }
+    Explicit request context; pass this value when spawning background work.
+trace_config() -> TraceConfig
+    Default limits: 256 parent bytes, 512 state bytes, 32 state members.
+new_tracer(cfg: TraceConfig) -> result[Tracer, str]
+    Validate all startup limits together and copy them.
+trace_context(t: Tracer, headers: bytes) -> result[TraceContext, str]
+    Invalid, absent or duplicate parents start a new trace.
+trace_header(ctx: TraceContext) -> result[str, str]
+    A validated version-00 header; reserved flags are always zero.
+trace_request(ctx: TraceContext, req: httpc.Request) -> result[httpc.Request, str]
+    Copy the request and its headers; never mutate a shared caller request.
+trace_registry(reg: Registry, ctx: TraceContext) -> Registry
+    Bind a registry by copying its startup references, never changing the shared registry as concurrent requests arrive with...
+struct TraceLogger { logger: Logger, trace_id: str, request_id: str }
+    A request binding over a shared Logger, without changing its configuration.
+traced_logger(log: Logger, ctx: TraceContext) -> TraceLogger
+    Bind application records to a validated trace id.
 
 ## upload.sl -- File uploads.
 gc struct UploadRules { limits: multipart.Limits, allowed_types: [str], allowed_extensions: [str], require_content_type: bool }
