@@ -1,7 +1,7 @@
 SLANGC ?= slangc
 TESTFLAGS ?=
 
-.PHONY: test example check snippets api api-check cli cli-test
+.PHONY: test example example-ports check snippets api api-check cli cli-test
 
 # Every package dir is listed explicitly: a new package without its own
 # line here is a package with no tests, and that fails review.
@@ -20,6 +20,10 @@ test:
 	$(SLANGC) test zokor/internal/openapi $(TESTFLAGS)
 	$(SLANGC) test zokor/internal/accept $(TESTFLAGS)
 	$(SLANGC) test zokor/internal/location $(TESTFLAGS)
+	$(SLANGC) test examples/ports/src/domain/inventory $(TESTFLAGS)
+	$(SLANGC) test examples/ports/src/application/inventory $(TESTFLAGS)
+	$(SLANGC) test examples/ports/src/infrastructure/memory $(TESTFLAGS)
+	$(SLANGC) test examples/ports/src/interfaces/web $(TESTFLAGS)
 
 cli:
 	mkdir -p bin
@@ -30,6 +34,9 @@ cli-test: cli
 
 example:
 	$(SLANGC) examples/hello/main.sl --run
+
+example-ports:
+	$(SLANGC) examples/ports/src/main.sl --run
 
 example-chat:
 	$(SLANGC) examples/chat/main.sl --run
@@ -49,4 +56,4 @@ api-check:
 	docs/gen_api.sh --check
 
 # Everything CI runs.
-check: test example example-chat snippets api-check cli-test
+check: test example example-chat example-ports snippets api-check cli-test
