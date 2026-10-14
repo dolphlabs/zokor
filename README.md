@@ -1142,6 +1142,39 @@ ASCII identifiers, with `zokor_` reserved. Registration, updates and
 scrapes are concurrency-safe, and the framework reads no environment
 while serving.
 
+## Tracing
+
+Tracing is opt-in: check `new_tracer(trace_config())`, then call
+`r.tracing(tracer)` at startup. `c.trace()` returns the request's
+`TraceContext` (trace id, incoming parent id, current span id, sampled
+bit and vendor state). Missing, invalid or duplicate `traceparent`
+headers start a fresh trace; malformed `tracestate` is dropped without
+changing a valid parent. Limits default to 256 parent bytes, 512 state
+bytes and 32 state members, and can be lowered in `TraceConfig`.
+
+Use `c.trace_request(request)` before an `httpc` call. Check its result;
+it returns a copy with lowercase W3C headers and a fresh child span,
+without changing the original request or headers. For background work,
+pass `c.trace()` explicitly and call `trace_request(context, request)`.
+No context lives in thread-local storage.
+
+`c.logger(logger)` binds application log lines to the trace and request
+id; `traced_logger(logger, context)` does the same for an explicit
+context. Server request records and panic lines carry the same trace id.
+JSON logs always include `trace_id` (empty outside a trace); pretty logs
+append it when present. Framework errors use the request's `c.errors`
+registry: the default envelope includes `error.trace_id` when traced,
+and custom renderers receive it in `ErrorView.trace_id`. The startup
+registry remains shared and is never mutated per request. Use
+`trace_registry(registry, context)` for errors outside a handler.
+
+Sampling is propagated as a flag; this feature supplies context and
+correlation, without exporting spans. Entropy failures return an error
+from propagation helpers and a registered 500 from request dispatch.
+Tracing off creates no per-request context, registry or locals map.
+Idempotent replays retain the original response body, including its
+original error trace id; the replay's request log records the new trace.
+
 ## WebSocket
 
 A connection is a **state machine, not a socket**: you hand it the bytes

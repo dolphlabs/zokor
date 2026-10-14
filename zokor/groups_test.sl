@@ -25,7 +25,10 @@ fn g_router() -> Router[GState] {
         gzip: none,
         mounts: [],
         no_lines: none,
-        observations: none
+        observations: none,
+        tracer: none,
+        no_tracer: none,
+        request_locals: none
     };
 }
 
