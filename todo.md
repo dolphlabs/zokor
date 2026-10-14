@@ -228,7 +228,14 @@ library, made and merged there first.
   supports fakes. Caller-bounded regular-file reads reject NUL and collect
   failures from both files; tests cover selection, precedence, snapshots,
   invalid profiles, limits and aggregate errors.
-- [ ] Content negotiation (`Accept`) and redirect helpers.
+- [x] **Content negotiation and redirects**: startup-compiled offers,
+  caller-bounded Accept parsing, q/specificity/wildcards and quoted parameters;
+  repeated lines combine without changing quoted values. Named 400/406
+  envelopes and Vary: Accept, preserving compression/CORS fields. Checked
+  301/302/303/307/308 redirects with relative defaults and explicit HTTP(S)
+  destinations; no secret destination echoed in failures. The existing raw
+  redirect constructor is retained. Fixed Vary substring matching (Accept
+  was incorrectly treated as present in Accept-Encoding).
 - [ ] **`zokor check`**: the layout checker. Import direction, only the
   database adapter imports `pg`, no SQL built by concatenation, every
   package has tests, routes private by default, tenant id an explicit

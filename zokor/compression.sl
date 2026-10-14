@@ -206,18 +206,25 @@ fn weak_etag_lines(lines: [str]) -> [str] {
 
 // Vary with `field` added: to an existing Vary line, or a new one.
 fn add_vary(resp: http.Response, field: str) -> http.Response {
+    let first = -1;
     let i = 0;
     while i < len(resp.extra) {
         let line = resp.extra[i];
         if strings.has_prefix(strings.to_lower(line), "vary:") {
-            let v = strings.trim(strings.slice(line, 5, len(line)));
-            if v == "*" || strings.contains(strings.to_lower(v), strings.to_lower(field)) {
-                return resp;
+            if first < 0 { first = i; }
+            let v = strings.slice(line, 5, len(line));
+            for part in strings.split(v, ",") {
+                let token = strings.trim(part);
+                if token == "*" || strings.to_lower(token) == strings.to_lower(field) { return resp; }
             }
-            resp.extra[i] = "vary: " + v + ", " + field;
-            return resp;
         }
-        i = i + 1;
+        i += 1;
+    }
+    if first >= 0 {
+        let v = strings.trim(strings.slice(resp.extra[first], 5, len(resp.extra[first])));
+        if len(v) == 0 { resp.extra[first] = "vary: " + field; }
+        else { resp.extra[first] = "vary: " + v + ", " + field; }
+        return resp;
     }
     return http.with_header(resp, "vary", field);
 }
