@@ -54,6 +54,7 @@ pub gc struct ErrorView {
     status: i32,
     request_id: str,
     fields: [FieldError],
+    trace_id: str,
 }
 
 pub gc struct Registry {
@@ -61,6 +62,7 @@ pub gc struct Registry {
     // How a failure becomes a response. `default_render` unless the
     // application replaces it.
     render: fn(ErrorView) -> http.Response,
+    trace_id: str,
 }
 
 // Every HTTP failure status, under the name a handler will reach for.
@@ -70,7 +72,7 @@ pub gc struct Registry {
 // without a second registry.
 pub fn new_registry() -> Registry {
     let m: map[str]Code = {};
-    let r = Registry { codes: m, render: default_render };
+    let r = Registry { codes: m, render: default_render, trace_id: "" };
 
     // 4xx -- the caller can do something about it
     register(r, "bad_request", 400, "the request could not be understood");
@@ -201,7 +203,8 @@ fn render(r: Registry, code: str, message: str, request_id: str,
         message: message,
         status: status_of(r, code),
         request_id: request_id,
-        fields: fields
+        fields: fields,
+        trace_id: r.trace_id
     };
     let f = r.render;
     return f(view);
@@ -236,6 +239,11 @@ pub fn default_render(v: ErrorView) -> http.Response {
             i = i + 1;
         }
         bb.write_str("]");
+    }
+    if len(v.trace_id) > 0 {
+        bb.write_str(",\"trace_id\":\"");
+        bb.write(http.escape_json_bytes(to_bytes(v.trace_id)));
+        bb.write_str("\"");
     }
     bb.write_str("}}");
     let r = http.text_response_bytes(v.status, status_text(v.status), "application/json; charset=utf-8", bb.finish());

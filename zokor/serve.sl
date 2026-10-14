@@ -233,12 +233,17 @@ fn is_body_too_large(e: str) -> bool {
     return e == "request too large for buffer";
 }
 
-fn too_large_response(status: i32, status_text: str, code: str) -> http.Response {
-    let body = "{\"error\":{\"code\":\"" + code + "\",\"message\":\"" +
-               status_text + "\",\"status\":" + to_str(status) + "}}";
-    return closing(http.text_response(status, status_text,
-                                      "application/json; charset=utf-8",
-                                      body));
+fn too_large_response(reg: Registry, status_text: str, code: str) -> http.Response {
+    return closing(respond_with(reg, code, status_text, ""));
+}
+
+// Framing failures have no trustworthy request headers to inherit.
+fn trace_edge_registry[S](r: Router[S]) -> Registry {
+    if let driver = r.tracer {
+        let made = trace_context(driver, b"");
+        if let ctx = made { return trace_registry(r.errors, ctx); }
+    }
+    return r.errors;
 }
 
 // A response this connection is closed after must say so (RFC 9112
@@ -268,9 +273,14 @@ fn logs_any_request(lg: Logger) -> bool {
 }
 
 fn log_request(lg: Logger, method: str, route: str, raw_path: str,
-               status: int, t0: duration, size: int, rid: str, client: str) {
-    lg.record_request(method, route, raw_path, status,
-                      (time.mono() - t0) as int, size, rid, client);
+               status: int, t0: duration, size: int, rid: str, client: str,
+               trace_id: str) {
+    if !logs_requests(lg, status) { return; }
+    let ev = request_event(method, route, raw_path, status,
+                          (time.mono() - t0) as int, size, rid, client);
+    ev.trace_id = trace_id;
+    ev.ack = lg.no_ack;
+    lg.emit(ev);
 }
 
 // One connection, until the client goes away or asks to close.
@@ -324,22 +334,23 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
             // never terminated), so answering before closing cannot
             // desync anything -- there is no next request on this
             // connection either way, since it closes right after.
+            let edge = trace_edge_registry(r);
             if logging && (is_headers_too_large(e) || is_body_too_large(e)) {
                 let st = 413;
                 if is_headers_too_large(e) {
                     st = 431;
                 }
-                log_request(lg, "-", "", "-", st, time.mono(), 0, "", peer_ip);
+                log_request(lg, "-", "", "-", st, time.mono(), 0, "", peer_ip, edge.trace_id);
             }
             if is_headers_too_large(e) {
                 if let m = r.observations { m.enter(); m.leave("OTHER", "", 431, (time.mono() - now) as int); }
-                let resp431 = r.security.apply(too_large_response(431,
+                let resp431 = r.security.apply(too_large_response(edge,
                     "Request Header Fields Too Large", "headers_too_large"));
                 let _w = http.write(&mut c, resp431, &mut sa,
                                     write_deadline(sc));
             } else if is_body_too_large(e) {
                 if let m = r.observations { m.enter(); m.leave("OTHER", "", 413, (time.mono() - now) as int); }
-                let resp413 = r.security.apply(too_large_response(413,
+                let resp413 = r.security.apply(too_large_response(edge,
                     "Content Too Large", "payload_too_large"));
                 let _w = http.write(&mut c, resp413, &mut sa,
                                     write_deadline(sc));
@@ -361,6 +372,27 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
                 if !logging { t0 = time.mono(); }
             }
         }
+        let context = empty_trace();
+        if let driver = r.tracer {
+            let made = trace_context(driver, wf.headers);
+            guard let ctx = made else {
+                let failure = respond(r.errors, "internal", "");
+                if r.cors.on {
+                    let origins = header_list(wf.headers, "origin");
+                    let origin = "";
+                    if len(origins) > 0 { origin = origins[0]; }
+                    failure = r.cors.apply(failure, origin);
+                }
+                failure = closing(r.security.apply(failure));
+                let _w = http.write(&mut c, failure, &mut sa, write_deadline(sc));
+                if let m = r.observations {
+                    if measured { m.leave(wf.method, r.metrics_pattern(wf.method, wf.path), 500, (time.mono() - t0) as int); }
+                }
+                if logging { log_request(lg, wf.method, "", wf.path, 500, t0, len(failure.body), "", peer_ip, ""); }
+                return;
+            }
+            context = ctx;
+        }
         // The request that HITS max_requests_per_conn is still
         // answered normally -- only the one after it would not be.
         // Folded into the same close the client's own request can
@@ -381,7 +413,9 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
             if !sc.trusted_proxies.is_empty() {
                 client = client_ip_of(peer_ip, wf.headers, sc.trusted_proxies);
             }
-            let h = spawn dispatch(r, wf, rid, client);
+            let scope = r;
+            if len(context.trace_id) > 0 { scope = trace_router(r, context); }
+            let h = spawn dispatch(scope, wf, rid, client);
             let jr = join_wait(h);
             guard let routed = jr else let pe = err_of(jr) {
                 // The handler panicked. spawn/join_wait already
@@ -391,7 +425,7 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
                 // the X-Request-Id header alike. Closed afterward rather
                 // than trusted to keep serving more requests on whatever
                 // state the panic left behind.
-                let resp500 = closing(respond(r.errors, "internal", rid));
+                let resp500 = closing(respond(scope.errors, "internal", rid));
                 if len(rid) > 0 {
                     resp500 = http.with_header(resp500, "x-request-id", rid);
                 }
@@ -415,10 +449,12 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
                     }
                 }
                 if logging {
-                    lg.error("HTTP", "handler panicked: " + pe +
+                    let bound = traced_logger(lg, context);
+                    bound.request_id = rid;
+                    bound.error("HTTP", "handler panicked: " + pe +
                              request_suffix(rid));
                     log_request(lg, wf.method, "", wf.path, 500, t0,
-                                len(resp500.body), rid, client);
+                                len(resp500.body), rid, client, context.trace_id);
                 }
                 return;
             }
@@ -437,7 +473,7 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
             }
             if logging {
                 log_request(lg, wf.method, routed.route, wf.path,
-                            out.status as int, t0, len(out.body), rid, client);
+                            out.status as int, t0, len(out.body), rid, client, context.trace_id);
             }
             if let m = r.observations {
                 if measured {
@@ -487,7 +523,7 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
                 sclient = client_ip_of(peer_ip, wf.headers, sc.trusted_proxies);
             }
             log_request(lg, wf.method, r.routes[si].pattern, wf.path,
-                        resp.status as int, t0, len(resp.body), "", sclient);
+                        resp.status as int, t0, len(resp.body), "", sclient, context.trace_id);
         }
         guard let _n = sw else {
             return;
@@ -586,13 +622,11 @@ fn serve_counted[S](r: Router[S], c: link, sc: ServerConfig, gate: ConnGate) {
 // the accept backlog. Nothing is read, so the connection closes right
 // after; the short deadline keeps a client that is not reading from
 // holding up the accept loop.
-fn refuse_conn(c: link, sec: Security) {
+fn refuse_conn(c: link, sec: Security, reg: Registry) {
     let a = arena_new(512);
     let mut_c = c;
-    let resp = http.with_header(closing(http.text_response(503, "Service Unavailable",
-        "application/json; charset=utf-8",
-        "{\"error\":{\"code\":\"unavailable\",\"message\":\"the server is at its connection limit\",\"status\":503}}")),
-        "retry-after", "1");
+    let resp = http.with_header(closing(respond_with(reg, "unavailable",
+        "the server is at its connection limit", "")), "retry-after", "1");
     resp = sec.apply(resp);
     let _w = http.write(&mut mut_c, resp, &mut a, until_of(time.mono() + 100000000));
 }
@@ -609,7 +643,7 @@ fn accept_one[S](r: Router[S], ln: &mut link, sc: ServerConfig,
     if gate.enter() {
         spawn serve_counted(r, c, sc, gate);
     } else {
-        refuse_conn(c, r.security);
+        refuse_conn(c, r.security, trace_edge_registry(r));
         let n = gate.refusals_to_report(time.mono() as int);
         if n > 0 {
             sc.logger.warn("Server", to_str(n) + " connections refused: at MAX_CONNECTIONS (" +
