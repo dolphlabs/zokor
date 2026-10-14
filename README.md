@@ -1089,6 +1089,30 @@ are dropped), `revoke(token)` logs one session out and
 `revoke_subject(subject)` all of them. Tokens live in memory: they do
 not survive a restart and are not shared between instances.
 
+## Migrations
+
+`make cli` builds `bin/zokor`. Run `bin/zokor migrate [directory]` with
+`DATABASE_URL` configured; the default directory is `migrations`. Files
+are numbered forward-only SQL, for example `001_create_users.sql`.
+Versions must be positive and unique; descriptions use ASCII letters,
+digits, underscores or hyphens. Files are ordered numerically.
+
+The runner checks every applied filename and SHA-256 checksum, takes a
+Postgres transaction advisory lock, and applies the whole pending batch
+in one transaction. A failure rolls back SQL and history together. Keep
+applied files unchanged and present; add a new file for every change.
+SQL can contain multiple statements, comments and dollar-quoted function
+bodies. Explicit transaction/session commands and COPY are refused;
+nontransactional operations such as CREATE INDEX CONCURRENTLY belong in
+a separate operational procedure.
+
+Services can call `load_migrations(dir, migration_limits())` and
+`migrate(pool, migrations, deadline)` at startup. File limits are caller
+configurable; the CLI reads `MIGRATION_MAX_FILES` (1000),
+`MIGRATION_MAX_FILE_BYTES` (1 MiB), `MIGRATION_MAX_TOTAL_BYTES` (16 MiB),
+and `MIGRATION_TIMEOUT_SECONDS` (60, maximum 86400). Errors exit nonzero;
+success prints the applied count, including zero for an unchanged schema.
+
 ## WebSocket
 
 A connection is a **state machine, not a socket**: you hand it the bytes
