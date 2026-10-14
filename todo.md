@@ -228,16 +228,33 @@ library, made and merged there first.
   supports fakes. Caller-bounded regular-file reads reject NUL and collect
   failures from both files; tests cover selection, precedence, snapshots,
   invalid profiles, limits and aggregate errors.
-- [ ] Content negotiation (`Accept`) and redirect helpers.
+- [x] **Content negotiation and redirects**: startup-compiled offers,
+  caller-bounded Accept parsing, q/specificity/wildcards and quoted parameters;
+  repeated lines combine without changing quoted values. Named 400/406
+  envelopes and Vary: Accept, preserving compression/CORS fields. Checked
+  301/302/303/307/308 redirects with relative defaults and explicit HTTP(S)
+  destinations; no secret destination echoed in failures. The existing raw
+  redirect constructor is retained. Fixed Vary substring matching (Accept
+  was incorrectly treated as present in Accept-Encoding).
 - [ ] **`zokor check`**: the layout checker. Import direction, only the
   database adapter imports `pg`, no SQL built by concatenation, every
   package has tests, routes private by default, tenant id an explicit
   parameter. `tyto`'s `AGENTS.md` is the seed and the reason this exists.
-- [ ] **Ports and fakes**, documented as *the* dependency pattern: a struct of
+- [x] **Ports and fakes**, documented as *the* dependency pattern: a struct of
   `fn` values wired at startup, and a fake for tests. slang has no reflection
   or closures, so this is the answer to what Spring and Nest do with a
   container; it needs a guide and a worked example, not a framework. The
-  logger (section 1) is its first instance.
+  logger (section 1) is its first instance. Done: existing README recipe
+  and examples/ports, with explicit generic adapter context, tenant-bound
+  calls, immutable memory wiring and test-only success/absence/failure fakes.
+  All four packages are tested; authentication, tenant binding, validation
+  and registered HTTP error mapping are exercised hermetically.
+
+Compiler follow-up: a generic HTTP helper whose argument contained its
+own generic `App[C]` failed with `<package> is not an imported package`
+when calling generic Ctx helpers. Reproduced with both http and web package
+names. The example uses concrete route contexts and passes explicit values
+to its generic response helper. No compiler change is included here.
 
 ## 4. Realtime and transport
 

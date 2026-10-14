@@ -717,6 +717,51 @@ Files are read into memory, up to `max_size` (64 MB), and the read
 blocks a worker: serve an app's own assets this way, and put a CDN in
 front of large or busy ones.
 
+## Content negotiation and redirects
+
+Compile the representations a handler can serve at startup:
+
+```slang
+let made = zokor.new_negotiator(["application/json", "text/html"], zokor.accept_limits());
+guard let formats = made else let e = err_of(made) { println(e); exit(1); }
+// Keep formats in the router's state. In the handler:
+let picked = zokor.negotiate(c, c.state.formats);
+guard let media = picked else let bad = err_of(picked) { return bad; }
+// Render the selected representation, then return it with media as Content-Type.
+```
+
+`negotiate` combines repeated Accept lines, preserving quoted parameters.
+It honors q weights, wildcards and parameter specificity: a specific
+`q=0` excludes that representation even when a wildcard permits others.
+Equal preferences use specificity, client range order, then startup offer
+order. An absent header selects the first offer; an empty header or no
+acceptable offer produces the registered `not_acceptable` 406. Malformed
+or over-limit headers produce `bad_request` 400 with an `Accept` field.
+All these responses carry `Vary: Accept`, alongside compression and CORS
+fields. `Negotiator.choose` provides selection without a request context.
+
+`accept_limits()` defaults to 8 KB of combined header values, 64 list
+members, 32 parameters per range (including q), 32 offers and 1 KB per
+offer. Set these before constructing the negotiator. Configure once and
+treat its compiled vectors as immutable.
+
+```slang
+let response = zokor.redirect_to("/orders/123"); // checked 303, POST/redirect/GET
+let rules = zokor.redirect_rules();             // relative references, 8 KB limit
+rules.allow_external = true;
+let moved = zokor.redirect_checked(307, "https://app.example.com/orders", rules);
+```
+
+Checked helpers return a result; they validate 301/302/303/307/308 and
+preserve the destination with an empty body. Relative paths, queries and
+fragments are accepted. External HTTP(S) URLs require explicit opt-in;
+network-path references (`//host`), credentials, raw whitespace, controls,
+backslashes and malformed percent escapes are refused. Other bytes must
+be percent-encoded. Errors name the field without echoing the destination.
+For variable external destinations, the application chooses its permitted
+hosts. The existing `redirect(status, location)` remains the raw
+constructor for destinations the application already controls.
+
 ## Compression
 
 ```slang
@@ -1411,6 +1456,52 @@ make test
 guide's snippets (`docs/llms-small.txt`, via `make snippets`), and
 `make api-check`, so neither the guide nor the API reference can drift
 from the code. CI runs the same against slangc built from slang `dev`.
+
+## Dependencies: ports and fakes
+
+Use a struct of function values, wired once at startup. A service holds
+that port and calls it; concrete database or HTTP clients live in adapters.
+Slang has no closures, so pass adapter state explicitly rather than hiding
+it in globals:
+
+```slang
+pub gc struct StockPort[C] {
+    context: C,
+    lookup: fn(C, str, str) -> result[opt[Stock], str],
+}
+// A top-level adapter function has the same signature:
+// lookup(context, tenant_id, sku). Startup injects its function and context.
+```
+
+The application defines the port. Infrastructure imports that definition
+and implements it; application code imports domain types and never the
+adapter. The bootstrap imports both and connects them. Tenant identity
+remains an explicit argument through each call. An optional result
+separates a missing record from an unavailable dependency. The HTTP edge
+maps failures to registered errors without exposing adapter diagnostics.
+
+[examples/ports/src/main.sl](examples/ports/src/main.sl) is the worked
+example: a tenant-scoped stock service, an immutable memory adapter,
+a protected route, and startup configuration. `make example-ports` drives
+the real router pipeline without opening sockets. It prints an
+unauthenticated 401, the seeded stock, and a registered missing-stock 404.
+The existing hello/chat examples keep their behavior.
+
+Application fakes live in `fakes_test.sl`, so the compiler excludes them
+from service builds. They supply the same function signature with their
+own explicit state, return canned success/absence/failure, and record calls.
+Tests prove that invalid input never reaches a port, tenant identity is
+passed through, another tenant's record is rejected, unauthenticated HTTP
+requests cannot invoke the port, and adapter details do not reach clients.
+`make test` lists all four example packages; `make check` also runs its
+startup wiring.
+
+For generic application services, use small concrete top-level route
+functions in the bootstrap to call the generic HTTP helpers. The example
+uses this ordinary function-value pattern for registration and gives tests
+their own wrappers. Each adapter owns its concurrency rules: the example
+copies its seed data once and never mutates it after startup; a mutable
+adapter must synchronize its state.
 
 ## Agent guide
 
