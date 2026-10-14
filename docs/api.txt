@@ -412,6 +412,34 @@ load_migrations(dir: str, limits: MigrationLimits) -> result[[Migration], str]
 migrate(p: pg.Pool, ms: [Migration], deadline: until) -> result[int, str]
     Validate all historical files, then apply the pending batch in one transaction under a database-wide advisory lock.
 
+## openapi.sl -- Startup OpenAPI generation from registered routes and explicit wire schemas.
+gc struct OpenApiLimits { max_routes: int, max_schemas: int, max_schema_bytes: int, max_total_schema_bytes: int, max_schema_depth: int, max_document_bytes: int, max_collection_entries: int, max_metadata_bytes: int }
+    Resource limits for startup metadata and the generated document.
+openapi_limits() -> OpenApiLimits
+gc struct ApiParameter { name: str, location: str, schema: str, required: bool, description: str }
+    schema is a registered DTO name or a primitive JSON Schema type.
+gc struct ApiResponse { status: i32, description: str, schema: str, media_type: str }
+    An empty schema declares a response without a body.
+gc struct ApiOperation { method: Method, pattern: str, operation_id: str, summary: str, description: str, tags: [str], parameters: [ApiParameter], request_schema: str, request_media_type: str, request_required: bool, responses: [ApiResponse], errors: [str] }
+    Metadata cannot create routes: method/pattern must occur in routes_list.
+gc struct OpenApi { title: str, version: str, description: str, server_urls: [str], schemas: map[str]str, operations: [ApiOperation], omitted: [str], error_schema: str, error_media_type: str, limits: OpenApiLimits }
+    Configure before generation.
+new_openapi(title: str, version: str) -> OpenApi
+api_operation(method: Method, pattern: str) -> ApiOperation
+api_parameter(name: str, location: str, schema: str) -> ApiParameter
+api_response(status: i32, schema: str) -> ApiResponse
+OpenApi.schema(name: str, definition: str) -> int
+    A JSON Schema definition, parsed within limits at generation.
+OpenApi.operation(op: ApiOperation) -> int
+OpenApi.omit(method: Method, pattern: str) -> int
+    Explicitly exclude an unsupported or private route from this document.
+api_default_error_schema() -> str
+    Embed this definition when the application's renderer uses the default envelope.
+api_ref(name: str) -> str
+    A self-contained reference, or an inline primitive schema.
+openapi_document(routes: [str], reg: Registry, api: OpenApi) -> result[str, str]
+    Generate at startup; returns every detected metadata problem together.
+
 ## pagination.sl -- Pagination: offset pages and keyset (cursor) pages, one envelope for both, so a client reads every list the same way:
 struct Page { limit: int, offset: int, cursor: str, by_cursor: bool }
     What the request asked for, checked.
