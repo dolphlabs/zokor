@@ -222,6 +222,13 @@ impl Security {
         }
         let n = len(resp.extra);
         let i = 0;
+        if n == 0 {
+            while i < len(self.lines) {
+                push(resp.extra, self.lines[i]);
+                i = i + 1;
+            }
+            return resp;
+        }
         while i < len(self.lines) {
             let mine = false;
             let k = 0;

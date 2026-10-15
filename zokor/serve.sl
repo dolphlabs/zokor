@@ -390,6 +390,7 @@ fn log_request(lg: Logger, method: str, route: str, raw_path: str,
 pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
     // Once per connection: a connection's peer does not change.
     let peer_ip = peer_ip_of(inspect(c.peer()));
+    let ids = request_ids();
     let lg = sc.logger;
     let logging = logs_any_request(lg);
     let ra = arena_new(sc.max_request_bytes);
@@ -495,7 +496,7 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
             // the same one if the handler panics.
             let rid = "";
             if sc.request_ids {
-                rid = request_id_for(wf.headers);
+                rid = request_id_with(wf.headers, ids);
             }
             let client = peer_ip;
             if !sc.trusted_proxies.is_empty() {

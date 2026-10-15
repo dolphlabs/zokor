@@ -47,9 +47,28 @@ fn max_request_id_len() -> int {
 // header block (http.WireFrame.headers); like http.header, a repeated
 // field is read from its last line.
 pub fn request_id_for(headers: bytes) -> str {
+    let given = incoming_request_id(headers);
+    if len(given) > 0 {
+        return given;
+    }
+    return new_request_id();
+}
+
+// request_id_for, drawing a new id from `ids`: what the serve loop
+// calls, once per dynamic request on a connection.
+pub fn request_id_with(headers: bytes, ids: RequestIds) -> str {
+    let given = incoming_request_id(headers);
+    if len(given) > 0 {
+        return given;
+    }
+    return ids.next();
+}
+
+// The client's own X-Request-Id when it is one zokor keeps, else "".
+fn incoming_request_id(headers: bytes) -> str {
     let at = strings.find_field(headers, "x-request-id");
     if at < 0 {
-        return new_request_id();
+        return "";
     }
     let n = len(headers);
     let hi = at;
@@ -64,7 +83,7 @@ pub fn request_id_for(headers: bytes) -> str {
         hi = hi - 1;
     }
     if hi - lo < 1 || hi - lo > max_request_id_len() {
-        return new_request_id();
+        return "";
     }
     let i = lo;
     while i < hi {
@@ -72,9 +91,56 @@ pub fn request_id_for(headers: bytes) -> str {
         let ok = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) ||
                  (c >= 97 && c <= 122) || c == 45 || c == 46 || c == 95;
         if !ok {
-            return new_request_id();
+            return "";
         }
         i = i + 1;
     }
     return strings.from_bytes(headers, lo, hi);
+}
+
+// One connection's source of request ids: the same 128 random bits and
+// `req_` + hex as new_request_id, but drawn 32 ids at a time. A
+// crypto.rand call per request was a system call per request; an id
+// rendered through hex_encode and `+` was three allocations where this
+// is one. Not shared between connections, so it needs no lock.
+pub gc struct RequestIds {
+    pool: bytes,
+    at: int,
+    out: bytes,
+}
+
+pub fn request_ids() -> RequestIds {
+    return RequestIds { pool: b"", at: 0, out: strings.bytes_zero(36) };
+}
+
+fn request_id_batch() -> int {
+    return 32;
+}
+
+impl RequestIds {
+    pub fn next(self: RequestIds) -> str {
+        if self.at + 16 > len(self.pool) {
+            let r = crypto.rand(16 * request_id_batch());
+            guard let b = r else {
+                return "req_unavailable";
+            }
+            self.pool = b;
+            self.at = 0;
+        }
+        let hex = b"0123456789abcdef";
+        let o = self.out;
+        o[0] = 114;
+        o[1] = 101;
+        o[2] = 113;
+        o[3] = 95;
+        let i = 0;
+        while i < 16 {
+            let v = self.pool[self.at + i];
+            o[4 + 2 * i] = hex[v >> 4];
+            o[5 + 2 * i] = hex[v & 15];
+            i = i + 1;
+        }
+        self.at = self.at + 16;
+        return strings.from_bytes(o, 0, 36);
+    }
 }

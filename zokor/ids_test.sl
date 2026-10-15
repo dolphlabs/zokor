@@ -60,3 +60,27 @@ fn test_request_id_replaced_when_not_well_formed() {
     ctl[len(ctl) - 1] = 1;
     assert(is_generated(request_id_for(ctl)));
 }
+
+fn test_a_connections_request_ids_are_well_formed_and_distinct() {
+    // 100 crosses the 32-id batch three times: a refill must not repeat
+    // or truncate an id.
+    let ids = request_ids();
+    let seen: map[str]bool = {};
+    let i = 0;
+    while i < 100 {
+        let id = ids.next();
+        assert(is_generated(id), "malformed: " + id);
+        assert(!has(seen, id), "repeated: " + id);
+        seen[id] = true;
+        i = i + 1;
+    }
+    // two connections do not share a sequence
+    assert(request_ids().next() != request_ids().next());
+}
+
+fn test_request_id_with_keeps_the_clients_id() {
+    let ids = request_ids();
+    assert(request_id_with(hdrs("X-Request-Id: abc-123"), ids) == "abc-123");
+    assert(is_generated(request_id_with(hdrs("X-Request-Id: two words"), ids)));
+    assert(is_generated(request_id_with(hdrs("Host: t"), ids)));
+}
