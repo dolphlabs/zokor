@@ -1608,3 +1608,10 @@ The full list, ordered and checkable, is [todo.md](todo.md). In short:
 - **Speed, measured.** Several parsers here build output by repeated
   concatenation, which is quadratic in slang today; that audit and the
   benchmarks against Go come first in the todo.
+
+## Contributing and licence
+
+zokor is MIT-licensed ([LICENSE](LICENSE)), by Dolph Tech Limited.
+[CONTRIBUTING.md](CONTRIBUTING.md) says how to build, test and send a change;
+report security problems privately as [SECURITY.md](SECURITY.md) describes;
+everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
