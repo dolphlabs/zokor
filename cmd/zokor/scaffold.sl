@@ -331,6 +331,22 @@ fn feature_edits(v: Vars, pg: bool) -> [[Edit]] {
 }
 
 fn add_feature_at(root: str, v: Vars) -> result[[str], str] {
+    let ar = read_text(under(root, "src/platform/app/app.sl"));
+    guard let app = ar else {
+        return err("zokor add feature needs a component scaffold; use zokor newcomp <name>");
+    }
+    let mr = read_text(under(root, "src/main.sl"));
+    guard let main = mr else {
+        return err("zokor add feature needs a component scaffold; use zokor newcomp <name>");
+    }
+    if !strings.contains(app, "// zokor:imports") ||
+       !strings.contains(app, "// zokor:fields") ||
+       !strings.contains(app, "// zokor:build") ||
+       !strings.contains(app, "// zokor:test_build") ||
+       !strings.contains(main, "// zokor:imports") ||
+       !strings.contains(main, "// zokor:mount") {
+        return err("zokor add feature needs the component markers; use zokor newcomp <name>");
+    }
     let pg = uses_postgres(root);
     let fr = write_group(root, feature_templates(), v, []);
     guard let written = fr else let e = err_of(fr) {
@@ -388,7 +404,21 @@ fn service_of(root: str) -> result[str, str] {
     return err("slang.project has no name line");
 }
 
-fn new_project(name: str, pg: bool, git: str, tag: str) -> result[[str], str] {
+fn new_project(name: str, git: str, tag: str) -> result[[str], str] {
+    let sp = service_name_problem(name);
+    if len(sp) > 0 {
+        return err(sp);
+    }
+    if os.exists(name) {
+        return err(name + " already exists: pick another name, or remove it first");
+    }
+    let pin = "pkg zokor git " + git + " tag " + tag + " dir zokor";
+    let v = Vars { service: name, feature: "notes", feature_cap: "Notes", entity: "note",
+                   entity_cap: "Note", seq: "001", pin: pin };
+    return write_group(name, light_project_templates(), v, []);
+}
+
+fn new_component_project(name: str, pg: bool, git: str, tag: str) -> result[[str], str] {
     let sp = service_name_problem(name);
     if len(sp) > 0 {
         return err(sp);
