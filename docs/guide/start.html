@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Start here · Zokor</title>
+<meta name="description" content="zokor new writes a service that compiles and passes its tests as it stands, laid out so a person or an agent changing one feature reads one directory: add route registers the route under the feature&#x27;s prefix (here POST /orders/:id/cancel), behind the feature&#x27;s authentication, with a handler that answers 501 until it is written and a test that the route is mounted and authenticated.">
+<meta name="author" content="Dolphlabs">
+<meta property="og:site_name" content="Zokor">
+<meta property="og:title" content="Start here · Zokor">
+<meta property="og:description" content="zokor new writes a service that compiles and passes its tests as it stands, laid out so a person or an agent changing one feature reads one directory: add route registers the route under the feature&#x27;s prefix (here POST /orders/:id/cancel), behind the feature&#x27;s authentication, with a handler that answers 501 until it is written and a test that the route is mounted and authenticated.">
+<meta property="og:type" content="website">
+<link rel="canonical" href="https://dolphlabs.github.io/zokor/guide/start.html">
+<link rel="alternate" type="text/markdown" href="../guide/start.md" title="Markdown">
+<link rel="alternate" type="text/plain" href="../llms.txt" title="llms.txt">
+<link rel="stylesheet" href="../style.css">
+<link rel="icon" type="image/png" sizes="64x64" href="../assets/zokor-icon-64.png">
+<meta property="og:image" content="https://dolphlabs.github.io/zokor/assets/zokor-card-1200x630.jpg"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <a class="brand" href="../index.html">
+    <img src="../assets/zokor-header-256.png" width="40" height="40" alt="">
+    <span>zokor</span>
+  </a>
+  <button id="navtoggle" class="navtoggle" type="button" aria-label="Toggle navigation"
+          aria-expanded="false" aria-controls="mainnav">
+    <span></span><span></span><span></span>
+  </button>
+  <nav class="mainnav" id="mainnav" aria-label="Main navigation"><a href="../index.html">Home</a><a href="../guide/start.html" class="active" aria-current="page">Start</a><a href="../api/index.html">API</a><a href="../examples/index.html">Examples</a></nav>
+  <div class="tools">
+    <label class="search-label" for="search">Search</label>
+    <input id="search" type="search" placeholder="Search docs…" autocomplete="off"
+           aria-label="Search documentation" aria-controls="results">
+    <button id="theme" type="button" aria-label="Toggle color theme">◐</button>
+  </div>
+</header>
+<div id="navscrim" class="navscrim" hidden></div>
+<div id="results" class="results" role="listbox" aria-label="Search results" hidden></div>
+<nav class="subnav" aria-label="Guide pages"><a href="../guide/start.html" aria-current="page">Start</a><a href="../guide/http.html">HTTP</a><a href="../guide/data.html">Data</a><a href="../guide/operations.html">Operations</a><a href="../guide/realtime.html">Realtime</a><a href="../guide/architecture.html">Architecture</a></nav>
+<main id="main">
+
+<div class="page">
+  <article class="content">
+<header class="page-head"><p class="page-kicker">Zokor documentation</p><h1>Start here</h1><p class="tagline">zokor new writes a service that compiles and passes its tests as it stands, laid out so a person or an agent changing one feature reads one directory: add route registers the route under the feature&#x27;s prefix (here POST /orders/:id/cancel), behind the feature&#x27;s authentication, with a handler that answers 501 until it is written and a test that the route is mounted and authenticated.</p><p class="agentline"><a href="../guide/start.md">Markdown</a> · <a href="../llms.txt">llms.txt</a> · <a href="../api.json">api.json</a></p></header>
+<section class="readme-section"><h2 id="starting-a-service">Starting a service<a class="anchor" href="#starting-a-service" aria-label="Link to this section">#</a></h2><p><code>zokor new</code> writes a service that compiles and passes its tests as it stands, laid out so a person or an agent changing one feature reads one directory:</p>
+<div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="">make cli                      # builds bin/zokor
+bin/zokor new billing         # or: --db pg <span class="tok-keyword">for</span> Postgres
+cd billing &amp;&amp; slangc get &amp;&amp; make test &amp;&amp; make run
+bin/zokor add feature orders  # a new slice, wired <span class="tok-keyword">in</span> (--entity to name its type)
+bin/zokor add route orders POST /:id/cancel cancel_order</code></pre></div>
+<p><code>add route</code> registers the route under the feature&#x27;s prefix (here <code>POST /orders/:id/cancel</code>), behind the feature&#x27;s authentication, with a handler that answers 501 until it is written and a test that the route is mounted and authenticated.</p>
+<p><code>zokor check</code> (run by the project&#x27;s <code>make check</code>) holds a service to that layout: imports go <code>server -&gt; service -&gt; domain</code>, only <code>store/</code> and <code>platform/db</code> import <code>pg</code>, <code>domain</code> and <code>service</code> do no I/O, SQL is never built by concatenating a value, configuration is read only in <code>platform/config</code>, every public use case takes a <code>tenant_id</code>, every <code>server.sl</code> is behind <code>require_tenant</code> (or says <code>// zokor:public</code>), and every package has tests. It prints <code>file:line: rule: message</code>, or one JSON object per line with <code>--json</code>, and exits 1 on any problem.</p>
+<div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="">src/main.sl            startup only: config, state, mount, serve
+src/platform/config/   every setting, read once
+src/platform/app/      App: the state handlers get <span class="tok-keyword">as</span> c.state
+src/platform/auth/     who the caller is (API keys -&gt; tenant)
+src/platform/db/       the Postgres pool (--db pg)
+src/&lt;feature&gt;/
+  domain/    types and rules; pure: no I/O, no zokor
+  service/   use cases, and ports.sl: what they need from storage
+  store/     adapters <span class="tok-keyword">for</span> those ports; store.sl picks one at startup
+  server/    routes, DTOs, error codes
+migrations/  NNN_&lt;feature&gt;.sql (--db pg), applied by `zokor migrate`</code></pre></div>
+<p>Each folder is a package with its tests beside it, and imports run one way: <code>server -&gt; service -&gt; domain</code>, with <code>store</code> implementing the service&#x27;s ports and <code>platform/app</code> wiring them together. The example feature is a tenant-scoped notes API (create, get, list) behind <code>X-Api-Key</code>, with fakes in <code>*_test.sl</code> so they never ship. <code>add feature</code> writes the same slice under a new name and inserts it at the <code>// zokor:</code> markers in <code>src/platform/app/app.sl</code> and <code>src/main.sl</code>; it refuses a name that exists or that the generated code uses, and writes nothing then. The project&#x27;s own <code>AGENTS.md</code> gives an agent these rules in a few lines.</p>
+<p>A new project pins <code>zokor</code> at <code>v0.2.0</code>, which is not tagged yet: until it is, pass <code>--zokor-git</code> and <code>--zokor-tag</code> for the commit you build against. The templates are real files under <code>cmd/zokor/templates/</code>, embedded by <code>make templates</code>; <code>tests/scaffold.sh</code> (part of <code>make check</code>) generates both kinds of project against this checkout and runs their tests.</p></section>
+<section class="readme-section"><h2 id="install">Install<a class="anchor" href="#install" aria-label="Link to this section">#</a></h2><p>In a new project (<code>slangc new app</code> writes the <code>name</code> and <code>version</code> lines), add the pin to <code>slang.project</code>. The whole file:</p>
+<div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="">name app
+version <span class="tok-number">0.1.0</span>
+
+pkg zokor git https:<span class="tok-comment">//github.com/dolphlabs/zokor tag v0.2.0 dir zokor</span></code></pre></div>
+<p><code>v0.2.0</code> is the next release and is not tagged yet. Until it is, pin <code>tag v0.1.0 dir src</code>: the package lived in <code>src/</code> before the rename.</p>
+<p>Then fetch it, and import it as <code>import &quot;zokor&quot;;</code>:</p>
+<div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="">slangc get</code></pre></div>
+<p><code>dir zokor</code> points the pin at the package inside the repository, so the repository can hold its examples, docs and tests without shipping them into your build.</p></section>
+<section class="readme-section"><h2 id="requirements">Requirements<a class="anchor" href="#requirements" aria-label="Link to this section">#</a></h2><p>slang&#x27;s <code>dev</code> branch until its next release: typed Postgres mapping needs the compiler-backed <code>pg.rows_as</code>. zokor also needs generic structs and methods and the <code>dir</code> sub-directory pin. HTTPS (<code>TLS_CERT_FILE</code>) needs <code>link.tls_accept</code> and served WebSocket and Socket.IO routes need <code>link.split</code>, both on slang&#x27;s <code>dev</code> branch until its next release.</p></section>
+  </article>
+  <aside class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <nav id="toc"></nav>
+  </aside>
+</div>
+</main>
+<footer class="foot">
+  <div class="foot-brand"><img src="../assets/zokor-icon-64.png" width="32" height="32" alt="">
+    <span>zokor</span></div>
+  <p>Generated from <code>README.md</code>, <code>zokor/</code> and <code>examples/</code>.
+     Built and maintained by <a href="https://dolphlabs.com" rel="noopener">Dolphlabs</a>.</p>
+  <p class="foot-links"><a href="../api/index.html">API</a> ·
+     <a href="../llms.txt">llms.txt</a> ·
+     <a href="https://github.com/dolphlabs/zokor" rel="noopener">GitHub</a></p>
+</footer>
+<script src="../app.js" defer></script>
+</body>
+</html>

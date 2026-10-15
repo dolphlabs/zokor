@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hello service · Zokor</title>
+<meta name="description" content="A zokor service.">
+<meta name="author" content="Dolphlabs">
+<meta property="og:site_name" content="Zokor">
+<meta property="og:title" content="Hello service · Zokor">
+<meta property="og:description" content="A zokor service.">
+<meta property="og:type" content="website">
+<link rel="canonical" href="https://dolphlabs.github.io/zokor/examples/hello.html">
+<link rel="alternate" type="text/markdown" href="../examples/hello.md" title="Markdown">
+<link rel="alternate" type="text/plain" href="../llms.txt" title="llms.txt">
+<link rel="stylesheet" href="../style.css">
+<link rel="icon" type="image/png" sizes="64x64" href="../assets/zokor-icon-64.png">
+<meta property="og:image" content="https://dolphlabs.github.io/zokor/assets/zokor-card-1200x630.jpg"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <a class="brand" href="../index.html">
+    <img src="../assets/zokor-header-256.png" width="40" height="40" alt="">
+    <span>zokor</span>
+  </a>
+  <button id="navtoggle" class="navtoggle" type="button" aria-label="Toggle navigation"
+          aria-expanded="false" aria-controls="mainnav">
+    <span></span><span></span><span></span>
+  </button>
+  <nav class="mainnav" id="mainnav" aria-label="Main navigation"><a href="../index.html">Home</a><a href="../guide/start.html">Start</a><a href="../api/index.html">API</a><a href="../examples/index.html">Examples</a></nav>
+  <div class="tools">
+    <label class="search-label" for="search">Search</label>
+    <input id="search" type="search" placeholder="Search docs…" autocomplete="off"
+           aria-label="Search documentation" aria-controls="results">
+    <button id="theme" type="button" aria-label="Toggle color theme">◐</button>
+  </div>
+</header>
+<div id="navscrim" class="navscrim" hidden></div>
+<div id="results" class="results" role="listbox" aria-label="Search results" hidden></div>
+
+<main id="main">
+
+<div class="page">
+  <article class="content">
+<header class="page-head"><p class="page-kicker">Zokor documentation</p><h1>Hello service</h1><p class="tagline">A zokor service.</p><p class="agentline"><a href="../examples/hello.md">Markdown</a> · <a href="../llms.txt">llms.txt</a> · <a href="../api.json">api.json</a></p></header>
+<p class="example-intro">A zokor service.</p>
+<p class="run-command">Run it from the repository root: <code>make example</code></p>
+<section class="example-file" id="source-examples-hello-main-sl"><h2>examples/hello/main.sl<a class="anchor" href="#source-examples-hello-main-sl" aria-label="Link to this file">#</a></h2><div class="code"><div class="code-head"><span class="code-label">examples/hello/main.sl</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-slang"><span class="tok-comment">// A zokor service.</span>
+<span class="tok-comment">//</span>
+<span class="tok-comment">// Read the &quot;the service&quot; section below: that is the whole API, and it</span>
+<span class="tok-comment">// ends at `listen_and_serve`. The section after that is a client, not a</span>
+<span class="tok-comment">// server: it makes the same requests a curl would, over a real socket,</span>
+<span class="tok-comment">// so this file demonstrates the service by running it rather than by</span>
+<span class="tok-comment">// describing it.</span>
+<span class="tok-keyword">import</span> <span class="tok-string">&quot;http&quot;</span>;
+<span class="tok-keyword">import</span> <span class="tok-string">&quot;httpc&quot;</span>;
+<span class="tok-keyword">import</span> <span class="tok-string">&quot;time&quot;</span>;
+<span class="tok-keyword">import</span> <span class="tok-string">&quot;../../zokor&quot;</span> <span class="tok-keyword">as</span> zokor;
+
+<span class="tok-comment">// ---------------------------------------------------------------- //</span>
+<span class="tok-comment">// the service                                                        //</span>
+<span class="tok-comment">// ---------------------------------------------------------------- //</span>
+
+<span class="tok-keyword">gc</span> <span class="tok-keyword">struct</span> App {
+    name: <span class="tok-type">str</span>,
+    requests: <span class="tok-type">int</span>,
+    token: <span class="tok-type">str</span>,
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">home</span>(c: zokor.Ctx[App]) -&gt; http.Response {
+    <span class="tok-keyword">return</span> zokor.<span class="tok-function">text</span>(<span class="tok-number">200</span>, <span class="tok-string">&quot;hello from &quot;</span> + c.state.name);
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">search</span>(c: zokor.Ctx[App]) -&gt; http.Response {
+    <span class="tok-keyword">return</span> zokor.<span class="tok-function">text</span>(<span class="tok-number">200</span>, <span class="tok-string">&quot;q=&quot;</span> + c.<span class="tok-function">query</span>(<span class="tok-string">&quot;q&quot;</span>) +
+                           <span class="tok-string">&quot; page=&quot;</span> + <span class="tok-builtin">to_str</span>(c.<span class="tok-function">query_int</span>(<span class="tok-string">&quot;page&quot;</span>, <span class="tok-number">1</span>)));
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">show_org</span>(c: zokor.Ctx[App]) -&gt; http.Response {
+    <span class="tok-keyword">let</span> _who = c.<span class="tok-function">local</span>(<span class="tok-string">&quot;user_id&quot;</span>);     <span class="tok-comment">// put there by require_token</span>
+    <span class="tok-keyword">if</span> c.<span class="tok-function">param</span>(<span class="tok-string">&quot;id&quot;</span>) != <span class="tok-string">&quot;7&quot;</span> {
+        <span class="tok-keyword">return</span> zokor.<span class="tok-function">respond_with</span>(c.errors, <span class="tok-string">&quot;org.not_found&quot;</span>,
+                                  <span class="tok-string">&quot;no such organisation &#x27;&quot;</span> + c.<span class="tok-function">param</span>(<span class="tok-string">&quot;id&quot;</span>) + <span class="tok-string">&quot;&#x27;&quot;</span>,
+                                  c.request_id);
+    }
+    <span class="tok-keyword">return</span> zokor.<span class="tok-function">ok_json</span>(<span class="tok-string">&quot;{\&quot;org\&quot;:\&quot;7\&quot;}&quot;</span>);
+}
+
+<span class="tok-comment">// A DTO: a declared shape. `zokor.dto` fills it (slang&#x27;s own</span>
+<span class="tok-comment">// json.decode underneath), a missing field is an error rather than a</span>
+<span class="tok-comment">// silent zero, and the field it names is already in the envelope.</span>
+<span class="tok-keyword">gc</span> <span class="tok-keyword">struct</span> CreateOrg {
+    name: <span class="tok-type">str</span>,
+    plan: <span class="tok-type">str</span>,
+    seats: <span class="tok-type">i32</span>,
+    website: <span class="tok-type">opt</span>[<span class="tok-type">str</span>],
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">create_org</span>(c: zokor.Ctx[App]) -&gt; http.Response {
+    <span class="tok-comment">// the wire is camelCase, the struct is snake_case: no tags needed,</span>
+    <span class="tok-comment">// and a decode failure is already the response to return</span>
+    <span class="tok-keyword">let</span> r: <span class="tok-type">result</span>[CreateOrg, http.Response] = zokor.<span class="tok-function">dto</span>(c);
+    <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> dto = r <span class="tok-keyword">else</span> <span class="tok-keyword">let</span> resp = <span class="tok-builtin">err_of</span>(r) {
+        <span class="tok-keyword">return</span> resp;
+    }
+
+    <span class="tok-comment">// types are checked by the decoder; VALUES are checked here, and</span>
+    <span class="tok-comment">// every problem is reported at once</span>
+    <span class="tok-keyword">let</span> v = zokor.<span class="tok-function">checker</span>();
+    <span class="tok-keyword">if</span> <span class="tok-builtin">len</span>(dto.name) == <span class="tok-number">0</span> {
+        v.<span class="tok-function">note</span>(<span class="tok-string">&quot;name&quot;</span>, <span class="tok-string">&quot;must not be empty&quot;</span>);
+    }
+    <span class="tok-keyword">if</span> dto.seats &lt; <span class="tok-number">1</span> || dto.seats &gt; <span class="tok-number">500</span> {
+        v.<span class="tok-function">note</span>(<span class="tok-string">&quot;seats&quot;</span>, <span class="tok-string">&quot;must be between 1 and 500&quot;</span>);
+    }
+    <span class="tok-keyword">if</span> dto.plan != <span class="tok-string">&quot;free&quot;</span> &amp;&amp; dto.plan != <span class="tok-string">&quot;pro&quot;</span> {
+        v.<span class="tok-function">note</span>(<span class="tok-string">&quot;plan&quot;</span>, <span class="tok-string">&quot;must be one of: free, pro&quot;</span>);
+    }
+    <span class="tok-keyword">if</span> v.<span class="tok-function">failed</span>() {
+        <span class="tok-keyword">return</span> zokor.<span class="tok-function">respond_fields</span>(c.errors, <span class="tok-string">&quot;validation_failed&quot;</span>,
+                                    v.fields, c.request_id);
+    }
+
+    <span class="tok-keyword">let</span> body = zokor.<span class="tok-function">jobj</span>()
+        .<span class="tok-function">set_str</span>(<span class="tok-string">&quot;id&quot;</span>, <span class="tok-string">&quot;org_7&quot;</span>)
+        .<span class="tok-function">set_str</span>(<span class="tok-string">&quot;name&quot;</span>, dto.name)
+        .<span class="tok-function">set_str</span>(<span class="tok-string">&quot;plan&quot;</span>, dto.plan)
+        .<span class="tok-function">set_int</span>(<span class="tok-string">&quot;seats&quot;</span>, dto.seats <span class="tok-keyword">as</span> <span class="tok-type">int</span>)
+        .<span class="tok-function">set_opt_str</span>(<span class="tok-string">&quot;website&quot;</span>, dto.website);
+    <span class="tok-keyword">return</span> zokor.<span class="tok-function">created</span>(zokor.<span class="tok-function">camel_keys</span>(body.<span class="tok-function">render</span>()), <span class="tok-string">&quot;/orgs/org_7&quot;</span>);
+}
+
+<span class="tok-comment">// A shape nobody declared: a webhook whose fields belong to somebody</span>
+<span class="tok-comment">// else. `json_body` walks it without a struct.</span>
+<span class="tok-keyword">fn</span> <span class="tok-function">webhook</span>(c: zokor.Ctx[App]) -&gt; http.Response {
+    <span class="tok-keyword">let</span> r = c.<span class="tok-function">json_body</span>();
+    <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> body = r <span class="tok-keyword">else</span> <span class="tok-keyword">let</span> e = <span class="tok-builtin">err_of</span>(r) {
+        <span class="tok-keyword">return</span> zokor.<span class="tok-function">respond_with</span>(c.errors, e.code, e.detail,
+                                  c.request_id);
+    }
+    <span class="tok-keyword">let</span> event = body.<span class="tok-function">get</span>(<span class="tok-string">&quot;type&quot;</span>).<span class="tok-function">str_or</span>(<span class="tok-string">&quot;unknown&quot;</span>);
+    <span class="tok-keyword">let</span> city = body.<span class="tok-function">path</span>(<span class="tok-string">&quot;data.customer.address.city&quot;</span>).<span class="tok-function">str_or</span>(<span class="tok-string">&quot;nowhere&quot;</span>);
+    <span class="tok-keyword">let</span> first_item = body.<span class="tok-function">path</span>(<span class="tok-string">&quot;data.items.0.sku&quot;</span>).<span class="tok-function">str_or</span>(<span class="tok-string">&quot;none&quot;</span>);
+    <span class="tok-keyword">return</span> zokor.<span class="tok-function">ok_json</span>(zokor.<span class="tok-function">jobj</span>()
+        .<span class="tok-function">set_str</span>(<span class="tok-string">&quot;event&quot;</span>, event)
+        .<span class="tok-function">set_str</span>(<span class="tok-string">&quot;city&quot;</span>, city)
+        .<span class="tok-function">set_str</span>(<span class="tok-string">&quot;first_item&quot;</span>, first_item)
+        .<span class="tok-function">set_int</span>(<span class="tok-string">&quot;item_count&quot;</span>, body.<span class="tok-function">path</span>(<span class="tok-string">&quot;data.items&quot;</span>).<span class="tok-function">size</span>())
+        .<span class="tok-function">render</span>());
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">asset</span>(c: zokor.Ctx[App]) -&gt; http.Response {
+    <span class="tok-keyword">return</span> zokor.<span class="tok-function">text</span>(<span class="tok-number">200</span>, <span class="tok-string">&quot;file &quot;</span> + c.<span class="tok-function">param</span>(<span class="tok-string">&quot;rest&quot;</span>));
+}
+
+<span class="tok-comment">// An upload: the rules say what is acceptable, and anything else comes</span>
+<span class="tok-comment">// back as a registered failure rather than reaching this handler.</span>
+<span class="tok-keyword">fn</span> <span class="tok-function">upload_avatar</span>(c: zokor.Ctx[App]) -&gt; http.Response {
+    <span class="tok-keyword">let</span> rules = zokor.<span class="tok-function">with_max_file_bytes</span>(
+        zokor.<span class="tok-function">uploads_allowing</span>([<span class="tok-string">&quot;image/png&quot;</span>, <span class="tok-string">&quot;image/jpeg&quot;</span>]), <span class="tok-number">1048576</span>);
+    <span class="tok-keyword">let</span> r = c.<span class="tok-function">upload</span>(rules);
+    <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> form = r <span class="tok-keyword">else</span> <span class="tok-keyword">let</span> e = <span class="tok-builtin">err_of</span>(r) {
+        <span class="tok-keyword">return</span> zokor.<span class="tok-function">respond_with</span>(c.errors, e.code, e.detail,
+                                  c.request_id);
+    }
+    <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> avatar = zokor.<span class="tok-function">file</span>(form, <span class="tok-string">&quot;avatar&quot;</span>) <span class="tok-keyword">else</span> {
+        <span class="tok-keyword">return</span> zokor.<span class="tok-function">respond_with</span>(c.errors, <span class="tok-string">&quot;validation_failed&quot;</span>,
+                                  <span class="tok-string">&quot;no file was posted under &#x27;avatar&#x27;&quot;</span>,
+                                  c.request_id);
+    }
+    <span class="tok-comment">// avatar.filename is already safe to use as one path segment</span>
+    <span class="tok-keyword">return</span> zokor.<span class="tok-function">ok_json</span>(<span class="tok-string">&quot;{\&quot;stored\&quot;:\&quot;&quot;</span> + avatar.filename +
+                         <span class="tok-string">&quot;\&quot;,\&quot;type\&quot;:\&quot;&quot;</span> + avatar.content_type +
+                         <span class="tok-string">&quot;\&quot;,\&quot;bytes\&quot;:&quot;</span> + <span class="tok-builtin">to_str</span>(<span class="tok-builtin">len</span>(avatar.data)) +
+                         <span class="tok-string">&quot;,\&quot;title\&quot;:\&quot;&quot;</span> + zokor.<span class="tok-function">value</span>(form, <span class="tok-string">&quot;title&quot;</span>) + <span class="tok-string">&quot;\&quot;}&quot;</span>);
+}
+
+<span class="tok-comment">// Middleware. A `before` may end the request, or resolve something and</span>
+<span class="tok-comment">// hand it to the handler through the context; an `after` sees whatever</span>
+<span class="tok-comment">// response came back, including one a before produced.</span>
+<span class="tok-comment">//</span>
+<span class="tok-comment">// Note what is NOT here: a list of public paths. This hook is attached</span>
+<span class="tok-comment">// to a group, so it only ever runs for the routes inside it.</span>
+<span class="tok-keyword">fn</span> <span class="tok-function">require_token</span>(c: zokor.Ctx[App]) -&gt; <span class="tok-type">opt</span>[http.Response] {
+    <span class="tok-keyword">if</span> c.<span class="tok-function">bearer</span>() != c.state.token {
+        <span class="tok-keyword">return</span> <span class="tok-builtin">some</span>(zokor.<span class="tok-function">respond</span>(c.errors, <span class="tok-string">&quot;unauthorized&quot;</span>,
+                                  c.request_id));
+    }
+    <span class="tok-comment">// resolved once, at the edge, instead of in every handler</span>
+    c.<span class="tok-function">set_local</span>(<span class="tok-string">&quot;user_id&quot;</span>, <span class="tok-string">&quot;u_1&quot;</span>);
+    <span class="tok-keyword">return</span> <span class="tok-builtin">none</span>;
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">count</span>(c: zokor.Ctx[App], r: http.Response) -&gt; http.Response {
+    c.state.requests = c.state.requests + <span class="tok-number">1</span>;
+    <span class="tok-keyword">return</span> zokor.<span class="tok-function">with_header</span>(r, <span class="tok-string">&quot;x-request-count&quot;</span>, <span class="tok-builtin">to_str</span>(c.state.requests));
+}
+
+<span class="tok-comment">// Configuration is read once, here, and validated before anything runs.</span>
+<span class="tok-keyword">let</span> cfg = zokor.<span class="tok-function">load_config</span>();          <span class="tok-comment">// base, profile, startup environment</span>
+
+<span class="tok-keyword">let</span> app = App {
+    name: zokor.<span class="tok-function">str_or</span>(cfg, <span class="tok-string">&quot;SERVICE_NAME&quot;</span>, <span class="tok-string">&quot;hello&quot;</span>),
+    requests: <span class="tok-number">0</span>,
+    token: zokor.<span class="tok-function">str_or</span>(cfg, <span class="tok-string">&quot;API_TOKEN&quot;</span>, <span class="tok-string">&quot;s3cret&quot;</span>)
+};
+
+<span class="tok-comment">// new_router&#x27;s own registry, carried onto every Ctx from here on --</span>
+<span class="tok-comment">// register the app&#x27;s own codes on top of the built-ins it already has.</span>
+<span class="tok-keyword">let</span> r = zokor.<span class="tok-function">new_router</span>(app);
+zokor.<span class="tok-function">register</span>(r.errors, <span class="tok-string">&quot;org.not_found&quot;</span>, <span class="tok-number">404</span>, <span class="tok-string">&quot;no such organisation&quot;</span>);
+
+<span class="tok-comment">// public: no authentication</span>
+r.<span class="tok-function">get</span>(<span class="tok-string">&quot;/&quot;</span>, home);
+r.<span class="tok-function">get</span>(<span class="tok-string">&quot;/search&quot;</span>, search);
+r.<span class="tok-function">get</span>(<span class="tok-string">&quot;/files/*rest&quot;</span>, asset);
+
+<span class="tok-comment">// everything under /api needs a token, and says so once</span>
+<span class="tok-keyword">let</span> api = r.<span class="tok-function">group</span>(<span class="tok-string">&quot;/api&quot;</span>);
+api.<span class="tok-function">before</span>(require_token);
+api.<span class="tok-function">get</span>(<span class="tok-string">&quot;/orgs/:id&quot;</span>, show_org);
+api.<span class="tok-function">post</span>(<span class="tok-string">&quot;/orgs&quot;</span>, create_org);
+api.<span class="tok-function">post</span>(<span class="tok-string">&quot;/avatars&quot;</span>, upload_avatar);
+api.<span class="tok-function">post</span>(<span class="tok-string">&quot;/webhooks/stripe&quot;</span>, webhook);
+
+<span class="tok-comment">// counted for every request, public or not</span>
+r.<span class="tok-function">after</span>(count);
+
+
+<span class="tok-comment">// The whole server, from here on. `listen_and_serve` accepts and spawns</span>
+<span class="tok-comment">// one task per connection; it returns when the process is asked to stop.</span>
+<span class="tok-comment">// A real service calls it and nothing else -- the spawn here is only so</span>
+<span class="tok-comment">// this file can also play the client below.</span>
+<span class="tok-comment">//</span>
+<span class="tok-comment">// It would also log every request (README, &quot;Logging&quot;). The client below</span>
+<span class="tok-comment">// prints each exchange itself and the program ends the moment it is done,</span>
+<span class="tok-comment">// so this demo turns the log off rather than interleave the two; a real</span>
+<span class="tok-comment">// service keeps it.</span>
+<span class="tok-keyword">let</span> sc = zokor.<span class="tok-function">default_server_config</span>();
+sc.logger = zokor.<span class="tok-function">no_logger</span>();
+<span class="tok-keyword">spawn</span> zokor.<span class="tok-function">listen_and_serve_with</span>(r, <span class="tok-function">port</span>(), sc);
+
+<span class="tok-comment">// ---------------------------------------------------------------- //</span>
+<span class="tok-comment">// the demo: a real client, over a real socket                        //</span>
+<span class="tok-comment">//                                                                    //</span>
+<span class="tok-comment">// Nothing below is part of zokor&#x27;s API -- it is here so `make check`  //</span>
+<span class="tok-comment">// exercises the server end to end rather than describing it.         //</span>
+<span class="tok-comment">// ---------------------------------------------------------------- //</span>
+
+<span class="tok-comment">// A function, not a top-level `let`: the client helpers below are</span>
+<span class="tok-comment">// functions, and a top-level binding is local to the main task.</span>
+<span class="tok-keyword">fn</span> <span class="tok-function">port</span>() -&gt; <span class="tok-type">int</span> {
+    <span class="tok-keyword">return</span> <span class="tok-number">18080</span>;
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">base</span>() -&gt; <span class="tok-type">str</span> {
+    <span class="tok-keyword">return</span> <span class="tok-string">&quot;http://127.0.0.1:&quot;</span> + <span class="tok-builtin">to_str</span>(<span class="tok-function">port</span>());
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">deadline</span>() -&gt; <span class="tok-type">until</span> {
+    <span class="tok-keyword">return</span> <span class="tok-builtin">until_of</span>(time.<span class="tok-function">mono</span>() + <span class="tok-number">5000000000</span>);
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">send</span>(rq: httpc.Request) -&gt; httpc.Response {
+    <span class="tok-keyword">let</span> c = httpc.<span class="tok-function">new_client</span>();
+    <span class="tok-keyword">let</span> r2 = httpc.<span class="tok-function">client_send</span>(c, rq, <span class="tok-function">deadline</span>());
+    <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> resp = r2 <span class="tok-keyword">else</span> <span class="tok-keyword">let</span> e = <span class="tok-builtin">err_of</span>(r2) {
+        <span class="tok-builtin">println</span>(<span class="tok-string">&quot;request failed: &quot;</span> + e);
+        <span class="tok-builtin">exit</span>(<span class="tok-number">1</span>);
+    }
+    <span class="tok-keyword">return</span> resp;
+}
+
+<span class="tok-comment">// Every request carries its own X-Request-Id, which the server reuses</span>
+<span class="tok-comment">// (it is well-formed): the ids in the envelopes below are this one, so</span>
+<span class="tok-comment">// the output is the same on every run instead of a fresh random id each.</span>
+<span class="tok-keyword">fn</span> <span class="tok-function">call</span>(method: <span class="tok-type">str</span>, p: <span class="tok-type">str</span>, token: <span class="tok-type">str</span>, body: <span class="tok-type">str</span>, ctype: <span class="tok-type">str</span>) -&gt; httpc.Response {
+    <span class="tok-keyword">let</span> rq = httpc.<span class="tok-function">new_request</span>(method, <span class="tok-function">base</span>() + p);
+    rq.headers[<span class="tok-string">&quot;x-request-id&quot;</span>] = <span class="tok-string">&quot;example-req-1&quot;</span>;
+    <span class="tok-keyword">if</span> <span class="tok-builtin">len</span>(token) &gt; <span class="tok-number">0</span> {
+        rq.headers[<span class="tok-string">&quot;authorization&quot;</span>] = <span class="tok-string">&quot;Bearer &quot;</span> + token;
+    }
+    <span class="tok-keyword">if</span> <span class="tok-builtin">len</span>(body) &gt; <span class="tok-number">0</span> {
+        rq.headers[<span class="tok-string">&quot;content-type&quot;</span>] = ctype;
+        rq.body = <span class="tok-builtin">to_bytes</span>(body);
+    }
+    <span class="tok-keyword">return</span> <span class="tok-function">send</span>(rq);
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">get</span>(p: <span class="tok-type">str</span>) -&gt; httpc.Response {
+    <span class="tok-keyword">return</span> <span class="tok-function">call</span>(<span class="tok-string">&quot;GET&quot;</span>, p, <span class="tok-string">&quot;&quot;</span>, <span class="tok-string">&quot;&quot;</span>, <span class="tok-string">&quot;&quot;</span>);
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">json_call</span>(method: <span class="tok-type">str</span>, p: <span class="tok-type">str</span>, token: <span class="tok-type">str</span>, body: <span class="tok-type">str</span>) -&gt; httpc.Response {
+    <span class="tok-keyword">return</span> <span class="tok-function">call</span>(method, p, token, body, <span class="tok-string">&quot;application/json&quot;</span>);
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">show</span>(label: <span class="tok-type">str</span>, resp: httpc.Response) {
+    <span class="tok-builtin">println</span>(label + <span class="tok-string">&quot; -&gt; &quot;</span> + <span class="tok-builtin">to_str</span>(resp.status) + <span class="tok-string">&quot; &quot;</span> + <span class="tok-builtin">to_str</span>(resp.body));
+}
+
+<span class="tok-comment">// wait for the listener to be up before the first request</span>
+<span class="tok-keyword">fn</span> <span class="tok-function">wait_ready</span>() {
+    <span class="tok-keyword">let</span> i = <span class="tok-number">0</span>;
+    <span class="tok-keyword">while</span> i &lt; <span class="tok-number">200</span> {
+        <span class="tok-keyword">let</span> c = httpc.<span class="tok-function">new_client</span>();
+        <span class="tok-keyword">let</span> r2 = httpc.<span class="tok-function">client_get</span>(c, <span class="tok-function">base</span>() + <span class="tok-string">&quot;/&quot;</span>, <span class="tok-function">deadline</span>());
+        <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> _ok = r2 <span class="tok-keyword">else</span> {
+            time.<span class="tok-function">sleep</span>(<span class="tok-number">10000000</span>);
+            i = i + <span class="tok-number">1</span>;
+            <span class="tok-keyword">continue</span>;
+        }
+        <span class="tok-keyword">return</span>;
+    }
+    <span class="tok-builtin">println</span>(<span class="tok-string">&quot;server never came up&quot;</span>);
+    <span class="tok-builtin">exit</span>(<span class="tok-number">1</span>);
+}
+
+<span class="tok-function">wait_ready</span>();
+
+<span class="tok-builtin">println</span>(<span class="tok-string">&quot;routes:&quot;</span>);
+<span class="tok-keyword">for</span> line <span class="tok-keyword">in</span> r.<span class="tok-function">routes_list</span>() {
+    <span class="tok-builtin">println</span>(<span class="tok-string">&quot;  &quot;</span> + line);
+}
+<span class="tok-builtin">println</span>(<span class="tok-string">&quot;&quot;</span>);
+
+<span class="tok-function">show</span>(<span class="tok-string">&quot;GET    /&quot;</span>, <span class="tok-function">get</span>(<span class="tok-string">&quot;/&quot;</span>));
+<span class="tok-function">show</span>(<span class="tok-string">&quot;GET    /search?q=slang&amp;page=2&quot;</span>, <span class="tok-function">get</span>(<span class="tok-string">&quot;/search?q=slang&amp;page=2&quot;</span>));
+<span class="tok-function">show</span>(<span class="tok-string">&quot;GET    /api/orgs/7&quot;</span>, <span class="tok-function">call</span>(<span class="tok-string">&quot;GET&quot;</span>, <span class="tok-string">&quot;/api/orgs/7&quot;</span>, <span class="tok-string">&quot;s3cret&quot;</span>, <span class="tok-string">&quot;&quot;</span>, <span class="tok-string">&quot;&quot;</span>));
+<span class="tok-function">show</span>(<span class="tok-string">&quot;GET    /api/orgs/9&quot;</span>, <span class="tok-function">call</span>(<span class="tok-string">&quot;GET&quot;</span>, <span class="tok-string">&quot;/api/orgs/9&quot;</span>, <span class="tok-string">&quot;s3cret&quot;</span>, <span class="tok-string">&quot;&quot;</span>, <span class="tok-string">&quot;&quot;</span>));
+<span class="tok-function">show</span>(<span class="tok-string">&quot;GET    /api/orgs/7 (no token)&quot;</span>, <span class="tok-function">get</span>(<span class="tok-string">&quot;/api/orgs/7&quot;</span>));
+<span class="tok-function">show</span>(<span class="tok-string">&quot;POST   /api/orgs (empty body)&quot;</span>, <span class="tok-function">call</span>(<span class="tok-string">&quot;POST&quot;</span>, <span class="tok-string">&quot;/api/orgs&quot;</span>, <span class="tok-string">&quot;s3cret&quot;</span>, <span class="tok-string">&quot;&quot;</span>, <span class="tok-string">&quot;&quot;</span>));
+<span class="tok-function">show</span>(<span class="tok-string">&quot;POST   /api/orgs (bad values)&quot;</span>,
+     <span class="tok-function">json_call</span>(<span class="tok-string">&quot;POST&quot;</span>, <span class="tok-string">&quot;/api/orgs&quot;</span>, <span class="tok-string">&quot;s3cret&quot;</span>,
+               <span class="tok-string">&quot;{\&quot;name\&quot;:\&quot;\&quot;,\&quot;plan\&quot;:\&quot;gold\&quot;,\&quot;seats\&quot;:0}&quot;</span>));
+<span class="tok-function">show</span>(<span class="tok-string">&quot;POST   /api/orgs (wrong type)&quot;</span>,
+     <span class="tok-function">json_call</span>(<span class="tok-string">&quot;POST&quot;</span>, <span class="tok-string">&quot;/api/orgs&quot;</span>, <span class="tok-string">&quot;s3cret&quot;</span>,
+               <span class="tok-string">&quot;{\&quot;name\&quot;:\&quot;acme\&quot;,\&quot;plan\&quot;:\&quot;pro\&quot;,\&quot;seats\&quot;:\&quot;many\&quot;}&quot;</span>));
+<span class="tok-function">show</span>(<span class="tok-string">&quot;POST   /api/orgs (missing field)&quot;</span>,
+     <span class="tok-function">json_call</span>(<span class="tok-string">&quot;POST&quot;</span>, <span class="tok-string">&quot;/api/orgs&quot;</span>, <span class="tok-string">&quot;s3cret&quot;</span>, <span class="tok-string">&quot;{\&quot;name\&quot;:\&quot;acme\&quot;}&quot;</span>));
+<span class="tok-function">show</span>(<span class="tok-string">&quot;POST   /api/orgs&quot;</span>,
+     <span class="tok-function">json_call</span>(<span class="tok-string">&quot;POST&quot;</span>, <span class="tok-string">&quot;/api/orgs&quot;</span>, <span class="tok-string">&quot;s3cret&quot;</span>,
+               <span class="tok-string">&quot;{\&quot;name\&quot;:\&quot;acme\&quot;,\&quot;plan\&quot;:\&quot;pro\&quot;,\&quot;seats\&quot;:12,\&quot;website\&quot;:\&quot;https://acme.test\&quot;}&quot;</span>));
+<span class="tok-function">show</span>(<span class="tok-string">&quot;POST   /api/webhooks/stripe&quot;</span>,
+     <span class="tok-function">json_call</span>(<span class="tok-string">&quot;POST&quot;</span>, <span class="tok-string">&quot;/api/webhooks/stripe&quot;</span>, <span class="tok-string">&quot;s3cret&quot;</span>,
+               <span class="tok-string">&quot;{\&quot;type\&quot;:\&quot;invoice.paid\&quot;,\&quot;data\&quot;:{\&quot;customer\&quot;:{\&quot;address\&quot;:{\&quot;city\&quot;:\&quot;Lagos\&quot;}},\&quot;items\&quot;:[{\&quot;sku\&quot;:\&quot;A1\&quot;},{\&quot;sku\&quot;:\&quot;B2\&quot;}]}}&quot;</span>));
+
+<span class="tok-keyword">let</span> avatar = <span class="tok-string">&quot;--B\r\n&quot;</span> +
+    <span class="tok-string">&quot;Content-Disposition: form-data; name=\&quot;title\&quot;\r\n\r\n&quot;</span> +
+    <span class="tok-string">&quot;My avatar\r\n&quot;</span> +
+    <span class="tok-string">&quot;--B\r\n&quot;</span> +
+    <span class="tok-string">&quot;Content-Disposition: form-data; name=\&quot;avatar\&quot;; filename=\&quot;../../etc/passwd.png\&quot;\r\n&quot;</span> +
+    <span class="tok-string">&quot;Content-Type: image/png\r\n\r\n&quot;</span> +
+    <span class="tok-string">&quot;PNGDATA\r\n&quot;</span> +
+    <span class="tok-string">&quot;--B--\r\n&quot;</span>;
+<span class="tok-function">show</span>(<span class="tok-string">&quot;POST   /avatars&quot;</span>,
+     <span class="tok-function">call</span>(<span class="tok-string">&quot;POST&quot;</span>, <span class="tok-string">&quot;/api/avatars&quot;</span>, <span class="tok-string">&quot;s3cret&quot;</span>, avatar,
+          <span class="tok-string">&quot;multipart/form-data; boundary=B&quot;</span>));
+
+<span class="tok-keyword">let</span> bad_avatar = <span class="tok-string">&quot;--B\r\n&quot;</span> +
+    <span class="tok-string">&quot;Content-Disposition: form-data; name=\&quot;avatar\&quot;; filename=\&quot;x.svg\&quot;\r\n&quot;</span> +
+    <span class="tok-string">&quot;Content-Type: image/svg+xml\r\n\r\n&quot;</span> +
+    <span class="tok-string">&quot;&lt;svg/&gt;\r\n&quot;</span> +
+    <span class="tok-string">&quot;--B--\r\n&quot;</span>;
+<span class="tok-function">show</span>(<span class="tok-string">&quot;POST   /avatars (svg)&quot;</span>,
+     <span class="tok-function">call</span>(<span class="tok-string">&quot;POST&quot;</span>, <span class="tok-string">&quot;/api/avatars&quot;</span>, <span class="tok-string">&quot;s3cret&quot;</span>, bad_avatar,
+          <span class="tok-string">&quot;multipart/form-data; boundary=B&quot;</span>));
+
+<span class="tok-function">show</span>(<span class="tok-string">&quot;GET    /files/a/b.txt&quot;</span>, <span class="tok-function">get</span>(<span class="tok-string">&quot;/files/a/b.txt&quot;</span>));
+<span class="tok-function">show</span>(<span class="tok-string">&quot;HEAD   /&quot;</span>, <span class="tok-function">call</span>(<span class="tok-string">&quot;HEAD&quot;</span>, <span class="tok-string">&quot;/&quot;</span>, <span class="tok-string">&quot;&quot;</span>, <span class="tok-string">&quot;&quot;</span>, <span class="tok-string">&quot;&quot;</span>));
+<span class="tok-function">show</span>(<span class="tok-string">&quot;DELETE /api/orgs/7&quot;</span>, <span class="tok-function">call</span>(<span class="tok-string">&quot;DELETE&quot;</span>, <span class="tok-string">&quot;/api/orgs/7&quot;</span>, <span class="tok-string">&quot;s3cret&quot;</span>, <span class="tok-string">&quot;&quot;</span>, <span class="tok-string">&quot;&quot;</span>));
+<span class="tok-function">show</span>(<span class="tok-string">&quot;BREW   /&quot;</span>, <span class="tok-function">call</span>(<span class="tok-string">&quot;BREW&quot;</span>, <span class="tok-string">&quot;/&quot;</span>, <span class="tok-string">&quot;&quot;</span>, <span class="tok-string">&quot;&quot;</span>, <span class="tok-string">&quot;&quot;</span>));
+<span class="tok-function">show</span>(<span class="tok-string">&quot;GET    /nope&quot;</span>, <span class="tok-function">call</span>(<span class="tok-string">&quot;GET&quot;</span>, <span class="tok-string">&quot;/nope&quot;</span>, <span class="tok-string">&quot;s3cret&quot;</span>, <span class="tok-string">&quot;&quot;</span>, <span class="tok-string">&quot;&quot;</span>));
+<span class="tok-builtin">println</span>(<span class="tok-string">&quot;&quot;</span>);
+<span class="tok-comment">// one more than the calls above: wait_ready&#x27;s probe is a request</span>
+<span class="tok-comment">// like any other, and the `count` hook counts every one.</span>
+<span class="tok-builtin">println</span>(<span class="tok-string">&quot;requests served: &quot;</span> + <span class="tok-builtin">to_str</span>(app.requests));</code></pre></div></section>
+  </article>
+  <aside class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <nav id="toc"></nav>
+  </aside>
+</div>
+</main>
+<footer class="foot">
+  <div class="foot-brand"><img src="../assets/zokor-icon-64.png" width="32" height="32" alt="">
+    <span>zokor</span></div>
+  <p>Generated from <code>README.md</code>, <code>zokor/</code> and <code>examples/</code>.
+     Built and maintained by <a href="https://dolphlabs.com" rel="noopener">Dolphlabs</a>.</p>
+  <p class="foot-links"><a href="../api/index.html">API</a> ·
+     <a href="../llms.txt">llms.txt</a> ·
+     <a href="https://github.com/dolphlabs/zokor" rel="noopener">GitHub</a></p>
+</footer>
+<script src="../app.js" defer></script>
+</body>
+</html>
