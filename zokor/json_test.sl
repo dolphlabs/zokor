@@ -193,7 +193,8 @@ fn test_ctx_json_body() {
         client_ip: "",
         out: none,
         locals: none,
-        errors: new_registry()
+        errors: new_registry(),
+        upgrade: none
     };
     let r = c.json_body();
     guard let j = r else {
