@@ -63,6 +63,28 @@ grep -q 'import "platform/config" as config;' src/main.sl ||
 "$SLANGC" get >/dev/null
 make test SLANGC="$SLANGC" >"$WORK/test.log" 2>&1 || { cat "$WORK/test.log"; fail "a new project's tests fail"; }
 make build SLANGC="$SLANGC" >/dev/null 2>&1 || fail "a new project does not build"
+# It serves, and stops cleanly on SIGTERM: exit 0, and no error on the way
+# out (closing the listener used to be logged as "accept failed ... at the
+# open-file limit" on every stop).
+light_port=$((20000 + $$ % 20000))
+PORT=$light_port ./bin/demo >"$WORK/serve.log" 2>&1 &
+light_pid=$!
+up=0
+for _ in $(seq 1 100); do
+    if curl -s -o /dev/null "http://127.0.0.1:$light_port/healthz"; then up=1; break; fi
+    sleep 0.05
+done
+[ "$up" = 1 ] || { cat "$WORK/serve.log"; kill "$light_pid" 2>/dev/null; fail "a new project does not serve"; }
+[ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$light_port/healthz")" = 200 ] ||
+    { kill "$light_pid"; fail "a new project's /healthz is not 200"; }
+kill -TERM "$light_pid"
+light_rc=0
+wait "$light_pid" || light_rc=$?
+[ "$light_rc" = 0 ] || { cat "$WORK/serve.log"; fail "a new project exited $light_rc on SIGTERM"; }
+if grep -q '"level":"error"' "$WORK/serve.log"; then
+    cat "$WORK/serve.log"
+    fail "a new project logged an error stopping on SIGTERM"
+fi
 "$ZOKOR" check >/dev/null || { "$ZOKOR" check; fail "zokor check fails on a light project"; }
 expect_refusal "newcomp" "$ZOKOR" add feature orders
 [ ! -e src/orders ] || fail "add feature left files in a light project"
