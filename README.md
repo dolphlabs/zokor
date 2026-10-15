@@ -1498,6 +1498,49 @@ and the `dir` sub-directory pin. HTTPS (`TLS_CERT_FILE`) needs `link.tls_accept`
 and served WebSocket and Socket.IO routes need `link.split`, both on
 slang's `dev` branch until its next release.
 
+## Starting a service
+
+`zokor new` writes a service that compiles and passes its tests as it
+stands, laid out so a person or an agent changing one feature reads one
+directory:
+
+```
+make cli                      # builds bin/zokor
+bin/zokor new billing         # or: --db pg for Postgres
+cd billing && slangc get && make test && make run
+bin/zokor add feature orders  # a new slice, wired in (--entity to name its type)
+```
+
+```
+src/main.sl            startup only: config, state, mount, serve
+src/platform/config/   every setting, read once
+src/platform/app/      App: the state handlers get as c.state
+src/platform/auth/     who the caller is (API keys -> tenant)
+src/platform/db/       the Postgres pool (--db pg)
+src/<feature>/
+  domain/    types and rules; pure: no I/O, no zokor
+  service/   use cases, and ports.sl: what they need from storage
+  store/     adapters for those ports; store.sl picks one at startup
+  server/    routes, DTOs, error codes
+migrations/  NNN_<feature>.sql (--db pg), applied by `zokor migrate`
+```
+
+Each folder is a package with its tests beside it, and imports run one
+way: `server -> service -> domain`, with `store` implementing the
+service's ports and `platform/app` wiring them together. The example
+feature is a tenant-scoped notes API (create, get, list) behind
+`X-Api-Key`, with fakes in `*_test.sl` so they never ship. `add feature`
+writes the same slice under a new name and inserts it at the `// zokor:`
+markers in `src/platform/app/app.sl` and `src/main.sl`; it refuses a name
+that exists or that the generated code uses, and writes nothing then. The
+project's own `AGENTS.md` gives an agent these rules in a few lines.
+
+A new project pins `zokor` at `v0.2.0`, which is not tagged yet: until it
+is, pass `--zokor-git` and `--zokor-tag` for the commit you build against.
+The templates are real files under `cmd/zokor/templates/`, embedded by
+`make templates`; `tests/scaffold.sh` (part of `make check`) generates
+both kinds of project against this checkout and runs their tests.
+
 ## Install
 
 In a new project (`slangc new app` writes the `name` and `version`
