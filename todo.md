@@ -266,9 +266,18 @@ to its generic response helper. No compiler change is included here.
   handshakes closed and logged at debug; no plaintext 503 past
   MAX_CONNECTIONS. Needs slang's `link.tls_accept` ([slang]). Not done:
   reloading a renewed certificate without a restart, SNI, ALPN/HTTP2.
-- [ ] Wire WebSocket and Socket.IO into the loop: upgrade a connection in
+- [x] Wire WebSocket and Socket.IO into the loop: upgrade a connection in
   place, hand it to `receive`, and run the Engine.IO ping timer. Also
-  replaces `examples/chat`'s stand-in requests.
+  replaces `examples/chat`'s stand-in requests. Done: `r.websocket` /
+  `r.socketio` (the handshake is a routed request, `before`s included;
+  `c.socket()`, `c.accept_ws()`), `Socket` (sends from any task, never
+  waiting; a full queue closes it) and `Hub` (rooms, broadcast, emit).
+  Each connection is a reader and a writer task over slang's
+  `link.split()`. Pings on silence for WebSocket, on schedule for
+  Engine.IO; 1011 on a panicking handler, 1001 on SIGTERM; wss:// over
+  TLS. examples/chat serves both kinds of client on one room; checked
+  against socket.io-client 4.7.5 and `ws` 8. Needs slang's `link.split`
+  ([slang]).
 - [ ] Socket.IO over HTTP long-polling, so a client works without
   `transports: ["websocket"]`; and binary attachment frames.
 
