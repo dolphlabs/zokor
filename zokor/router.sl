@@ -85,6 +85,10 @@ pub gc struct Ctx[S] {
     // can answer a failure without asking the application's state to
     // also hold one by convention.
     errors: Registry,
+    // Set by a WebSocket route's handshake (ws_serve.sl): the socket the
+    // serve loop takes the connection over for once the 101 is written.
+    // A shared none otherwise.
+    upgrade: opt[Socket],
 }
 
 // A response and the route pattern that produced it, for the request
@@ -92,6 +96,8 @@ pub gc struct Ctx[S] {
 pub struct Served {
     resp: http.Response,
     route: str,
+    // The socket to hand the connection to after a 101 (Ctx.upgrade).
+    upgrade: opt[Socket],
 }
 
 pub gc struct Route[S] {
@@ -144,6 +150,9 @@ pub gc struct Route[S] {
     // reason. Safe to share: nothing writes into an opt in place --
     // set_local replaces the field with a fresh some().
     no_map: opt[map[str]str],
+    // A WebSocket or Socket.IO route: its index in Router.sockets, whose
+    // handshake runs instead of `handler`. -1 for every other route.
+    ws: int,
 }
 
 // A `before` runs ahead of the handler and may end the request by
@@ -190,6 +199,10 @@ pub gc struct Router[S] {
     tracer: opt[Tracer],
     no_tracer: opt[Tracer],
     request_locals: opt[map[str]str],
+    // WebSocket and Socket.IO routes (ws_serve.sl), by Route.ws.
+    sockets: [WsRoute[S]],
+    // The none every Ctx's and Served's `upgrade` starts as.
+    no_socket: opt[Socket],
 }
 
 // An application builds its router from its state alone; everything else
@@ -224,7 +237,9 @@ pub fn new_router[S](state: S) -> Router[S] {
         observations: none,
         tracer: no_tracer,
         no_tracer: no_tracer,
-        request_locals: none
+        request_locals: none,
+        sockets: [],
+        no_socket: none
     };
 }
 
@@ -331,7 +346,8 @@ impl Router[S] {
             static_rendered: b"",
             static_hit: none,
             static_close_hit: none,
-            no_map: none
+            no_map: none,
+            ws: -1
         });
         self.index_route(len(self.routes) - 1);
         return len(self.routes);
@@ -440,11 +456,34 @@ impl Router[S] {
                 body: body,
                 keep_alive: closing_bytes
             }),
-            no_map: none
+            no_map: none,
+            ws: -1
         });
         self.index_route(len(self.routes) - 1);
         return len(self.routes);
     }
+    // A WebSocket route (ws_serve.sl). `open` is the handshake's handler:
+    // it runs after every `before`, sees the socket as c.socket(), and
+    // returns c.accept_ws() to accept or any other response to refuse.
+    pub fn websocket(self: Router[S], p: str, open: fn(Ctx[S]) -> http.Response,
+                     w: WsRoute[S]) -> int {
+        push(self.sockets, w);
+        let n = self.handle(Method.GET, p, open);
+        self.routes[n - 1].ws = len(self.sockets) - 1;
+        return n;
+    }
+
+    // A Socket.IO route (sio_serve.sl), usually at "/socket.io/". `open` is
+    // the Engine.IO handshake's handler, as for websocket().
+    pub fn socketio(self: Router[S], p: str, open: fn(Ctx[S]) -> http.Response,
+                    s: SioRoute[S]) -> int {
+        let n = self.websocket(p, open, sio_as_ws(s));
+        // long-polling's client-to-server packets
+        let m = self.handle(Method.POST, p, open);
+        self.routes[m - 1].ws = len(self.sockets) - 1;
+        return n;
+    }
+
     pub fn get(self: Router[S], p: str, h: fn(Ctx[S]) -> http.Response) -> int {
         return self.handle(Method.GET, p, h);
     }
@@ -991,10 +1030,11 @@ impl Router[S] {
                     client_ip: client_ip,
                     out: self.no_lines,
                     locals: self.request_locals,
-                    errors: self.errors
+                    errors: self.errors,
+                    upgrade: self.no_socket
                 };
                 let resp = self.run(c, r);
-                return Served { resp: resp, route: r.pattern };
+                return Served { resp: resp, route: r.pattern, upgrade: c.upgrade };
             }
             if r.fkind == 2 {
                 // Single trailing :id: prefix compare on the str,
@@ -1041,10 +1081,11 @@ impl Router[S] {
                     client_ip: client_ip,
                     out: self.no_lines,
                     locals: self.request_locals,
-                    errors: self.errors
+                    errors: self.errors,
+                    upgrade: self.no_socket
                 };
                 let resp = self.run(c, r);
-                return Served { resp: resp, route: r.pattern };
+                return Served { resp: resp, route: r.pattern, upgrade: c.upgrade };
             }
             i = i + 1;
         }
@@ -1094,11 +1135,12 @@ impl Router[S] {
                 client_ip: client_ip,
                 out: self.no_lines,
                 locals: self.request_locals,
-                errors: self.errors
+                errors: self.errors,
+                upgrade: self.no_socket
             };
             return Served { resp: self.finish(uc, respond(self.errors, "not_implemented",
                                                           request_id)),
-                            route: "" };
+                            route: "", upgrade: self.no_socket };
         }
         if self.cors.on && method == Method.OPTIONS &&
            is_preflight(req.method, req.raw_headers) && self.path_exists(segs, p) {
@@ -1109,7 +1151,7 @@ impl Router[S] {
             if len(request_id) > 0 {
                 pf = http.with_header(pf, "x-request-id", request_id);
             }
-            return Served { resp: self.security.apply(pf), route: "" };
+            return Served { resp: self.security.apply(pf), route: "", upgrade: self.no_socket };
         }
         // A HEAD with no HEAD route is served by the GET one, and the
         // body dropped after the handler and the hooks have run -- so
@@ -1172,10 +1214,11 @@ impl Router[S] {
                 client_ip: client_ip,
                 out: self.no_lines,
                 locals: self.request_locals,
-                errors: self.errors
+                errors: self.errors,
+                upgrade: self.no_socket
             };
             let resp = self.run(c, r);
-            return Served { resp: resp, route: r.pattern };
+            return Served { resp: resp, route: r.pattern, upgrade: c.upgrade };
         }
 
         let c = Ctx[S] {
@@ -1189,7 +1232,8 @@ impl Router[S] {
             client_ip: client_ip,
             out: self.no_lines,
             locals: self.request_locals,
-            errors: self.errors
+            errors: self.errors,
+            upgrade: self.no_socket
         };
         if !path_seen {
             if let m = self.observations {
@@ -1199,7 +1243,7 @@ impl Router[S] {
                     if method != Method.GET && method != Method.HEAD {
                         resp = http.with_header(respond(self.errors, "method_not_allowed", request_id), "allow", "GET, HEAD");
                     }
-                    return Served { resp: self.finish(c, resp), route: m.path };
+                    return Served { resp: self.finish(c, resp), route: m.path, upgrade: self.no_socket };
                 }
             }
             if len(self.ready.live_path) > 0 &&
@@ -1208,14 +1252,14 @@ impl Router[S] {
                 if method != Method.GET && method != Method.HEAD {
                     let na = respond(self.errors, "method_not_allowed", request_id);
                     return Served { resp: self.finish(c, http.with_header(na, "allow", "GET, HEAD")),
-                                    route: c.route };
+                                    route: c.route, upgrade: self.no_socket };
                 }
                 let hr = live_response();
                 if p == self.ready.ready_path {
                     hr = ready_response(self.ready, self.state);
                 }
                 let fr = self.finish(c, hr);
-                return Served { resp: fr, route: c.route };
+                return Served { resp: fr, route: c.route, upgrade: self.no_socket };
             }
             for m in self.mounts {
                 guard let rest = mount_rest(m, p) else {
@@ -1225,13 +1269,13 @@ impl Router[S] {
                 if method != Method.GET && method != Method.HEAD {
                     let na = respond(self.errors, "method_not_allowed", request_id);
                     return Served { resp: self.finish(c, http.with_header(na, "allow", "GET, HEAD")),
-                                    route: c.route };
+                                    route: c.route, upgrade: self.no_socket };
                 }
                 let ff = self.finish(c, serve_file(m, c, rest));
-                return Served { resp: ff, route: c.route };
+                return Served { resp: ff, route: c.route, upgrade: self.no_socket };
             }
             return Served { resp: self.finish(c, respond(self.errors, "not_found", request_id)),
-                            route: "" };
+                            route: "", upgrade: self.no_socket };
         }
         let allow = self.allowed(p);
         if self.auto_options && method == Method.OPTIONS {
@@ -1244,11 +1288,11 @@ impl Router[S] {
                 extra: none_extra,
                 body: to_bytes("")
             };
-            return Served { resp: self.finish(c, ok_resp), route: "" };
+            return Served { resp: self.finish(c, ok_resp), route: "", upgrade: self.no_socket };
         }
         let resp = respond(self.errors, "method_not_allowed", request_id);
         resp = http.with_header(resp, "allow", join_methods(allow));
-        return Served { resp: self.finish(c, resp), route: "" };
+        return Served { resp: self.finish(c, resp), route: "", upgrade: self.no_socket };
     }
 
     // Whether any route, or a mounted health path, answers `p`.
@@ -1295,6 +1339,9 @@ impl Router[S] {
                 continue;
             }
             return self.finish_route(c, r, resp2);
+        }
+        if r.ws >= 0 {
+            return self.finish_route(c, r, ws_handshake(self, c, r));
         }
         let h = r.handler;
         if let ip = self.idem {
@@ -1398,7 +1445,8 @@ fn static_probe[S](state: S, errors: Registry) -> Ctx[S] {
         client_ip: "",
         out: none,
         locals: none,
-        errors: errors
+        errors: errors,
+        upgrade: none
     };
 }
 
@@ -1532,6 +1580,15 @@ impl Group[S] {
                                        self.copied_afters());
     }
 
+    // r.websocket, under the group's prefix and with its hooks.
+    pub fn websocket(self: Group[S], p: str, open: fn(Ctx[S]) -> http.Response,
+                     w: WsRoute[S]) -> int {
+        push(self.router.sockets, w);
+        let n = self.handle(Method.GET, p, open);
+        self.router.routes[n - 1].ws = len(self.router.sockets) - 1;
+        return n;
+    }
+
     pub fn get(self: Group[S], p: str, h: fn(Ctx[S]) -> http.Response) -> int {
         return self.handle(Method.GET, p, h);
     }
@@ -1642,6 +1699,26 @@ impl Ctx[S] {
         m[key] = v;
         self.locals = some(m);
         return len(m);
+    }
+
+    // The socket a WebSocket route's handshake is opening: put it in a
+    // hub, set its locals. Only on a route registered with websocket()
+    // (or socketio()); anywhere else it is a programming error.
+    pub fn socket(self: Ctx[S]) -> Socket {
+        guard let s = self.upgrade else {
+            panic("c.socket() outside a WebSocket handshake: register the route with r.websocket");
+        }
+        return s;
+    }
+
+    // The 101 that accepts the upgrade. From the moment it is written the
+    // connection belongs to the socket.
+    pub fn accept_ws(self: Ctx[S]) -> http.Response {
+        guard let s = self.upgrade else {
+            panic("c.accept_ws() outside a WebSocket handshake: register the route with r.websocket");
+        }
+        s.accepted = true;
+        return s.handshake;
     }
 
     pub fn local(self: Ctx[S], key: str) -> str {

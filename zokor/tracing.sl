@@ -148,7 +148,8 @@ fn trace_router[S](r: Router[S], ctx: TraceContext) -> Router[S] {
         sanitize: r.sanitize, auto_etag: r.auto_etag, rindex: r.rindex,
         static_paths: r.static_paths, idem: r.idem, gzip: r.gzip, mounts: r.mounts,
         no_lines: r.no_lines, observations: r.observations, tracer: r.no_tracer,
-        no_tracer: r.no_tracer, request_locals: trace_locals(ctx) };
+        no_tracer: r.no_tracer, request_locals: trace_locals(ctx),
+        sockets: r.sockets, no_socket: r.no_socket };
 }
 
 fn trace_failed[S](r: Router[S], req: http.Request, rid: str, client: str) -> Served {
@@ -156,7 +157,8 @@ fn trace_failed[S](r: Router[S], req: http.Request, rid: str, client: str) -> Se
     c.req = req;
     c.request_id = rid;
     c.client_ip = client;
-    return Served { resp: r.finish(c, respond(r.errors, "internal", rid)), route: "" };
+    return Served { resp: r.finish(c, respond(r.errors, "internal", rid)), route: "",
+                    upgrade: r.no_socket };
 }
 
 // A request binding over a shared Logger, without changing its configuration.

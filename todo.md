@@ -258,13 +258,37 @@ to its generic response helper. No compiler change is included here.
 
 ## 4. Realtime and transport
 
-- [ ] TLS termination through slang's `net.tls_*`, or a documented decision to
-  leave it to a proxy.
-- [ ] Wire WebSocket and Socket.IO into the loop: upgrade a connection in
+- [x] TLS termination through slang's `net.tls_*`, or a documented decision to
+  leave it to a proxy. Done: terminated here. `TLS_CERT_FILE`/`TLS_KEY_FILE`
+  (`sc.tls`, `tls_files`), loaded once before binding so a bad pair stops
+  the server starting; each handshake in its connection's own task under
+  `TLS_HANDSHAKE_TIMEOUT`; mutual TLS with `TLS_CLIENT_CA_FILE`; failed
+  handshakes closed and logged at debug; no plaintext 503 past
+  MAX_CONNECTIONS. Needs slang's `link.tls_accept` ([slang]). Not done:
+  reloading a renewed certificate without a restart, SNI, ALPN/HTTP2.
+- [x] Wire WebSocket and Socket.IO into the loop: upgrade a connection in
   place, hand it to `receive`, and run the Engine.IO ping timer. Also
-  replaces `examples/chat`'s stand-in requests.
-- [ ] Socket.IO over HTTP long-polling, so a client works without
-  `transports: ["websocket"]`; and binary attachment frames.
+  replaces `examples/chat`'s stand-in requests. Done: `r.websocket` /
+  `r.socketio` (the handshake is a routed request, `before`s included;
+  `c.socket()`, `c.accept_ws()`), `Socket` (sends from any task, never
+  waiting; a full queue closes it) and `Hub` (rooms, broadcast, emit).
+  Each connection is a reader and a writer task over slang's
+  `link.split()`. Pings on silence for WebSocket, on schedule for
+  Engine.IO; 1011 on a panicking handler, 1001 on SIGTERM; wss:// over
+  TLS. examples/chat serves both kinds of client on one room; checked
+  against socket.io-client 4.7.5 and `ws` 8. Needs slang's `link.split`
+  ([slang]).
+- [x] Socket.IO over HTTP long-polling, so a client works without
+  `transports: ["websocket"]`; and binary attachment frames. Done: the
+  polling transport (GET waits for packets, POST carries the client's,
+  record-separated, binary as base64), the probe-and-upgrade to WebSocket
+  with the session kept, one heartbeat task per route, a session cap
+  (`max_polling_sessions`, 503 past it), overlapping GETs/POSTs ending the
+  session; attachments assembled both ways (`e.attachments`,
+  `s.emit_binary`), even when an event straddles the upgrade. Checked
+  against socket.io-client 4.7.5 on polling, websocket and the default
+  polling-then-upgrade. Not done: a POST is bounded by MAX_REQUEST_BYTES,
+  not by maxPayload.
 
 ## 5. Shipping it
 
