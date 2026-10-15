@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}} · Zokor</title>
+<meta name="description" content="{{DESCRIPTION}}">
+<meta name="author" content="Dolphlabs">
+<meta property="og:site_name" content="Zokor">
+<meta property="og:title" content="{{TITLE}} · Zokor">
+<meta property="og:description" content="{{DESCRIPTION}}">
+<meta property="og:type" content="website">
+<link rel="canonical" href="https://dolphlabs.github.io/zokor/{{PATH}}">
+<link rel="alternate" type="text/markdown" href="{{MD_PATH}}" title="Markdown">
+<link rel="alternate" type="text/plain" href="{{ROOT}}llms.txt" title="llms.txt">
+<link rel="stylesheet" href="{{ROOT}}style.css">
+<link rel="icon" type="image/png" sizes="64x64" href="{{ROOT}}assets/zokor-icon-64.png">
+{{EXTRA_HEAD}}
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <a class="brand" href="{{ROOT}}index.html">
+    <img src="{{ROOT}}assets/zokor-header-256.png" width="40" height="40" alt="">
+    <span>zokor</span>
+  </a>
+  <button id="navtoggle" class="navtoggle" type="button" aria-label="Toggle navigation"
+          aria-expanded="false" aria-controls="mainnav">
+    <span></span><span></span><span></span>
+  </button>
+  <nav class="mainnav" id="mainnav" aria-label="Main navigation">{{NAV}}</nav>
+  <div class="tools">
+    <label class="search-label" for="search">Search</label>
+    <input id="search" type="search" placeholder="Search docs…" autocomplete="off"
+           aria-label="Search documentation" aria-controls="results">
+    <button id="theme" type="button" aria-label="Toggle color theme">◐</button>
+  </div>
+</header>
+<div id="navscrim" class="navscrim" hidden></div>
+<div id="results" class="results" role="listbox" aria-label="Search results" hidden></div>
+{{SUBNAV}}
+<main id="main">
+{{HERO}}
+<div class="page">
+  <article class="content">
+{{PAGE_HEAD}}
+{{BODY}}
+  </article>
+  <aside class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <nav id="toc"></nav>
+  </aside>
+</div>
+</main>
+<footer class="foot">
+  <div class="foot-brand"><img src="{{ROOT}}assets/zokor-icon-64.png" width="32" height="32" alt="">
+    <span>zokor</span></div>
+  <p>Generated from <code>README.md</code>, <code>zokor/</code> and <code>examples/</code>.
+     Built and maintained by <a href="https://dolphlabs.com" rel="noopener">Dolphlabs</a>.</p>
+  <p class="foot-links"><a href="{{ROOT}}api/index.html">API</a> ·
+     <a href="{{ROOT}}llms.txt">llms.txt</a> ·
+     <a href="https://github.com/dolphlabs/zokor" rel="noopener">GitHub</a></p>
+</footer>
+<script src="{{ROOT}}app.js" defer></script>
+</body>
+</html>

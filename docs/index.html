@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zokor · Zokor</title>
+<meta name="description" content="A backend framework for slang.">
+<meta name="author" content="Dolphlabs">
+<meta property="og:site_name" content="Zokor">
+<meta property="og:title" content="zokor · Zokor">
+<meta property="og:description" content="A backend framework for slang.">
+<meta property="og:type" content="website">
+<link rel="canonical" href="https://dolphlabs.github.io/zokor/index.html">
+<link rel="alternate" type="text/markdown" href="index.md" title="Markdown">
+<link rel="alternate" type="text/plain" href="llms.txt" title="llms.txt">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" type="image/png" sizes="64x64" href="assets/zokor-icon-64.png">
+<meta property="og:image" content="https://dolphlabs.github.io/zokor/assets/zokor-card-1200x630.jpg"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <a class="brand" href="index.html">
+    <img src="assets/zokor-header-256.png" width="40" height="40" alt="">
+    <span>zokor</span>
+  </a>
+  <button id="navtoggle" class="navtoggle" type="button" aria-label="Toggle navigation"
+          aria-expanded="false" aria-controls="mainnav">
+    <span></span><span></span><span></span>
+  </button>
+  <nav class="mainnav" id="mainnav" aria-label="Main navigation"><a href="index.html" class="active" aria-current="page">Home</a><a href="guide/start.html">Start</a><a href="api/index.html">API</a><a href="examples/index.html">Examples</a></nav>
+  <div class="tools">
+    <label class="search-label" for="search">Search</label>
+    <input id="search" type="search" placeholder="Search docs…" autocomplete="off"
+           aria-label="Search documentation" aria-controls="results">
+    <button id="theme" type="button" aria-label="Toggle color theme">◐</button>
+  </div>
+</header>
+<div id="navscrim" class="navscrim" hidden></div>
+<div id="results" class="results" role="listbox" aria-label="Search results" hidden></div>
+
+<main id="main">
+<section class="hero"><div class="hero-copy"><p class="eyebrow">Developer documentation</p><h1>zokor</h1><p class="hero-lede">A backend framework for slang.</p><div class="hero-actions"><a class="button primary" href="guide/start.html">Read the guide</a><a class="button" href="api/index.html">Browse the API</a></div><p class="agentline"><a href="index.md">Markdown</a> · <a href="llms.txt">llms.txt</a> · <a href="api.json">api.json</a></p></div><img class="hero-art" src="assets/zokor-header-256.png" width="256" height="256" alt="Zokor, the illustrated burrowing rodent"></section>
+<div class="page">
+  <article class="content">
+
+<section class="readme-preamble"><p>zokor exists for one reason: a service should spend its code on what it does, not on the plumbing every service rewrites — routing, configuration, error shapes, limits. It is opinionated about the things that go wrong when each service invents its own: <strong>one error envelope</strong>, <strong>one place configuration is read</strong>, <strong>one router</strong>.</p>
+<div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-slang"><span class="tok-keyword">import</span> <span class="tok-string">&quot;http&quot;</span>;
+<span class="tok-keyword">import</span> <span class="tok-string">&quot;zokor&quot;</span>;
+
+<span class="tok-keyword">gc</span> <span class="tok-keyword">struct</span> App {
+    db: pg.Pool,
+    errors: zokor.Registry,
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">show_org</span>(c: zokor.Ctx[App]) -&gt; http.Response {
+    <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> org = <span class="tok-function">find_org</span>(c.state.db, c.<span class="tok-function">param</span>(<span class="tok-string">&quot;id&quot;</span>)) <span class="tok-keyword">else</span> {
+        <span class="tok-keyword">return</span> zokor.<span class="tok-function">respond</span>(c.state.errors, <span class="tok-string">&quot;org.not_found&quot;</span>, c.request_id);
+    }
+    <span class="tok-keyword">return</span> zokor.<span class="tok-function">ok_json</span>(<span class="tok-function">encode</span>(org));
+}
+
+<span class="tok-keyword">let</span> r = zokor.<span class="tok-function">new_router</span>(app);
+r.errors = reg;
+r.<span class="tok-function">get</span>(<span class="tok-string">&quot;/orgs/:id&quot;</span>, show_org);
+r.<span class="tok-function">post</span>(<span class="tok-string">&quot;/orgs&quot;</span>, create_org);</code></pre></div>
+<p>Middleware attaches to a <strong>group</strong>, not to every handler:</p>
+<div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-slang">r.<span class="tok-function">get</span>(<span class="tok-string">&quot;/health&quot;</span>, health);            <span class="tok-comment">// public</span>
+
+<span class="tok-keyword">let</span> api = r.<span class="tok-function">group</span>(<span class="tok-string">&quot;/api/v1&quot;</span>);
+api.<span class="tok-function">before</span>(require_token);           <span class="tok-comment">// everything below is guarded</span>
+api.<span class="tok-function">get</span>(<span class="tok-string">&quot;/orgs/:id&quot;</span>, show_org);
+api.<span class="tok-function">post</span>(<span class="tok-string">&quot;/orgs&quot;</span>, create_org);
+
+<span class="tok-keyword">let</span> admin = api.<span class="tok-function">group</span>(<span class="tok-string">&quot;/admin&quot;</span>);     <span class="tok-comment">// nests: /api/v1/admin</span>
+admin.<span class="tok-function">before</span>(require_admin);         <span class="tok-comment">// and keeps the parent&#x27;s hooks</span>
+admin.<span class="tok-function">delete</span>(<span class="tok-string">&quot;/orgs/:id&quot;</span>, drop_org);</code></pre></div>
+<p>Middleware applies to routes registered <strong>after</strong> it, on that group, and each route keeps a copy — so adding a hook later cannot silently change a route that already exists. One route on its own: <code>r.guarded(Method.DELETE, &quot;/orgs/:id&quot;, drop, [require_admin])</code>.</p>
+<p>A <code>before</code> can also <strong>resolve</strong> something for the handler, which is the point of doing authentication once at the edge:</p>
+<div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-slang"><span class="tok-keyword">fn</span> <span class="tok-function">require_token</span>(c: zokor.Ctx[App]) -&gt; <span class="tok-type">opt</span>[http.Response] {
+    <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> user = <span class="tok-function">lookup</span>(c.state.db, c.<span class="tok-function">bearer</span>()) <span class="tok-keyword">else</span> {
+        <span class="tok-keyword">return</span> <span class="tok-builtin">some</span>(zokor.<span class="tok-function">respond</span>(c.state.errors, <span class="tok-string">&quot;unauthorized&quot;</span>, c.request_id));
+    }
+    c.<span class="tok-function">set_local</span>(<span class="tok-string">&quot;user_id&quot;</span>, user.id);     <span class="tok-comment">// the handler reads c.local(&quot;user_id&quot;)</span>
+    <span class="tok-keyword">return</span> <span class="tok-builtin">none</span>;
+}</code></pre></div>
+<p><code>after</code> hooks run innermost first (the route&#x27;s, then the router&#x27;s), and they run even when a <code>before</code> stopped the request — so a logging hook cannot be skipped by a short circuit.</p>
+<p>Methods are a closed set: <code>r.get</code>, <code>r.post</code>, <code>r.put</code>, <code>r.patch</code>, <code>r.delete</code>, <code>r.head</code>, <code>r.options</code>, <code>r.trace</code>, <code>r.connect</code>, and <code>r.any([zokor.Method.GET, zokor.Method.POST], &quot;/p&quot;, h)</code> for several at once. A verb the set does not contain answers <code>501</code>, not <code>404</code>: the path may well exist.</p>
+<p><code>Router[S]</code> is generic over <strong>your</strong> state. A framework cannot know what your handlers need — a database pool, a config, your services — and before slang had generics the only way to reach them was to pass each as its own parameter. A real control plane ended up with a twelve-parameter <code>dispatch</code> that grew with every new service. Here it is one value you declare, and every handler receives it.</p></section><section class="readme-section"><h2 id="what-is-in-it">What is in it</h2><div class="table-wrap"><table><thead><tr><th></th><th></th></tr></thead><tbody><tr><td><code>Router[S]</code>, <code>Ctx[S]</code></td><td>every HTTP method, <code>:params</code>, <code>*wildcards</code>, before/after middleware, automatic <code>HEAD</code> and <code>OPTIONS</code>, <code>Allow</code> on a 405</td></tr><tr><td><code>Registry</code>, <code>respond*</code></td><td>every HTTP failure code, one JSON envelope, field-level validation errors</td></tr><tr><td><code>load_config</code>, <code>require_*</code></td><td><code>.env</code> plus profiles, startup environment snapshot, per-variable validation, <strong>every</strong> problem reported at once</td></tr><tr><td><code>parse_form</code>, <code>c.upload</code></td><td>multipart/form-data: limits, type and extension allowlists, filenames made safe</td></tr><tr><td><code>snake_keys</code>, <code>decode_failed</code>, <code>checker</code></td><td>DTOs: wire names, decode errors as field errors, validation</td></tr><tr><td><code>Json</code>, <code>parse</code>, <code>jobj</code></td><td>JSON you did not declare: walk it, build it, render it</td></tr><tr><td><code>upgrade</code>, <code>receive</code>, <code>sio_*</code></td><td>WebSocket (RFC 6455) and Socket.IO, as a state machine you feed bytes</td></tr><tr><td><code>ok_json</code>, <code>created</code>, …</td><td>success responses with the headers they should carry</td></tr><tr><td><code>files_at</code>, <code>r.files(mount)</code></td><td>static files: traversal-safe, ranges, validators, cache headers</td></tr><tr><td><code>r.compress(compression())</code></td><td>gzip for clients that accept it, on bodies worth it</td></tr><tr><td><code>r.idempotency(store)</code></td><td>idempotency keys: a retried POST gets the first answer, in memory or Redis</td></tr><tr><td><code>page_of</code>, <code>offset_page</code>, <code>cursor_page</code></td><td>pagination: offset or keyset pages, one envelope, <code>Link</code> headers</td></tr><tr><td><code>new_jobs</code>, <code>every</code>, <code>handle</code>, <code>enqueue</code></td><td>background jobs: cron schedules in a time zone, a retrying in-memory queue</td></tr><tr><td><code>preconditions</code>, <code>etag_of</code>, <code>r.etags()</code></td><td>conditional requests: <code>304 Not Modified</code>, <code>412</code> on a lost update, ETag and Last-Modified</td></tr><tr><td><code>redis_from_config</code></td><td>a Redis pool from <code>REDIS_URL</code>, optional by default</td></tr><tr><td><code>ServerConfig</code>, <code>listen_and_serve_with</code></td><td>idle/header/body/write timeouts, safe defaults, all overridable</td></tr><tr><td><code>RateLimiter</code>, <code>rate_limit</code></td><td>per-client sliding-window limits: <code>429</code>, <code>Retry-After</code>, the registered envelope</td></tr><tr><td><code>TokenStore</code>, <code>bearer_subject</code></td><td>opaque bearer tokens: crypto-random, issue/lookup/revoke, optional TTL, safe across tasks</td></tr></tbody></table></div>
+<p>Every public symbol, one line each: <a href="./api/index.html">docs/api.txt</a>.</p></section>
+  </article>
+  <aside class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <nav id="toc"></nav>
+  </aside>
+</div>
+</main>
+<footer class="foot">
+  <div class="foot-brand"><img src="assets/zokor-icon-64.png" width="32" height="32" alt="">
+    <span>zokor</span></div>
+  <p>Generated from <code>README.md</code>, <code>zokor/</code> and <code>examples/</code>.
+     Built and maintained by <a href="https://dolphlabs.com" rel="noopener">Dolphlabs</a>.</p>
+  <p class="foot-links"><a href="api/index.html">API</a> ·
+     <a href="llms.txt">llms.txt</a> ·
+     <a href="https://github.com/dolphlabs/zokor" rel="noopener">GitHub</a></p>
+</footer>
+<script src="app.js" defer></script>
+</body>
+</html>
