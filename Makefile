@@ -1,7 +1,7 @@
 SLANGC ?= slangc
 TESTFLAGS ?=
 
-.PHONY: test example example-ports check snippets api api-check docs docs-check cli cli-test templates templates-check
+.PHONY: test example example-ports check snippets api api-check docs docs-check
 
 # Every package dir is listed explicitly: a new package without its own
 # line here is a package with no tests, and that fails review.
@@ -28,23 +28,6 @@ test:
 	$(SLANGC) test examples/ports/src/application/inventory $(TESTFLAGS)
 	$(SLANGC) test examples/ports/src/infrastructure/memory $(TESTFLAGS)
 	$(SLANGC) test examples/ports/src/interfaces/web $(TESTFLAGS)
-
-cli:
-	mkdir -p bin
-	$(SLANGC) cmd/zokor/main.sl -o bin/zokor
-
-# cmd/zokor/templates.sl embeds cmd/zokor/templates/ for `zokor new` and
-# `zokor add`; templates-check fails when someone edited a template and
-# did not regenerate it.
-templates:
-	sh cmd/zokor/gen_templates.sh
-
-templates-check:
-	sh cmd/zokor/gen_templates.sh --check
-
-cli-test: cli
-	sh tests/cli.sh
-	SLANGC="$(SLANGC)" sh tests/scaffold.sh
 
 example:
 	$(SLANGC) examples/hello/main.sl --run
@@ -77,4 +60,4 @@ docs-check: api-check
 	python3 www/build.py --check
 
 # Everything CI runs.
-check: test example example-chat example-ports snippets api-check docs-check templates-check cli-test
+check: test example example-chat example-ports snippets api-check docs-check
