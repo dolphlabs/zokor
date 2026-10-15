@@ -3,24 +3,29 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>HTTP APIs · Zokor</title>
-<meta name="description" content="Three helpers.">
+<title>Zokor HTTP APIs | Routing, Middleware &amp; Security</title>
+<meta name="description" content="Build HTTP APIs with Zokor routing, middleware, authentication, validation, uploads, rate limits, caching, pagination, and content negotiation.">
 <meta name="author" content="Dolphlabs">
 <meta property="og:site_name" content="Zokor">
-<meta property="og:title" content="HTTP APIs · Zokor">
-<meta property="og:description" content="Three helpers.">
+<meta property="og:title" content="Zokor HTTP APIs | Routing, Middleware &amp; Security">
+<meta property="og:description" content="Build HTTP APIs with Zokor routing, middleware, authentication, validation, uploads, rate limits, caching, pagination, and content negotiation.">
 <meta property="og:type" content="website">
-<link rel="canonical" href="https://dolphlabs.github.io/zokor/guide/http.html">
+<meta property="og:url" content="https://zokor.dolphlabs.com/guide/http">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Zokor HTTP APIs | Routing, Middleware &amp; Security">
+<meta name="twitter:description" content="Build HTTP APIs with Zokor routing, middleware, authentication, validation, uploads, rate limits, caching, pagination, and content negotiation.">
+<link rel="canonical" href="https://zokor.dolphlabs.com/guide/http">
 <link rel="alternate" type="text/markdown" href="../guide/http.md" title="Markdown">
 <link rel="alternate" type="text/plain" href="../llms.txt" title="llms.txt">
 <link rel="stylesheet" href="../style.css">
 <link rel="icon" type="image/png" sizes="64x64" href="../assets/zokor-icon-64.png">
-<meta property="og:image" content="https://dolphlabs.github.io/zokor/assets/zokor-card-1200x630.jpg"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta name="twitter:card" content="summary_large_image">
+<meta property="og:image" content="https://zokor.dolphlabs.com/assets/zokor-card-1200x630.jpg"><meta property="og:image:alt" content="Zokor, a backend framework for Slang"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta name="twitter:image" content="https://zokor.dolphlabs.com/assets/zokor-card-1200x630.jpg"><meta name="twitter:image:alt" content="Zokor, a backend framework for Slang">
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
 <header class="topbar">
-  <a class="brand" href="../index.html">
+  <a class="brand" href="../">
     <img src="../assets/zokor-header-256.png" width="40" height="40" alt="">
     <span>zokor</span>
   </a>
@@ -28,7 +33,7 @@
           aria-expanded="false" aria-controls="mainnav">
     <span></span><span></span><span></span>
   </button>
-  <nav class="mainnav" id="mainnav" aria-label="Main navigation"><a href="../index.html">Home</a><a href="../guide/start.html" class="active" aria-current="page">Start</a><a href="../api/index.html">API</a><a href="../examples/index.html">Examples</a></nav>
+  <nav class="mainnav" id="mainnav" aria-label="Main navigation"><a href="../">Home</a><a href="../guide/start" class="active" aria-current="page">Start</a><a href="../api/">API</a><a href="../examples/">Examples</a></nav>
   <div class="tools">
     <label class="search-label" for="search">Search</label>
     <input id="search" type="search" placeholder="Search docs…" autocomplete="off"
@@ -38,12 +43,12 @@
 </header>
 <div id="navscrim" class="navscrim" hidden></div>
 <div id="results" class="results" role="listbox" aria-label="Search results" hidden></div>
-<nav class="subnav" aria-label="Guide pages"><a href="../guide/start.html">Start</a><a href="../guide/http.html" aria-current="page">HTTP</a><a href="../guide/data.html">Data</a><a href="../guide/operations.html">Operations</a><a href="../guide/realtime.html">Realtime</a><a href="../guide/architecture.html">Architecture</a></nav>
+<nav class="subnav" aria-label="Guide pages"><a href="../guide/start">Start</a><a href="../guide/http" aria-current="page">HTTP</a><a href="../guide/data">Data</a><a href="../guide/operations">Operations</a><a href="../guide/realtime">Realtime</a><a href="../guide/architecture">Architecture</a></nav>
 <main id="main">
 
 <div class="page">
   <article class="content">
-<header class="page-head"><p class="page-kicker">Zokor documentation</p><h1>HTTP APIs</h1><p class="tagline">Three helpers.</p><p class="agentline"><a href="../guide/http.md">Markdown</a> · <a href="../llms.txt">llms.txt</a> · <a href="../api.json">api.json</a></p></header>
+<header class="page-head"><p class="page-kicker">Zokor documentation</p><h1>HTTP APIs</h1><p class="tagline">Build HTTP APIs with Zokor routing, middleware, authentication, validation, uploads, rate limits, caching, pagination, and content negotiation.</p><p class="agentline"><a href="../guide/http.md">Markdown</a> · <a href="../llms.txt">llms.txt</a> · <a href="../api.json">api.json</a></p></header>
 <section class="readme-section"><h2 id="authentication">Authentication<a class="anchor" href="#authentication" aria-label="Link to this section">#</a></h2><p>Three helpers. Each answers &quot;who is this?&quot; and leaves the policy to you. There are no closures, so keys live in your state and a short <code>before</code> hook passes them in:</p>
 <div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-slang"><span class="tok-keyword">gc</span> <span class="tok-keyword">struct</span> App { jwt: zokor.JwtAuth, keys: zokor.ApiKeys }
 <span class="tok-keyword">struct</span> Claims { sub: <span class="tok-type">str</span>, role: <span class="tok-type">str</span>, exp: <span class="tok-type">int</span> }
@@ -266,7 +271,7 @@ body.<span class="tok-function">has_key</span>(<span class="tok-string">&quot;no
     <span>zokor</span></div>
   <p>Generated from <code>README.md</code>, <code>zokor/</code> and <code>examples/</code>.
      Built and maintained by <a href="https://dolphlabs.com" rel="noopener">Dolphlabs</a>.</p>
-  <p class="foot-links"><a href="../api/index.html">API</a> ·
+  <p class="foot-links"><a href="../api/">API</a> ·
      <a href="../llms.txt">llms.txt</a> ·
      <a href="https://github.com/dolphlabs/zokor" rel="noopener">GitHub</a></p>
 </footer>
