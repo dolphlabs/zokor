@@ -292,8 +292,11 @@ to its generic response helper. No compiler change is included here.
 
 ## 5. Shipping it
 
-- [ ] `LICENSE` (MIT, Dolph Tech Limited, matching slang), `CONTRIBUTING.md`,
-  `SECURITY.md` and a code of conduct.
+- [x] `LICENSE` (MIT, Dolph Tech Limited, matching slang), `CONTRIBUTING.md`,
+  `SECURITY.md` and a code of conduct. Done: the licence and code of conduct
+  as slang's; CONTRIBUTING covers building against slang `dev`, live
+  Postgres/Redis tests, what a change needs and the branch workflow;
+  SECURITY scopes zokor's own surface and sends slang problems to slang.
 - [ ] **Docs site**, generated from the README, the `zokor/` signatures and the
   examples, the way slang's `www/build.py` does. Uses `assets/zokor.png`:
   the header, the social card, and a favicon. The source image is 1024 x 1024
