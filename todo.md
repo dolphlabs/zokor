@@ -296,8 +296,16 @@ to its generic response helper. No compiler change is included here.
   the header, the social card, and a favicon. The source image is 1024 x 1024
   and 358 KB, so produce sized variants (a 64 px favicon, a ~256 px header,
   a 1200 x 630 card) instead of shipping the original everywhere.
-- [ ] A `slangc new`-style scaffold: `zokor new <name>` producing a service
-  with the layout, config, one route and one test.
+- [x] A `slangc new`-style scaffold: `zokor new <name>` producing a service
+  with the layout, config, one route and one test. Done: feature-first, one
+  package per layer (`domain/ service/ store/ server/`) plus `platform/`
+  (config, app state, auth, db); a tenant-scoped example feature with an
+  in-memory store, fakes and tests in every package; `--db pg` adds the
+  pool, a Postgres adapter behind `store.sl` and numbered migrations;
+  `zokor add feature <name>` writes and wires a new slice. AGENTS.md,
+  .env.example and a Makefile in every project. tests/scaffold.sh runs
+  both kinds of project in `make check` (live Postgres on Linux CI). Not
+  done: `zokor add route`, `zokor check` (next).
 - [ ] Tag `v0.2.0`, the release the README and the guide pin (`v0.1.0`
   was tagged 2026-09-30, before the `src/` -> `zokor/` rename), once a
   slang release includes what zokor needs (generics, `dir` pins,

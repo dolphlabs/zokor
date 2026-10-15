@@ -128,8 +128,20 @@ jobs:
           make example-chat SLANGC="$SLANGC"
           make example-ports SLANGC="$SLANGC"
 
+      # The scaffold's --db pg project migrates a database of its own:
+      # zokor_test already holds zokor's own migration history.
+      - name: Scaffold database (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          docker exec pg createdb -U postgres scaffold_test
+          echo "SCAFFOLD_TEST_DATABASE_URL=postgres://postgres:zokor@127.0.0.1:5432/scaffold_test" >> "$GITHUB_ENV"
+
       - name: CLI builds and runs
+        timeout-minutes: 15
         run: make cli-test SLANGC="$SLANGC"
+
+      - name: cmd/zokor/templates.sl is up to date
+        run: make templates-check
 
       - name: Guide programs compile and run
         timeout-minutes: 10
