@@ -20,19 +20,27 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parent.parent
 WWW = ROOT / "www"
 DEFAULT_OUT = ROOT / "docs"
-SITE_URL = "https://dolphlabs.github.io/zokor/"
+SITE_URL = "https://zokor.dolphlabs.com/"
 GITHUB_SOURCE = "https://github.com/dolphlabs/zokor/blob/dev/"
 
 GUIDE_PAGES = [
     {
         "path": "guide/start.html",
         "title": "Start here",
+        "seo_title": "Getting Started with Zokor | Slang Backend Framework",
+        "description": (
+            "Create a Slang backend service with Zokor. Follow the setup guide for "
+            "installation, project structure, requirements, and your first routes."),
         "nav": "Start",
         "sections": ["Starting a service", "Install", "Requirements"],
     },
     {
         "path": "guide/http.html",
         "title": "HTTP APIs",
+        "seo_title": "Zokor HTTP APIs | Routing, Middleware & Security",
+        "description": (
+            "Build HTTP APIs with Zokor routing, middleware, authentication, validation, "
+            "uploads, rate limits, caching, pagination, and content negotiation."),
         "nav": "HTTP",
         "sections": ["Authentication", "Operator injection (MongoDB)",
                      "Cookies", "Conditional requests", "Security headers",
@@ -44,12 +52,20 @@ GUIDE_PAGES = [
     {
         "path": "guide/data.html",
         "title": "Data and storage",
+        "seo_title": "Zokor Data | PostgreSQL, Redis & Migrations",
+        "description": (
+            "Use PostgreSQL, Redis, and SQL migrations in Zokor, with typed row decoding, "
+            "transactions, connection pools, and configuration guidance."),
         "nav": "Data",
         "sections": ["Postgres", "Redis", "Migrations"],
     },
     {
         "path": "guide/operations.html",
         "title": "Operations",
+        "seo_title": "Zokor Operations | Configuration, Metrics & Deployment",
+        "description": (
+            "Configure and operate Zokor services with timeouts, graceful shutdown, "
+            "HTTPS, logging, background jobs, metrics, tracing, and OpenAPI."),
         "nav": "Operations",
         "sections": ["Configuration", "Server timeouts, limits, and shutdown",
                      "HTTPS", "Logging", "Background jobs", "Errors",
@@ -58,12 +74,20 @@ GUIDE_PAGES = [
     {
         "path": "guide/realtime.html",
         "title": "Realtime connections",
+        "seo_title": "Zokor WebSockets & Socket.IO | Realtime Guide",
+        "description": (
+            "Build WebSocket and Socket.IO services in Slang with Zokor's route "
+            "integration and sans-I/O protocol handlers."),
         "nav": "Realtime",
         "sections": ["WebSocket"],
     },
     {
         "path": "guide/architecture.html",
         "title": "Project structure",
+        "seo_title": "Zokor Architecture | Project Structure & Testing",
+        "description": (
+            "Explore Zokor's project structure, testing approach, dependency ports and "
+            "fakes, agent guide, and framework design."),
         "nav": "Architecture",
         "sections": ["Testing", "Layout", "Tests",
                      "Dependencies: ports and fakes", "Agent guide", "Not yet",
@@ -80,10 +104,22 @@ PRIMARY_NAV = [
 
 EXAMPLE_PAGES = [
     {"name": "hello", "path": "examples/hello.html", "title": "Hello service",
+     "seo_title": "Zokor Example: Hello HTTP Service",
+     "description": (
+         "A minimal Slang HTTP service built with Zokor. See how to configure the "
+         "server, register a route, and return a JSON response."),
      "command": "make example", "files": ["examples/hello/main.sl"]},
     {"name": "chat", "path": "examples/chat.html", "title": "Chat service",
+     "seo_title": "Zokor Example: WebSocket and Socket.IO Chat",
+     "description": (
+         "A Slang chat service using Zokor, with WebSocket and Socket.IO clients "
+         "connected to the same room."),
      "command": "make example-chat", "files": ["examples/chat/main.sl"]},
     {"name": "ports", "path": "examples/ports.html", "title": "Ports and fakes",
+     "seo_title": "Zokor Example: Ports and Fakes",
+     "description": (
+         "A runnable Slang example showing how to isolate dependencies behind ports "
+         "and test Zokor services with fakes."),
      "command": "make example-ports", "files": []},
 ]
 
@@ -169,26 +205,6 @@ def read_preamble(lines):
     return preamble
 
 
-def text_only(markdown):
-    text = re.sub(r"```.*?```", " ", markdown, flags=re.S)
-    text = re.sub(r"!\[[^]]*\]\([^)]+\)", " ", text)
-    text = re.sub(r"\[([^]]+)\]\([^)]+\)", r"\1", text)
-    text = re.sub(r"`([^`]+)`", r"\1", text)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"[#>*_`|]", " ", text)
-    return re.sub(r"\s+", " ", html.unescape(text)).strip()
-
-
-def first_sentence(lines, fallback):
-    text = text_only("\n".join(lines))
-    if not text:
-        return fallback
-    match = re.search(r"[.!?](?:\s|$)", text)
-    if match:
-        return text[:match.end()].strip()
-    return text[:180]
-
-
 def brand_from_readme(lines):
     source = "\n".join(lines[:30])
     title = "zokor"
@@ -237,14 +253,14 @@ def site_href(target, root):
     path, marker, fragment = target.partition("#")
     path = path.removeprefix("./")
     known = {
-        "README.md": "guide/start.html",
-        "docs/api.txt": "api/index.html",
+        "README.md": "guide/start",
+        "docs/api.txt": "api/",
         "docs/llms-small.txt": "llms-small.txt",
-        "examples/hello/main.sl": "examples/hello.html#" +
+        "examples/hello/main.sl": "examples/hello#" +
             example_anchor("examples/hello/main.sl"),
-        "examples/chat/main.sl": "examples/chat.html#" +
+        "examples/chat/main.sl": "examples/chat#" +
             example_anchor("examples/chat/main.sl"),
-        "examples/ports/src/main.sl": "examples/ports.html#" +
+        "examples/ports/src/main.sl": "examples/ports#" +
             example_anchor("examples/ports/src/main.sl"),
     }
     if path in known:
@@ -523,7 +539,7 @@ def render_api(modules, root, current_path):
             search.append({
                 "title": item["signature"],
                 "tagline": item["description"] or module["description"],
-                "url": "api/index.html#" + item_id,
+                "url": "api/#" + item_id,
                 "text": module["file"] + " " + item["signature"] + " " + item["description"],
             })
         output.append("</section>")
@@ -594,13 +610,31 @@ def relative_root(path):
     return "../" * (len(Path(path).parts) - 1)
 
 
+def public_path(path):
+    path, marker, fragment = path.partition("#")
+    path = Path(path).as_posix()
+    if path == "index.html":
+        path = ""
+    elif path.endswith("/index.html"):
+        path = path[:-len("index.html")]
+    elif path.endswith(".html"):
+        path = path[:-len(".html")]
+    return path + ("#" + fragment if marker else "")
+
+
+def canonical_url(path):
+    path = public_path(path)
+    return SITE_URL + path
+
+
 def render_nav(current, root):
     links = []
     for page in PRIMARY_NAV:
         active = current == page["path"] or (
             page["path"] == "guide/start.html" and current.startswith("guide/"))
         links.append('<a href="%s%s"%s>%s</a>' % (
-            root, page["path"], ' class="active" aria-current="page"' if active else "",
+            root, public_path(page["path"]),
+            ' class="active" aria-current="page"' if active else "",
             html.escape(page["nav"])))
     return "".join(links)
 
@@ -610,21 +644,32 @@ def render_guide_nav(current, root):
         return ""
     return '<nav class="subnav" aria-label="Guide pages">%s</nav>' % "".join(
         '<a href="%s%s"%s>%s</a>' % (
-            root, page["path"], ' aria-current="page"' if page["path"] == current else "",
+            root, public_path(page["path"]),
+            ' aria-current="page"' if page["path"] == current else "",
             html.escape(page["nav"])) for page in GUIDE_PAGES)
 
 
-def page_html(template, *, title, tagline, body, path, hero="", show_page_head=True):
-    root = relative_root(path)
+def page_html(template, *, title, tagline, body, path, seo_title=None,
+              description=None, structured_data=None, hero="",
+              show_page_head=True):
+    root = relative_root(path) or "./"
     depth = len(Path(path).parts) - 1
     md_path = Path(path).with_suffix(".md").as_posix()
+    seo_title = seo_title or "%s | Zokor" % title
+    description = description or tagline
+    canonical = canonical_url(path)
     extra_head = (
-        '<meta property="og:image" content="%sassets/zokor-card-1200x630.jpg">' %
-        SITE_URL +
+        '<meta property="og:image" content="%sassets/zokor-card-1200x630.jpg">'
+        '<meta property="og:image:alt" content="Zokor, a backend framework for Slang">'
         '<meta property="og:image:width" content="1200">'
         '<meta property="og:image:height" content="630">'
-        '<meta name="twitter:card" content="summary_large_image">'
-    )
+        '<meta name="twitter:image" content="%sassets/zokor-card-1200x630.jpg">'
+        '<meta name="twitter:image:alt" content="Zokor, a backend framework for Slang">'
+    ) % (SITE_URL, SITE_URL)
+    if structured_data:
+        json_ld = json.dumps(structured_data, ensure_ascii=False, separators=(",", ":"))
+        json_ld = json_ld.replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
+        extra_head += '<script type="application/ld+json">%s</script>' % json_ld
     page_head = ""
     if show_page_head:
         page_head = (
@@ -634,12 +679,12 @@ def page_html(template, *, title, tagline, body, path, hero="", show_page_head=T
             '<a href="%sllms.txt">llms.txt</a> · '
             '<a href="%sapi.json">api.json</a></p></header>' % (
                 html.escape(title), html.escape(tagline), root + md_path, root, root))
-    return (template.replace("{{TITLE}}", html.escape(title))
-            .replace("{{DESCRIPTION}}", html.escape(tagline))
+    return (template.replace("{{SEO_TITLE}}", html.escape(seo_title))
+            .replace("{{DESCRIPTION}}", html.escape(description))
             .replace("{{NAV}}", render_nav(path, root))
             .replace("{{SUBNAV}}", render_guide_nav(path, root))
             .replace("{{ROOT}}", root)
-            .replace("{{PATH}}", html.escape(path))
+            .replace("{{CANONICAL_URL}}", html.escape(canonical, quote=True))
             .replace("{{MD_PATH}}", root + md_path)
             .replace("{{EXTRA_HEAD}}", extra_head)
             .replace("{{HERO}}", hero)
@@ -710,8 +755,8 @@ def build_files():
         '<section class="hero"><div class="hero-copy">'
         '<p class="eyebrow">Developer documentation</p>'
         '<h1>%s</h1><p class="hero-lede">%s</p>'
-        '<div class="hero-actions"><a class="button primary" href="guide/start.html">'
-        'Read the guide</a><a class="button" href="api/index.html">Browse the API</a></div>'
+        '<div class="hero-actions"><a class="button primary" href="guide/start">'
+        'Read the guide</a><a class="button" href="api/">Browse the API</a></div>'
         '<p class="agentline"><a href="index.md">Markdown</a> · '
         '<a href="llms.txt">llms.txt</a> · <a href="api.json">api.json</a></p>'
         '</div><img class="hero-art" src="assets/zokor-header-256.png" '
@@ -720,15 +765,47 @@ def build_files():
     home_markdown = "\n\n".join(["\n".join(preamble).strip(),
                                     "## What is in it\n\n" +
                                     "\n".join(sections["What is in it"]).strip()])
+    home_description = (
+        "Zokor is a backend framework for Slang, with routing, middleware, "
+        "configuration, validation, database helpers, background jobs, and HTTP APIs.")
+    home_seo_title = "Zokor: Backend Framework for Slang"
+    structured_data = {
+        "@context": "https://schema.org",
+        "@graph": [
+            {
+                "@type": "WebSite",
+                "@id": SITE_URL + "#website",
+                "url": SITE_URL,
+                "name": "Zokor",
+                "inLanguage": "en",
+            },
+            {
+                "@type": "SoftwareSourceCode",
+                "@id": SITE_URL + "#software",
+                "url": SITE_URL,
+                "name": "Zokor",
+                "description": home_description,
+                "codeRepository": "https://github.com/dolphlabs/zokor",
+                "programmingLanguage": "Slang",
+                "maintainer": {
+                    "@type": "Organization",
+                    "name": "Dolphlabs",
+                    "url": "https://dolphlabs.com/",
+                },
+            },
+        ],
+    }
     home_path = "index.html"
     home_page = page_html(template, title=title, tagline=tagline,
                           body=home_body, path=home_path, hero=home_hero,
+                          seo_title=home_seo_title, description=home_description,
+                          structured_data=structured_data,
                           show_page_head=False)
     files[home_path] = home_page
     files["index.md"] = markdown_twin(title, tagline, home_markdown)
     pages.append({"path": home_path, "title": title, "tagline": tagline,
                   "body": home_body})
-    search.append({"title": title, "tagline": tagline, "url": home_path,
+    search.append({"title": title, "tagline": tagline, "url": public_path(home_path),
                    "text": html_text(home_body + preamble_html)})
     markdown_pages.append(files["index.md"])
 
@@ -748,10 +825,11 @@ def build_files():
             markdown_sections.append("## %s\n\n%s" %
                                      (section_name, "\n".join(sections[section_name]).strip()))
         page_body = "\n".join(html_sections)
-        summary = first_sentence(sections[page["sections"][0]], tagline)
+        summary = page["description"]
         path = page["path"]
         page_template = page_html(template, title=page["title"], tagline=summary,
-                                  body=page_body, path=path)
+                                  body=page_body, path=path,
+                                  seo_title=page["seo_title"], description=summary)
         markdown_body = "\n\n".join(markdown_sections)
         twin = markdown_twin(page["title"], summary, markdown_body)
         twin_path = str(Path(path).with_suffix(".md"))
@@ -759,17 +837,21 @@ def build_files():
         files[twin_path] = twin
         pages.append({"path": path, "title": page["title"], "tagline": summary,
                       "body": page_body})
-        search.append({"title": page["title"], "tagline": summary, "url": path,
+        search.append({"title": page["title"], "tagline": summary,
+                       "url": public_path(path),
                        "text": html_text(page_body)})
         markdown_pages.append(twin)
 
     api_path = ROOT / "docs" / "api.txt"
     modules = read_api(api_path)
     api_html, api_search = render_api(modules, "../", "api/index.html")
-    api_summary = "%d public symbols in %d source modules, generated from zokor/." % (
-        sum(len(module["items"]) for module in modules), len(modules))
+    api_summary = (
+        "Browse public Zokor types, functions, and methods, with signatures and "
+        "descriptions generated from the source package.")
     api_page = page_html(template, title="API reference", tagline=api_summary,
-                         body=api_html, path="api/index.html")
+                         body=api_html, path="api/index.html",
+                         seo_title="Zokor API Reference | Public Types and Functions",
+                         description=api_summary)
     files["api/index.html"] = api_page
     files["api/index.md"] = api_path.read_text(encoding="utf-8")
     pages.append({"path": "api/index.html", "title": "API reference",
@@ -780,14 +862,16 @@ def build_files():
     example_cards = []
     example_search = []
     example_markdown_pages = []
+    example_index_root = relative_root("examples/index.html")
     for example in EXAMPLE_PAGES:
         root = relative_root(example["path"])
         example_html, example_markdown, sources = render_example(
             example, root, example["path"])
-        example_summary = first_sentence([source_intro(sources[0])], example["title"])
+        example_summary = example["description"]
         page_html_content = page_html(
             template, title=example["title"], tagline=example_summary,
-            body=example_html, path=example["path"])
+            body=example_html, path=example["path"],
+            seo_title=example["seo_title"], description=example_summary)
         markdown_path = str(Path(example["path"]).with_suffix(".md"))
         files[example["path"]] = page_html_content
         files[markdown_path] = markdown_twin(example["title"], example_summary,
@@ -795,18 +879,24 @@ def build_files():
         pages.append({"path": example["path"], "title": example["title"],
                       "tagline": example_summary, "body": example_html})
         example_search.append({"title": example["title"], "tagline": example_summary,
-                               "url": example["path"],
+                               "url": public_path(example["path"]),
                                "text": html_text(example_html)})
         example_markdown_pages.append(files[markdown_path])
         example_cards.append(
             '<a class="example-card" href="%s"><span class="eyebrow">%s files</span>'
             '<strong>%s</strong><span>%s</span></a>' % (
-                html.escape(example["path"]), len(sources), html.escape(example["title"]),
+                html.escape(example_index_root + public_path(example["path"])),
+                len(sources),
+                html.escape(example["title"]),
                 html.escape(example_summary)))
     example_index_body = '<div class="example-grid">%s</div>' % "".join(example_cards)
-    example_index_summary = "Runnable Slang services from the examples/ tree."
+    example_index_summary = (
+        "Explore runnable Slang examples built with Zokor, from a minimal HTTP "
+        "service to WebSocket chat and testable ports and fakes.")
     example_index = page_html(template, title="Examples", tagline=example_index_summary,
-                              body=example_index_body, path="examples/index.html")
+                              body=example_index_body, path="examples/index.html",
+                              seo_title="Zokor Examples | Slang Services, HTTP and WebSockets",
+                              description=example_index_summary)
     files["examples/index.html"] = example_index
     files["examples/index.md"] = markdown_twin(
         "Examples", example_index_summary,
@@ -817,8 +907,20 @@ def build_files():
                   "tagline": example_index_summary, "body": example_index_body})
     search.extend(example_search)
     search.append({"title": "Examples", "tagline": example_index_summary,
-                   "url": "examples/index.html", "text": html_text(example_index_body)})
+                   "url": public_path("examples/index.html"),
+                   "text": html_text(example_index_body)})
     markdown_pages.extend([files["examples/index.md"], *example_markdown_pages])
+
+    sitemap = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+    ]
+    for page in pages:
+        sitemap.extend(["  <url>", "    <loc>%s</loc>" %
+                        html.escape(canonical_url(page["path"]), quote=False),
+                        "  </url>"])
+    sitemap.append("</urlset>")
+    files["sitemap.xml"] = "\n".join(sitemap) + "\n"
 
     files["style.css"] = (WWW / "theme" / "style.css").read_text(encoding="utf-8")
     files["app.js"] = (WWW / "theme" / "app.js").read_text(encoding="utf-8")
@@ -852,18 +954,23 @@ def build_files():
         "modules": modules,
     }, ensure_ascii=False, indent=2)
     files[".nojekyll"] = ""
-    files["robots.txt"] = "User-agent: *\nAllow: /\n"
+    files["robots.txt"] = (
+        "User-agent: *\nAllow: /\n\n"
+        "Sitemap: %ssitemap.xml\n" % SITE_URL)
     files["_headers"] = """/*.md
   Content-Type: text/plain; charset=utf-8
   Access-Control-Allow-Origin: *
+  X-Robots-Tag: noindex
 
 /*.txt
   Content-Type: text/plain; charset=utf-8
   Access-Control-Allow-Origin: *
+  X-Robots-Tag: noindex
 
 /*.json
   Content-Type: application/json; charset=utf-8
   Access-Control-Allow-Origin: *
+  X-Robots-Tag: noindex
 
 /*
   X-Content-Type-Options: nosniff

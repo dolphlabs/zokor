@@ -3,14 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{TITLE}} · Zokor</title>
+<title>{{SEO_TITLE}}</title>
 <meta name="description" content="{{DESCRIPTION}}">
 <meta name="author" content="Dolphlabs">
 <meta property="og:site_name" content="Zokor">
-<meta property="og:title" content="{{TITLE}} · Zokor">
+<meta property="og:title" content="{{SEO_TITLE}}">
 <meta property="og:description" content="{{DESCRIPTION}}">
 <meta property="og:type" content="website">
-<link rel="canonical" href="https://dolphlabs.github.io/zokor/{{PATH}}">
+<meta property="og:url" content="{{CANONICAL_URL}}">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{{SEO_TITLE}}">
+<meta name="twitter:description" content="{{DESCRIPTION}}">
+<link rel="canonical" href="{{CANONICAL_URL}}">
 <link rel="alternate" type="text/markdown" href="{{MD_PATH}}" title="Markdown">
 <link rel="alternate" type="text/plain" href="{{ROOT}}llms.txt" title="llms.txt">
 <link rel="stylesheet" href="{{ROOT}}style.css">
@@ -20,7 +25,7 @@
 <body>
 <a class="skip" href="#main">Skip to content</a>
 <header class="topbar">
-  <a class="brand" href="{{ROOT}}index.html">
+  <a class="brand" href="{{ROOT}}">
     <img src="{{ROOT}}assets/zokor-header-256.png" width="40" height="40" alt="">
     <span>zokor</span>
   </a>
@@ -57,7 +62,7 @@
     <span>zokor</span></div>
   <p>Generated from <code>README.md</code>, <code>zokor/</code> and <code>examples/</code>.
      Built and maintained by <a href="https://dolphlabs.com" rel="noopener">Dolphlabs</a>.</p>
-  <p class="foot-links"><a href="{{ROOT}}api/index.html">API</a> ·
+  <p class="foot-links"><a href="{{ROOT}}api/">API</a> ·
      <a href="{{ROOT}}llms.txt">llms.txt</a> ·
      <a href="https://github.com/dolphlabs/zokor" rel="noopener">GitHub</a></p>
 </footer>
