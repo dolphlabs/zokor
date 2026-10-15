@@ -7,6 +7,7 @@ fn usage() -> str {
     return "usage:\n" +
            "  zokor new <name> [--db pg] [--zokor-git URL] [--zokor-tag TAG]\n" +
            "  zokor add feature <name> [--entity <singular>]\n" +
+           "  zokor add route <feature> <METHOD> <path> <handler>\n" +
            "  zokor migrate [directory]   (default: migrations; DATABASE_URL required)";
 }
 
@@ -119,9 +120,47 @@ fn new_cmd(args: [str]) {
     println("created " + name + ": cd " + name + " && slangc get && make test");
 }
 
+fn add_route_cmd(args: [str]) {
+    if len(args) != 7 {
+        fail_usage("add route takes: <feature> <METHOD> <path> <handler>");
+    }
+    let feature = args[3];
+    let method = route_method(args[4]);
+    if len(method) == 0 {
+        fail_usage("the method is GET, POST, PUT, PATCH or DELETE");
+    }
+    let path = args[5];
+    if path == "/" {
+        path = "";
+    }
+    for why in [feature_name_problem(feature), route_path_problem(path), handler_name_problem(args[6])] {
+        if len(why) > 0 {
+            io.eprintln("zokor: " + why);
+            exit(2);
+        }
+    }
+    let sr = service_of(".");
+    guard let _service = sr else let e = err_of(sr) {
+        io.eprintln("zokor: " + e);
+        exit(1);
+    }
+    let r = add_route_at(".", feature, method, path, args[6]);
+    guard let written = r else let e = err_of(r) {
+        io.eprintln("zokor: " + e);
+        exit(1);
+    }
+    report(written, "");
+    println("added " + method + " /" + feature + path + " -> " + args[6] +
+            " (answers 501 until written)");
+}
+
 fn add_cmd(args: [str]) {
+    if len(args) >= 3 && args[2] == "route" {
+        add_route_cmd(args);
+        return;
+    }
     if len(args) < 3 || args[2] != "feature" {
-        fail_usage("add takes: feature <name>");
+        fail_usage("add takes: feature <name>, or route <feature> <METHOD> <path> <handler>");
     }
     let f = parse_flags(args, 3, ["--entity"]);
     if len(f.rest) != 1 {
