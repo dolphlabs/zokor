@@ -1,0 +1,3640 @@
+# zokor
+
+> A backend framework for slang.
+
+zokor exists for one reason: a service should spend its code on what it
+does, not on the plumbing every service rewrites — routing, configuration,
+error shapes, limits. It is opinionated about the things that go wrong
+when each service invents its own: **one error envelope**, **one place
+configuration is read**, **one router**.
+
+```slang
+import "http";
+import "zokor";
+
+gc struct App {
+    db: pg.Pool,
+    errors: zokor.Registry,
+}
+
+fn show_org(c: zokor.Ctx[App]) -> http.Response {
+    guard let org = find_org(c.state.db, c.param("id")) else {
+        return zokor.respond(c.state.errors, "org.not_found", c.request_id);
+    }
+    return zokor.ok_json(encode(org));
+}
+
+let r = zokor.new_router(app);
+r.errors = reg;
+r.get("/orgs/:id", show_org);
+r.post("/orgs", create_org);
+```
+
+Middleware attaches to a **group**, not to every handler:
+
+```slang
+r.get("/health", health);            // public
+
+let api = r.group("/api/v1");
+api.before(require_token);           // everything below is guarded
+api.get("/orgs/:id", show_org);
+api.post("/orgs", create_org);
+
+let admin = api.group("/admin");     // nests: /api/v1/admin
+admin.before(require_admin);         // and keeps the parent's hooks
+admin.delete("/orgs/:id", drop_org);
+```
+
+Middleware applies to routes registered **after** it, on that group, and
+each route keeps a copy — so adding a hook later cannot silently change
+a route that already exists. One route on its own:
+`r.guarded(Method.DELETE, "/orgs/:id", drop, [require_admin])`.
+
+A `before` can also **resolve** something for the handler, which is the
+point of doing authentication once at the edge:
+
+```slang
+fn require_token(c: zokor.Ctx[App]) -> opt[http.Response] {
+    guard let user = lookup(c.state.db, c.bearer()) else {
+        return some(zokor.respond(c.state.errors, "unauthorized", c.request_id));
+    }
+    c.set_local("user_id", user.id);     // the handler reads c.local("user_id")
+    return none;
+}
+```
+
+`after` hooks run innermost first (the route's, then the router's), and
+they run even when a `before` stopped the request — so a logging hook
+cannot be skipped by a short circuit.
+
+Methods are a closed set: `r.get`, `r.post`, `r.put`, `r.patch`,
+`r.delete`, `r.head`, `r.options`, `r.trace`, `r.connect`, and
+`r.any([zokor.Method.GET, zokor.Method.POST], "/p", h)` for several at
+once. A verb the set does not contain answers `501`, not `404`: the
+path may well exist.
+
+`Router[S]` is generic over **your** state. A framework cannot know what
+your handlers need — a database pool, a config, your services — and
+before slang had generics the only way to reach them was to pass each as
+its own parameter. A real control plane ended up with a twelve-parameter
+`dispatch` that grew with every new service. Here it is one value you
+declare, and every handler receives it.
+
+## What is in it
+
+| | |
+|---|---|
+| `Router[S]`, `Ctx[S]` | every HTTP method, `:params`, `*wildcards`, before/after middleware, automatic `HEAD` and `OPTIONS`, `Allow` on a 405 |
+| `Registry`, `respond*` | every HTTP failure code, one JSON envelope, field-level validation errors |
+| `load_config`, `require_*` | `.env` plus profiles, startup environment snapshot, per-variable validation, **every** problem reported at once |
+| `parse_form`, `c.upload` | multipart/form-data: limits, type and extension allowlists, filenames made safe |
+| `snake_keys`, `decode_failed`, `checker` | DTOs: wire names, decode errors as field errors, validation |
+| `Json`, `parse`, `jobj` | JSON you did not declare: walk it, build it, render it |
+| `upgrade`, `receive`, `sio_*` | WebSocket (RFC 6455) and Socket.IO, as a state machine you feed bytes |
+| `ok_json`, `created`, … | success responses with the headers they should carry |
+| `files_at`, `r.files(mount)` | static files: traversal-safe, ranges, validators, cache headers |
+| `r.compress(compression())` | gzip for clients that accept it, on bodies worth it |
+| `r.idempotency(store)` | idempotency keys: a retried POST gets the first answer, in memory or Redis |
+| `page_of`, `offset_page`, `cursor_page` | pagination: offset or keyset pages, one envelope, `Link` headers |
+| `new_jobs`, `every`, `handle`, `enqueue` | background jobs: cron schedules in a time zone, a retrying in-memory queue |
+| `preconditions`, `etag_of`, `r.etags()` | conditional requests: `304 Not Modified`, `412` on a lost update, ETag and Last-Modified |
+| `redis_from_config` | a Redis pool from `REDIS_URL`, optional by default |
+| `ServerConfig`, `listen_and_serve_with` | idle/header/body/write timeouts, safe defaults, all overridable |
+| `RateLimiter`, `rate_limit` | per-client sliding-window limits: `429`, `Retry-After`, the registered envelope |
+| `TokenStore`, `bearer_subject` | opaque bearer tokens: crypto-random, issue/lookup/revoke, optional TTL, safe across tasks |
+
+Every public symbol, one line each: [docs/api.txt](docs/api.txt).
+
+
+# Start here
+
+> zokor new writes a service that compiles and passes its tests as it stands, laid out so a person or an agent changing one feature reads one directory: add route registers the route under the feature's prefix (here POST /orders/:id/cancel), behind the feature's authentication, with a handler that answers 501 until it is written and a test that the route is mounted and authenticated.
+
+## Starting a service
+
+`zokor new` writes a service that compiles and passes its tests as it
+stands, laid out so a person or an agent changing one feature reads one
+directory:
+
+```
+make cli                      # builds bin/zokor
+bin/zokor new billing         # or: --db pg for Postgres
+cd billing && slangc get && make test && make run
+bin/zokor add feature orders  # a new slice, wired in (--entity to name its type)
+bin/zokor add route orders POST /:id/cancel cancel_order
+```
+
+`add route` registers the route under the feature's prefix (here
+`POST /orders/:id/cancel`), behind the feature's authentication, with a
+handler that answers 501 until it is written and a test that the route is
+mounted and authenticated.
+
+`zokor check` (run by the project's `make check`) holds a service to that
+layout: imports go `server -> service -> domain`, only `store/` and
+`platform/db` import `pg`, `domain` and `service` do no I/O, SQL is never
+built by concatenating a value, configuration is read only in
+`platform/config`, every public use case takes a `tenant_id`, every
+`server.sl` is behind `require_tenant` (or says `// zokor:public`), and every
+package has tests. It prints `file:line: rule: message`, or one JSON
+object per line with `--json`, and exits 1 on any problem.
+
+```
+src/main.sl            startup only: config, state, mount, serve
+src/platform/config/   every setting, read once
+src/platform/app/      App: the state handlers get as c.state
+src/platform/auth/     who the caller is (API keys -> tenant)
+src/platform/db/       the Postgres pool (--db pg)
+src/<feature>/
+  domain/    types and rules; pure: no I/O, no zokor
+  service/   use cases, and ports.sl: what they need from storage
+  store/     adapters for those ports; store.sl picks one at startup
+  server/    routes, DTOs, error codes
+migrations/  NNN_<feature>.sql (--db pg), applied by `zokor migrate`
+```
+
+Each folder is a package with its tests beside it, and imports run one
+way: `server -> service -> domain`, with `store` implementing the
+service's ports and `platform/app` wiring them together. The example
+feature is a tenant-scoped notes API (create, get, list) behind
+`X-Api-Key`, with fakes in `*_test.sl` so they never ship. `add feature`
+writes the same slice under a new name and inserts it at the `// zokor:`
+markers in `src/platform/app/app.sl` and `src/main.sl`; it refuses a name
+that exists or that the generated code uses, and writes nothing then. The
+project's own `AGENTS.md` gives an agent these rules in a few lines.
+
+A new project pins `zokor` at `v0.2.0`, which is not tagged yet: until it
+is, pass `--zokor-git` and `--zokor-tag` for the commit you build against.
+The templates are real files under `cmd/zokor/templates/`, embedded by
+`make templates`; `tests/scaffold.sh` (part of `make check`) generates
+both kinds of project against this checkout and runs their tests.
+
+## Install
+
+In a new project (`slangc new app` writes the `name` and `version`
+lines), add the pin to `slang.project`. The whole file:
+
+```
+name app
+version 0.1.0
+
+pkg zokor git https://github.com/dolphlabs/zokor tag v0.2.0 dir zokor
+```
+
+`v0.2.0` is the next release and is not tagged yet. Until it is, pin
+`tag v0.1.0 dir src`: the package lived in `src/` before the rename.
+
+Then fetch it, and import it as `import "zokor";`:
+
+```
+slangc get
+```
+
+`dir zokor` points the pin at the package inside the repository, so the
+repository can hold its examples, docs and tests without shipping them
+into your build.
+
+## Requirements
+
+slang's `dev` branch until its next release: typed Postgres mapping needs
+the compiler-backed `pg.rows_as`. zokor also needs generic structs and methods
+and the `dir` sub-directory pin. HTTPS (`TLS_CERT_FILE`) needs `link.tls_accept`
+and served WebSocket and Socket.IO routes need `link.split`, both on
+slang's `dev` branch until its next release.
+
+
+# HTTP APIs
+
+> Three helpers.
+
+## Authentication
+
+Three helpers. Each answers "who is this?" and leaves the policy to you.
+There are no closures, so keys live in your state and a short `before`
+hook passes them in:
+
+```slang
+gc struct App { jwt: zokor.JwtAuth, keys: zokor.ApiKeys }
+struct Claims { sub: str, role: str, exp: int }
+
+fn require_user(c: zokor.Ctx[App]) -> opt[http.Response] {
+    let r: result[Claims, http.Response] = zokor.bearer_claims(c, c.state.jwt);
+    guard let claims = r else let deny = err_of(r) { return some(deny); }
+    c.set_local("user_id", claims.sub);
+    return none;
+}
+```
+
+**JWTs**, HS256 through [dolphlabs/jwt](https://github.com/dolphlabs/jwt):
+- **Configuration.** `jwt_auth_from(cfg)` reads `JWT_SECRETS`
+  (comma-separated, newest first, 32+ bytes each), `JWT_AUDIENCE`,
+  `JWT_ISSUER` and `JWT_LEEWAY` (seconds of clock skew, default 30).
+- **Checks.** `bearer_claims` checks the signature, algorithm and duplicate
+  claims, then `exp` (required), `nbf`, and `aud` and `iss` when
+  configured. Only then does it decode the payload into your own claims
+  type.
+- **Failures.** Every failure gets the same `401` with
+  `WWW-Authenticate: Bearer error="invalid_token"`.
+  `token_problem(token, auth, now)` gives the reason for your logs.
+- **Signing and rotation.** `sign_token(claims, auth)` signs with the
+  newest secret. A token signed with an older listed secret still
+  verifies, so rotation logs nobody out.
+
+**Basic auth:**
+- `basic_credentials(c)` returns the user and password, keeping a colon
+  inside the password.
+- `basic_matches(creds, user, pass)` compares SHA-256 digests in constant
+  time, so neither content nor length leaks through timing.
+- `basic_denied(c, realm)` asks the browser to log in.
+
+**API keys:**
+- `API_KEYS=billing:key1,search:key2`, 24+ bytes each, is read by
+  `api_keys_from(cfg)`.
+- `api_key_client(c, keys)` reads `X-Api-Key` and returns the client's
+  name, so a request can be traced to who sent it.
+- Only SHA-256 digests are kept in memory. Every key is compared, in
+  constant time.
+
+## Operator injection (MongoDB)
+
+MongoDB reads a key starting with `$` as an operator. A login handler that
+passes the body to a query, with a body like
+`{"user":"ada","password":{"$ne":""}}`, matches any password. The guard
+works like `express-mongo-sanitize` and is opt-in:
+
+```slang
+r.mongo_sanitize(zokor.SanitizeMode.REJECT);   // or zokor.sanitize_from(cfg): MONGO_SANITIZE
+```
+
+- **What it checks.** Every key of a JSON body, at any depth and inside
+  arrays, and every query-parameter name, decoded first so `%24where` is
+  `$where`. A key starting with `$` or containing a `.` is refused.
+- **`REJECT`** answers `400 bad_request` naming the key, for example
+  `body key 'password.$ne'`. No `before` hook and no handler runs.
+- **`STRIP`** removes the offending keys and carries on.
+- **What it leaves alone.** Values are never touched, so `"$5 off"` is
+  fine. A body that isn't JSON, or isn't valid JSON, is left for the
+  handler to refuse.
+- **Cost.** With the guard on, a JSON body is parsed once more.
+
+**SQL** has no equivalent on purpose. A blacklist rejects `O'Brien` and
+still misses real attacks. The defence is parameterised queries, which the
+Postgres helpers use exclusively.
+
+## Cookies
+
+```slang
+let theme = c.cookie("theme");                    // "" when not sent
+
+let ck = zokor.new_cookie("theme", "dark");        // HttpOnly, Secure, SameSite=Lax, Path=/
+ck.max_age = 86400 * 30;
+return zokor.set_cookie(resp, ck) ?? resp;         // err names what is wrong
+```
+
+- **Safe defaults.** A new cookie is `HttpOnly`, `Secure`, `SameSite=Lax`
+  and `Path=/`, with no `Domain`, so it's host-only.
+- **Checked before it's sent.** `set_cookie` refuses:
+  - a value with a space, quote, comma, `;`, backslash or control byte,
+    which could add attributes of its own
+  - a bad name
+  - a path or domain carrying `;`
+  - `SameSite=None` without `Secure`, which browsers drop
+  - a `__Host-` or `__Secure-` cookie that breaks its prefix's rules
+  - more than 4,096 bytes
+- **Reading.** `c.cookie(name)` and `c.cookies()` skip malformed pairs the
+  way browsers do, and the first of two same-named cookies wins.
+- **Deleting.** `clear_cookie(resp, name, path, domain)` removes a cookie
+  (`Max-Age=0`, and an `Expires` in 1970 for clients that read only that).
+- **Lifetime.** `max_age` (seconds; `-1`, the default, is a session
+  cookie) is what every browser uses. Set `expires` too, an instant from
+  `timez`, for HTTP clients that only read `Expires`; when both are sent
+  `Max-Age` wins:
+
+  ```slang
+  ck.max_age = 3600;
+  ck.expires = some(timez.now().add(timez.HOUR));   // Expires=<HTTP date>
+  ```
+
+**Signed cookies** carry an HMAC-SHA256 over their name and value, so a
+client can read them but not change them, or move one to another name:
+
+```slang
+let keys = zokor.cookie_keys_from(cfg);            // COOKIE_KEYS=newest,older
+let ck = zokor.signed_cookie("uid", "42", keys) ?? zokor.new_cookie("uid", "");
+let uid = zokor.signed_value(c, "uid", keys) ?? "";  // none when forged
+```
+
+The first key signs and every listed key verifies. To rotate, put the new
+key first and keep the old one until the cookies it signed have expired;
+nobody is logged out. Keys must be at least 32 bytes. Signatures are
+compared in constant time. Signed is not encrypted: never put a secret in
+a cookie.
+
+## Conditional requests
+
+A client that already holds the current version gets `304 Not Modified`
+and no body; a write made against a version that is no longer current
+gets `412` instead of overwriting someone else's change (RFC 9110 §13):
+
+```slang
+fn get_doc(c: zokor.Ctx[App]) -> http.Response {
+    let doc = load(c);                                 // has .version, .updated_at
+    let tag = zokor.etag_of(to_bytes(to_str(doc.version)));
+    if let stop = zokor.preconditions(c, tag, some(doc.updated_at)) {
+        return stop;                                   // 304, or 412 on a write
+    }
+    let resp = zokor.ok_json(json.encode(doc));
+    return zokor.with_validators(resp, tag, some(doc.updated_at));
+}
+```
+
+- **One call for reads and writes.** `preconditions` evaluates `If-Match`,
+  `If-Unmodified-Since`, `If-None-Match` and `If-Modified-Since` in the
+  order RFC 9110 §13.2.2 sets. A PUT that sends back the ETag it read in
+  `If-Match` updates only if nobody changed the resource since: optimistic
+  concurrency, no lock. Pass `""` as the tag for a resource that does not
+  exist yet, and `If-None-Match: *` means "create, never replace".
+- **Comparisons as the RFC has them.** `If-Match` compares strongly, so a
+  `W/` tag never matches; `If-None-Match` compares weakly. Tag lists,
+  `*`, and all three HTTP date forms are read; a date that is not a valid
+  HTTP date is ignored, and a malformed tag never matches.
+- **`r.etags()`**, opt in: every `200` answer to a GET or HEAD gets an
+  ETag hashed from its body, and a matching `If-None-Match` gets a `304`
+  that keeps the other headers (`Cache-Control`, `Vary`, …). A response
+  with its own ETag is left alone. It hashes every such body, measured in
+  process (`bench/conditional`): about 1.5 µs a request at 128 bytes,
+  2.7 µs at 1 KB and 20 µs at 16 KB. With nothing turned on, the request
+  path costs what it did. For a large body, a version you already have
+  (`preconditions`) is far cheaper than hashing the bytes.
+
+## Security headers
+
+On by default, on every response: dynamic, static, errors, and the 500
+after a panic.
+
+```
+content-security-policy: default-src 'none'; frame-ancestors 'none'
+strict-transport-security: max-age=31536000; includeSubDomains
+x-content-type-options: nosniff
+x-frame-options: DENY
+referrer-policy: no-referrer
+```
+
+- **CSP.** An API answers JSON, so its CSP allows nothing: a response
+  opened in a browser runs no script and can't be framed.
+- **HSTS.** Browsers ignore HSTS on plain HTTP, so it's harmless behind a
+  proxy that ends TLS, and right when the proxy doesn't.
+- **COOP and CORP** are opt-in: `same-origin` CORP breaks legitimate
+  cross-origin embeds.
+- **Handlers win.** A handler that sets one of these headers with
+  `with_header` keeps its own value.
+
+| Setting | Values |
+|---|---|
+| `SECURITY_HEADERS` | `false` turns them all off |
+| `CONTENT_SECURITY_POLICY` | a policy, or `off` |
+| `HSTS_MAX_AGE` | seconds; `0` is off |
+| `HSTS_INCLUDE_SUBDOMAINS`, `HSTS_PRELOAD` | `true` / `false` |
+| `FRAME_OPTIONS` | `DENY`, `SAMEORIGIN`, `off` |
+| `REFERRER_POLICY` | any standard policy, or `off` |
+| `CROSS_ORIGIN_OPENER_POLICY`, `CROSS_ORIGIN_RESOURCE_POLICY` | the standard values |
+
+`r.security_headers(zokor.security_from(cfg))` applies the settings, and
+`zokor.no_security_headers()` turns them off. Bad values are refused with
+the fix: an unknown frame option or referrer policy, preload without a
+year and subdomains, or a CSP containing a line break. Static routes are
+pre-rendered with the headers, so they cost nothing per request there. On
+a dynamic response, the five lines add about 10 allocations.
+
+## CORS
+
+Off by default. One call turns it on:
+
+```slang
+r.cors(zokor.cors_from(cfg));   // CORS_ORIGINS=https://app.example.com,https://*.example.org
+```
+
+or `r.cors(zokor.cors_policy(["https://app.example.com"]))` from code.
+
+| Setting | Meaning | Default |
+|---|---|---|
+| `CORS_ORIGINS` | exact origins, `https://*.example.com` for subdomains, or `*` alone | none (off) |
+| `CORS_METHODS` | allowed methods | `GET, HEAD, POST, PUT, PATCH, DELETE` |
+| `CORS_HEADERS` | request headers a page may send | `Content-Type, Authorization, X-Request-Id` |
+| `CORS_EXPOSE` | response headers a page may read | `X-Request-Id` |
+| `CORS_CREDENTIALS` | allow cookies and `Authorization` | `false` |
+| `CORS_MAX_AGE` | seconds a browser may cache a preflight | `600` |
+
+The router applies it, so it isn't one more `before`:
+- **Preflights.** A preflight to a path that exists gets a `204` with the
+  allowed methods and headers before routing. Neither an auth hook nor a
+  route's own `OPTIONS` handler can turn it away, and browsers send
+  preflights without credentials.
+- **Every response.** Any answer to an allowed origin carries its headers:
+  the 404, the 422, a `before`'s 401 and the 500 after a panic. Without
+  that, the page sees a CORS error instead of the real one.
+- **`Vary: Origin`.** It's sent whenever the answer depends on the origin,
+  so a shared cache never hands one origin's answer to another.
+- **Other origins.** An origin that isn't allowed gets no CORS headers, and
+  the browser withholds the response from the page.
+
+A policy is checked before use, and every problem names the fix:
+- an origin with a path or trailing slash, which an `Origin` header never has
+- a missing scheme
+- upper case
+- a wildcard anywhere but a leading `*.`
+- `*` together with credentials, which browsers refuse
+
+`https://*.example.com` matches `api.example.com` and `a.b.example.com`,
+but never `example.com` or `evilexample.com`. CORS protects users'
+browsers, not your server: it is no substitute for authentication.
+
+## Health and readiness
+
+```slang
+r.health();                      // GET /healthz and GET /readyz
+r.ready_check("db", db_ready);   // what /readyz waits on
+
+fn db_ready(s: App) -> result[int, str] {
+    let q = s.db.query("select 1");
+    guard let _rows = q else let e = err_of(q) {
+        return err(to_str(e));
+    }
+    return ok(0);
+}
+```
+
+`/healthz` is liveness: `200 {"status":"ok"}` whenever the process is
+serving, and it never touches a dependency, so a database outage cannot
+make the orchestrator restart every replica. `/readyz` runs every check at
+once and answers `200 {"status":"ok","checks":{"db":"ok"}}`, or `503` with
+`"failing"` or `"timeout"` against each check that did not pass. It also
+answers `503 shutting_down` once `SIGTERM` arrives, so a load balancer stops
+sending traffic before the drain.
+
+- **Bounded.** A probe waits at most 0.9s (`r.ready_timeout(ns)`), inside
+  Kubernetes' default 1s probe timeout.
+- **Isolated.** A check runs in its own task, so a panic fails that check,
+  not the probe. A check still running from an earlier probe is joined,
+  not started again, so a hung database costs one task, not one per probe.
+- **No leaks.** The body names checks, never errors: a driver's message
+  carries hosts and user names. The reason goes to the server's log as a
+  `WARN [Health]` line, once each time a check starts failing, changes
+  reason or recovers.
+- **Out of the way.** The router answers these paths only when no route
+  claims them, so your own `/healthz` wins. No `before` runs on them,
+  since an auth hook would fail the probes. `r.health_at(live, ready)`
+  mounts them elsewhere.
+
+## Static files
+
+```slang
+let mr = zokor.files_at("/assets", "./public");     // err if not a directory
+guard let assets = mr else let e = err_of(mr) { println(e); exit(1); }
+assets.max_age = 31536000;                          // hashed names: a year
+assets.immutable = true;
+r.files(assets);
+```
+
+A GET or HEAD under the prefix that no route claims is a file from the
+directory:
+
+- **Traversal-safe.** An encoded separator (`%2f`, `%5c`), a `..`, `.` or
+  dot-file segment (`.env`, `.git`), a backslash or a NUL is a 404, and
+  the file's real path, every symlink resolved, must be inside the
+  directory's real path or it is a 404 too: a link cannot lead out.
+- **Index files.** A directory answers `index.html` (`mount.index`).
+- **Validators.** ETag from size and modification time, Last-Modified,
+  and `304`/`412` through `preconditions`.
+- **Ranges.** One `Range: bytes=` range is a `206` with `Content-Range`
+  (`If-Range` honoured); one past the end a `416`; several ranges get the
+  whole file, as RFC 9110 allows.
+- **Headers.** Content-Type by extension (unknown types are
+  `application/octet-stream`, which `nosniff` keeps from being rendered),
+  `Cache-Control` from `max_age` (`no-cache` by default: revalidate every
+  time, cheap with the validators) and `Accept-Ranges`.
+
+Files are read into memory, up to `max_size` (64 MB), and the read
+blocks a worker: serve an app's own assets this way, and put a CDN in
+front of large or busy ones.
+
+## Content negotiation and redirects
+
+Compile the representations a handler can serve at startup:
+
+```slang
+let made = zokor.new_negotiator(["application/json", "text/html"], zokor.accept_limits());
+guard let formats = made else let e = err_of(made) { println(e); exit(1); }
+// Keep formats in the router's state. In the handler:
+let picked = zokor.negotiate(c, c.state.formats);
+guard let media = picked else let bad = err_of(picked) { return bad; }
+// Render the selected representation, then return it with media as Content-Type.
+```
+
+`negotiate` combines repeated Accept lines, preserving quoted parameters.
+It honors q weights, wildcards and parameter specificity: a specific
+`q=0` excludes that representation even when a wildcard permits others.
+Equal preferences use specificity, client range order, then startup offer
+order. An absent header selects the first offer; an empty header or no
+acceptable offer produces the registered `not_acceptable` 406. Malformed
+or over-limit headers produce `bad_request` 400 with an `Accept` field.
+All these responses carry `Vary: Accept`, alongside compression and CORS
+fields. `Negotiator.choose` provides selection without a request context.
+
+`accept_limits()` defaults to 8 KB of combined header values, 64 list
+members, 32 parameters per range (including q), 32 offers and 1 KB per
+offer. Set these before constructing the negotiator. Configure once and
+treat its compiled vectors as immutable.
+
+```slang
+let response = zokor.redirect_to("/orders/123"); // checked 303, POST/redirect/GET
+let rules = zokor.redirect_rules();             // relative references, 8 KB limit
+rules.allow_external = true;
+let moved = zokor.redirect_checked(307, "https://app.example.com/orders", rules);
+```
+
+Checked helpers return a result; they validate 301/302/303/307/308 and
+preserve the destination with an empty body. Relative paths, queries and
+fragments are accepted. External HTTP(S) URLs require explicit opt-in;
+network-path references (`//host`), credentials, raw whitespace, controls,
+backslashes and malformed percent escapes are refused. Other bytes must
+be percent-encoded. Errors name the field without echoing the destination.
+For variable external destinations, the application chooses its permitted
+hosts. The existing `redirect(status, location)` remains the raw
+constructor for destinations the application already controls.
+
+## Compression
+
+```slang
+r.compress(zokor.compression());       // min_size 1 KB, level 1, text-like types
+```
+
+A response is gzipped when the client's `Accept-Encoding` allows it (q
+values honoured: `gzip;q=0` refuses it), it is a 2xx other than 204/206
+to a method other than HEAD, its body is at least `min_size`, its type is
+text, JSON, JavaScript, XML, SVG or form data (or ends in `+json`/`+xml`),
+and it has no `Content-Encoding` of its own. Every response that could
+have been gzipped carries `Vary: Accept-Encoding`; a strong ETag becomes
+weak. Level 1 is the default: on API JSON it keeps nearly all of level
+5's saving (14 KB: 36 µs to 10% of the size, against 74 µs) for half the
+CPU. Static routes are sent as rendered.
+
+**BREACH.** Over TLS, compressing a response that holds a secret next to
+input an attacker controls lets them recover the secret from sizes. Keep
+pages that mix the two (a CSRF token and reflected search terms) on a
+router without compression.
+
+## Idempotency keys
+
+A client that retries a POST after a timeout must not charge twice. With
+`Idempotency-Key` (the IETF draft), it gets the first answer instead:
+
+```slang
+let store = zokor.idempotency_redis(redis_pool);   // or idempotency_in_memory()
+store.scope_local = "user_id";                       // set by your auth `before`
+r.idempotency(store);
+```
+
+- **Runs once.** A POST or PATCH with the header runs; its answer is kept
+  for 24 hours (`store.ttl`). The same request again gets that answer,
+  with `Idempotent-Replayed: true`, and the handler does not run.
+- **Refuses misuse.** The key again while the first is still running:
+  `409`. The key with a different method, path or body: `422`. A key that
+  is not 1–255 printable characters: `400`. `store.required = true` makes
+  the header mandatory on POST and PATCH.
+- **Scoped.** Keys are per method, route and caller (`scope_local` names
+  the local your authentication sets), so one user cannot replay
+  another's answer.
+- **Only final answers.** A 5xx, 408 or 429 is not kept: the next retry
+  runs again. Neither is a body over `store.max_body` (1 MB). A handler
+  that panics leaves its key "running" for `store.lock_ttl` (30 s).
+- **Shared.** The Redis store claims a key with `SET NX PX`, so instances
+  behind a balancer agree; if Redis cannot be reached the request is
+  refused with 503 rather than risk running twice. The in-memory store is
+  for a single instance.
+
+## Pagination
+
+Offset pages (`?limit=20&offset=40`) and keyset pages (`?limit=20&cursor=…`)
+answer in the same envelope, so a client reads every list the same way:
+
+```slang
+fn list_orders(c: zokor.Ctx[App]) -> http.Response {
+    let pr = zokor.page_of(c, 20, 100);            // default 20, at most 100
+    guard let p = pr else let bad = err_of(pr) { return bad; }   // 422, named
+    let after = zokor.cursor_parts(p);             // [] on the first page
+    // WHERE (created, id) < ($1, $2) ORDER BY created DESC, id DESC LIMIT p.fetch()
+    let rows = load_orders(c, after, p.fetch());
+    return zokor.cursor_page(c, p, rows, order_key);
+}
+
+fn order_key(o: Order) -> [str] { return [o.created, to_str(o.id)]; }
+```
+
+```json
+{"data":[...],"page":{"limit":20,"cursor":"WyIyMDI2...","next":"WyIyMDI2...","total":null}}
+```
+
+- **One row past the page.** `p.fetch()` is `limit + 1`: an extra row
+  means there is a next page, without a `COUNT(*)`. `offset_page` takes an
+  optional total when the handler has one.
+- **Links.** A `Link` header (RFC 8288) carries `rel="next"` (and
+  `rel="prev"` for offset pages), keeping the request's other query
+  parameters.
+- **Checked.** `limit` must be 1 to the maximum; `offset` 0 to 1,000,000
+  (deeper: use a cursor); not both `offset` and `cursor`; a cursor this
+  API did not issue is refused. Each problem is a named field in a 422.
+- **Keyset is the one to use on big tables**: the next page is an index
+  range, and rows inserted between requests are neither skipped nor
+  repeated. A cursor is opaque base64url of the last row's sort key; a
+  client can forge one, but only to read another position of a list it
+  may read anyway, so authorise the list, and never put a secret in a key.
+
+## JSON
+
+slang already does the part Go does badly: you decode into a struct,
+**a missing field is an error rather than a silent zero**, and the
+message names the field. No tags, no `interface{}`, no `omitempty`
+guessing. zokor adds the four things that are still missing.
+
+**A DTO, decoded and reported.** The wire is camelCase, your struct is
+snake_case, and there are no struct tags — so rewrite the keys:
+
+```slang
+gc struct CreateOrg { name: str, plan: str, seats: i32, website: opt[str] }
+
+let r: result[CreateOrg, str] = json.decode(zokor.snake_keys(c.body_str()));
+guard let dto = r else let e = err_of(r) {
+    return zokor.decode_failed(c.state.errors, e, c.request_id);
+}
+```
+
+`decode_failed` turns slang's own message into the standard envelope
+with the **field** named, so a client gets the same shape for a bad type
+as for a bad value:
+
+```json
+{"error":{"code":"validation_failed","status":422,
+          "fields":[{"field":"seats","reason":"expected a number, got a string"}]}}
+{"error":{"code":"validation_failed","status":422,
+          "fields":[{"field":"plan","reason":"is required"}]}}
+```
+
+**Values, checked all at once.** Decoding says a field is a string; it
+does not say it is an email between 3 and 40 characters. A `checker`
+collects every problem, because a client fixing one field per request is
+a client making five requests:
+
+```slang
+let v = zokor.checker();
+let name  = v.req_str(body, "name", 1, 80);
+let email = v.req_email(body, "email");
+let role  = v.req_one_of(body, "role", ["admin", "member"]);
+let age    = v.opt_int(body, "age", 0, 150, 0);
+if v.failed() {
+    return zokor.respond_fields(c.state.errors, "validation_failed",
+                                v.fields, c.request_id);
+}
+```
+
+`req_str`, `req_int`, `req_bool`, `req_email`, `req_url`, `req_uuid`,
+`req_one_of`, `req_strs`, `req_obj`, `opt_str`, `opt_int`, plus `note`
+for a rule of your own and `under("address", inner)` to report a nested
+check as `address.city`.
+
+**A shape nobody declared** — a webhook, a passthrough, somebody else's
+field. A missing key gives `Null` rather than an error, so a chain never
+has to be guarded at every step:
+
+```slang
+guard let body = c.json_body() else { ... }
+
+body.get("type").str_or("unknown")
+body.path("data.customer.address.city").str_or("nowhere")
+body.path("data.items.0.sku").str_or("none")
+body.path("data.items").size()
+body.has_key("note")          // present, even if null: PATCH semantics
+```
+
+**Building a response**, instead of concatenating strings and getting
+the quoting wrong:
+
+```slang
+zokor.jobj()
+    .set_str("id", id)
+    .set_int("seats", n)
+    .set_opt_str("website", dto.website)     // absent when none
+    .set("tags", zokor.jarr().add_str("a").add_str("b"))
+    .render()
+```
+
+Numbers keep the text they arrived as, so a 64-bit id survives a round
+trip; `\uXXXX` escapes and surrogate pairs decode; and the parser
+refuses what JSON refuses — a leading zero, a lone surrogate, an
+unescaped control character, nesting past 64 deep.
+
+## Uploads
+
+`multipart/form-data` is a format where being lax is a vulnerability:
+the client picks the delimiter, names the parts and supplies the
+filenames. A handler says what it accepts; anything else comes back as
+a registered failure and never reaches it.
+
+```slang
+fn upload_avatar(c: zokor.Ctx[App]) -> http.Response {
+    let rules = zokor.with_max_file_bytes(
+        zokor.uploads_allowing(["image/png", "image/jpeg"]), 1048576);
+
+    let r = c.upload(rules);          // POST/PUT/PATCH only
+    guard let form = r else let e = err_of(r) {
+        return zokor.respond_with(c.state.errors, e.code, e.detail, c.request_id);
+    }
+    guard let avatar = zokor.file(form, "avatar") else {
+        return zokor.respond(c.state.errors, "validation_failed", c.request_id);
+    }
+
+    zokor.value(form, "title");        // the non-file fields
+    zokor.files_for(form, "docs");     // <input multiple>
+    avatar.filename;                   // safe to use as one path segment
+    avatar.raw_filename;               // what the client actually sent
+    return zokor.ok_json("{\"bytes\":" + to_str(len(avatar.data)) + "}");
+}
+```
+
+**Filenames are made safe**: everything before the last `/` or `\` is
+dropped, control characters go, a leading dot goes, and a name that is
+empty after that becomes `upload`. `../../etc/passwd` arrives as
+`passwd`. The name the client sent is kept as `raw_filename` for logs.
+
+**Limits are the caller's**, checked while the body is walked: parts,
+files, bytes per file, bytes per field, total bytes, header size,
+filename length. Over a size limit is a `413`; a body that is not
+well-formed multipart is a `400`; a type or extension that is not
+allowed is a `415`.
+
+**Refused rather than guessed at**: a Content-Type that is not
+multipart or has no boundary, a boundary that is empty or over 70
+characters, a body that stops before its closing delimiter, a part with
+no `Content-Disposition` or no name, unterminated or oversized part
+headers, and a `Content-Transfer-Encoding` the web does not use. A file
+sent with no `Content-Type` is refused unless you turn
+`require_content_type` off.
+
+A body arrives whole, so this does not stream: set `max_total_bytes`
+for what a service can afford to hold.
+
+## Rate limits and bearer tokens
+
+Both are values in your state, shared by every request and safe to use
+from concurrent handlers (each holds a mutex).
+
+```slang
+gc struct App {
+    errors: zokor.Registry,
+    limiter: zokor.RateLimiter,
+    tokens: zokor.TokenStore,
+}
+
+// 100 requests per client per minute; tokens last a day. Durations
+// are int nanoseconds, written out: `60 * 1000000000` overflows in
+// slang today (a product of two literals is computed in 32 bits).
+let app = App {
+    errors: zokor.new_registry(),
+    limiter: zokor.new_rate_limiter(100, 60000000000),
+    tokens: zokor.new_token_store(86400000000000)
+};
+
+fn limit(c: zokor.Ctx[App]) -> opt[http.Response] {
+    return zokor.rate_limit(c, c.state.limiter, c.header("x-api-key"));
+}
+
+fn auth(c: zokor.Ctx[App]) -> opt[http.Response] {
+    guard let user = zokor.bearer_subject(c, c.state.tokens) else {
+        return some(zokor.respond(c.state.errors, "unauthorized", c.request_id));
+    }
+    c.set_local("user", user);
+    return none;
+}
+```
+
+- **Refusals.** `rate_limit` answers a refused request with the
+  registered `rate_limited` code (`429`, through your renderer if you set
+  one) and `Retry-After` in whole seconds. Refused requests don't count
+  against the window.
+- **Headers on every answer.** Allowed or refused, a response carries
+  `RateLimit-Limit`, `RateLimit-Remaining` and `RateLimit-Reset` (seconds
+  until the next request frees up), so well-behaved clients can pace
+  themselves.
+- **Keys.** The key is yours to choose: an API key, a user, an address.
+  An empty key shares one "anonymous" budget. `rate_limit_client(c, l)`
+  keys on the client's address, resolved through `TRUSTED_PROXIES`, so a
+  client can't escape its limit or spend someone else's by sending a
+  header.
+- **Concurrency.** The limiter is split into 16 shards, each with its own
+  lock, so tasks checking different clients don't wait on each other.
+  With 8 tasks: 2.0 µs a check, against 17.3 µs with a single lock.
+- **Testing.** `take_at(key, now)` and `check_at(key, now)` take the
+  clock as a parameter, so tests need no sleeps.
+
+A `before` hook that lets a request through can still add headers to its
+answer with `c.add_header(name, value)`: the limiter uses it, and so can
+a hook that refreshes a cookie.
+
+`TokenStore.issue(subject)` returns a 64-hex-character token from
+`crypto.rand`; `lookup(token)` gives the subject back (expired tokens
+are dropped), `revoke(token)` logs one session out and
+`revoke_subject(subject)` all of them. Tokens live in memory: they do
+not survive a restart and are not shared between instances.
+
+
+# Data and storage
+
+> slang's pg package is the driver.
+
+## Postgres
+
+slang's `pg` package is the driver. zokor adds what every service writes on
+top of it, and nothing that bypasses it:
+
+```slang
+let pr = zokor.pg_from_config(cfg);          // DATABASE_URL, DB_POOL_SIZE (10)
+guard let db = pr else let e = err_of(pr) { log.error(e); exit(1); }
+
+struct User { id: int, email: str, name: opt[str] }
+
+fn list_users(c: zokor.Ctx[App]) -> http.Response {
+    let r: result[[User], str] = zokor.query_all(c.state.db,
+        "select id, email, name from users where org = $1",
+        [pg.arg_int(c.param_int("org", 0))], until_of(time.mono() + 2000000000));
+    guard let users = r else let e = err_of(r) {
+        return zokor.db_failure(c.errors, e, c.request_id);
+    }
+    return zokor.ok_json(json.encode(users));
+}
+```
+
+- **Rows into structs, by column name.** `query_all`, `query_one` (none
+  when there's no row), `conn_query_all` inside a transaction, and
+  `rows_as` use slang's compiler-backed `pg.rows_as`, binding column names
+  once without rendering intermediate JSON text:
+  - integers, floats and numerics become numbers (NaN and infinity become
+    strings)
+  - booleans stay booleans
+  - `json`/`jsonb` decode into nested structs
+  - NULL becomes `none`, so use an `opt` field
+  - `bytea` reads into `bytes` or a base64 string
+  - `timestamptz` and `timestamp` become RFC 3339 strings, so a
+    `timez.Time` field reads them (a `timestamp` without a zone as UTC),
+    and a `str` field gets the text an API would send
+  - text and uuid become strings
+
+  A column your struct doesn't name is ignored. A field the query doesn't
+  return must be an `opt`, or the result names the missing field. Invalid
+  cell storage and type mismatches return errors with row and field context.
+- **Transactions.** `transaction(db, arg, body, deadline)` runs
+  `body(conn, arg)` between `BEGIN` and `COMMIT`. An `err`, a failed
+  `COMMIT` or a panic in the body rolls back, and the connection goes back
+  to the pool every way out. There are no closures, so what the body
+  needs comes in as `arg`.
+- **Failures in your envelope.** `db_failure(reg, e, rid)` picks the
+  status from the SQLSTATE:
+  - unique violation: `409 already_exists`
+  - foreign key: `409 conflict`
+  - not null, check, or a bad value: `422`
+  - serialization, deadlock or timeout: `503`
+  - anything else: `500`
+
+  The server's message, which names tables, columns and values, never
+  reaches the client. `is_unique_violation(e)` is there for the common
+  branch.
+- **Parameterised queries only.** Every helper takes `$1`-style SQL and
+  `pg.Arg` values, and nothing builds SQL from strings. That's the SQL
+  injection defence.
+
+## Redis
+
+Optional the same way any dependency should be: a service with no
+`REDIS_URL` builds no pool and opens no connection.
+
+```slang
+let cfg = zokor.load_config();
+let pr = zokor.redis_from_config(cfg);   // reads REDIS_URL, REDIS_POOL_SIZE
+guard let pool = pr else let e = err_of(pr) {
+    println(e);       // "REDIS_URL is not set" -- your call whether that's fatal
+    exit(1);
+}
+```
+
+That is the whole of it: a pool from config, nothing more. Everything
+past that point is slang's own `redis` package — `redis.acquire`,
+`redis.get`/`set`/`hset`/`zadd`/…, transactions, pub/sub, streams,
+cluster routing — called directly, the same way any other zokor
+service reaches its dependencies. Wrapping the other ~150 functions
+here would only be a second place for that API to drift from the one
+slang ships.
+
+```slang
+let cr = redis.acquire(pool, deadline);
+guard let conn = cr else let e = err_of(cr) {
+    return zokor.respond(c.state.errors, "unavailable", c.request_id);
+}
+let r = redis.get(conn, "session:" + token, deadline);
+redis.release(pool, conn);
+```
+
+## Migrations
+
+`make cli` builds `bin/zokor`. Run `bin/zokor migrate [directory]` with
+`DATABASE_URL` configured; the default directory is `migrations`. Files
+are numbered forward-only SQL, for example `001_create_users.sql`.
+Versions must be positive and unique; descriptions use ASCII letters,
+digits, underscores or hyphens. Files are ordered numerically.
+
+The runner checks every applied filename and SHA-256 checksum, takes a
+Postgres transaction advisory lock, and applies the whole pending batch
+in one transaction. A failure rolls back SQL and history together. Keep
+applied files unchanged and present; add a new file for every change.
+SQL can contain multiple statements, comments and dollar-quoted function
+bodies. Explicit transaction/session commands and COPY are refused;
+nontransactional operations such as CREATE INDEX CONCURRENTLY belong in
+a separate operational procedure.
+
+Services can call `load_migrations(dir, migration_limits())` and
+`migrate(pool, migrations, deadline)` at startup. File limits are caller
+configurable; the CLI reads `MIGRATION_MAX_FILES` (1000),
+`MIGRATION_MAX_FILE_BYTES` (1 MiB), `MIGRATION_MAX_TOTAL_BYTES` (16 MiB),
+and `MIGRATION_TIMEOUT_SECONDS` (60, maximum 86400). Errors exit nonzero;
+success prints the applied count, including zero for an unchanged schema.
+
+
+# Operations
+
+> Read once, at startup, into a value you hold.
+
+## Configuration
+
+Read once, at startup, into a value you hold. Nothing reads the
+environment while serving: a handler that calls `getenv` changes
+behaviour without a deploy and cannot be tested without setting process
+state.
+
+```slang
+let cfg = zokor.load_config();                 // .env + .env.<profile>, then environment
+// or: zokor.load_config_profile("test")
+// or: zokor.load_config_from("/etc/app/env")    // one explicit file
+
+let port = zokor.require_port(cfg, "PORT");
+let dsn  = zokor.require_dsn(cfg, "DATABASE_URL");
+let from = zokor.require_email(cfg, "ALERT_FROM");
+let mode = zokor.require_one_of(cfg, "MODE", ["dev", "prod"]);
+
+let ready = zokor.check(cfg);
+guard let _ok = ready else let e = err_of(ready) {
+    println(e);
+    exit(1);
+}
+```
+
+Profiles are `dev`, `test` and `prod`. `load_config()` selects
+`ZOKOR_PROFILE` from the startup environment or base file, defaulting to
+`dev`, and
+loads `.env` followed by `.env.<profile>` if present. The profile file
+wins over the base file; environment values win over both, including
+empty values. `load_config_profile("test")` explicitly selects the test
+file even if the environment selector says otherwise. `cfg.profile`
+is the effective file-selection profile; `cfg.sources` lists the regular
+files attempted in precedence order.
+
+Values are captured once: changing the process environment after loading
+does not change `get`, `str_or` or the other accessors. For tests and
+fakes, `config_from_values(map)` owns a copy of supplied values and reads
+no environment. `load_config_from(path)` still loads exactly one file,
+with no profile overlay, and captures environment overrides once.
+
+`config_load()` supplies options for `load_config_with(options)`:
+`profile` (empty selects the startup selector), `directory` (`.`), and
+`max_file_bytes` (1 MiB per file). `load_config_file(path, limit)` is the
+single-file variant with a caller-selected bound. Missing files are
+optional; directories, NUL bytes, unreadable files and oversized files
+are errors. All loading and required-value problems reach `check(cfg)`
+together. Profile names cannot select arbitrary paths.
+
+Every problem comes back together, because a service with six unset
+variables should say so once instead of failing six times:
+
+```
+configuration is not usable (read from .env and the environment):
+  SERVICE_NAME is required but not set
+  PORT must be a TCP port (1-65535), got '0'
+  DATABASE_URL is required but not set
+  ALERT_FROM must be an email address, got 'ops@'
+  MODE must be one of: dev, prod, got 'staging'
+```
+
+Values under a name that looks like a secret (`*_TOKEN`, `*_PASSWORD`,
+`*_URL`, `*_KEY`, …) are reported as `(24 characters, hidden)`, because
+this text gets logged.
+
+Validators: `require`, `require_int`, `require_range`, `require_port`,
+`require_bool`, `require_float`, `require_email`, `require_url`,
+`require_dsn`, `require_host`, `require_ipv4`, `require_uuid`,
+`require_one_of`, `require_duration`, `require_min_len`,
+`require_max_len`, and `optional_url` / `optional_one_of` / `optional_dsn`
+for values that must be valid *when set*.
+
+## Server timeouts, limits, and shutdown
+
+Safe defaults, not infinite ones: `listen_and_serve` uses them without
+asking, and `listen_and_serve_with` takes a `ServerConfig` to change
+any of them.
+
+```slang
+let sc = zokor.server_config_from(cfg);
+// IDLE_TIMEOUT, READ_HEADER_TIMEOUT, READ_BODY_TIMEOUT, WRITE_TIMEOUT,
+// MAX_REQUEST_BYTES, MAX_REQUESTS_PER_CONN, SHUTDOWN_TIMEOUT, REQUEST_IDS,
+// TRUSTED_PROXIES, PROXY_HEADER, LOG_FORMAT, LOG_LEVEL, LOG_REQUESTS,
+// MAX_CONNECTIONS, TLS_CERT_FILE, TLS_KEY_FILE, TLS_CLIENT_CA_FILE,
+// TLS_HANDSHAKE_TIMEOUT
+spawn zokor.listen_and_serve_with(r, port, sc);
+```
+
+Every dynamic request is answered under a **request id**: the client's own
+`X-Request-Id` when it is 1-64 characters of `[A-Za-z0-9._-]` (so a
+proxy's id threads through your logs), a fresh `req_<32 hex>` otherwise.
+It comes back as `X-Request-Id` and in every error envelope, the 500 after
+a panicking handler included, and handlers read it as `c.request_id`.
+Static routes are fixed bytes and carry none. `REQUEST_IDS=false` (or
+`request_ids: false`) turns it off.
+
+`c.client_ip` is **who the request came from**. By default that is the
+socket's peer, whatever headers the client sent. Behind a load balancer or
+reverse proxy, list it in `TRUSTED_PROXIES` (comma-separated IPv4 addresses
+and CIDRs, e.g. `10.0.0.0/8,192.168.1.10`): zokor then reads the proxy's
+`X-Forwarded-For` from the right, past every trusted address, and takes the
+first one that is not -- so a hop the client wrote itself never wins.
+`PROXY_HEADER=forwarded` reads RFC 7239 `Forwarded` instead; only one header
+is ever believed, so a client cannot add the one your proxy does not set.
+A bad entry (`10.0.0.1/8` has host bits set: did you mean `10.0.0.0/8`?) is
+reported by `check(cfg)` with every other problem.
+
+Four separate timeouts, not one, because "how long should this wait"
+has different honest answers depending on what a connection is doing:
+`idle_timeout` (default 60s) governs waiting for a request to start on
+a connection that might legitimately sit open a while; `header_timeout`
+(5s) and `body_timeout` (30s) govern a request that has started
+arriving and then stalls -- the slow-loris shape a tight window exists
+to catch; `write_timeout` (10s) bounds sending the response,
+separately, since a client that stopped reading is a different problem
+than one that stopped sending.
+
+`max_request_bytes` (default 16KB) refuses an oversized request at
+read time -- `431` if the headers alone never complete, `413` if a
+declared body is bigger than the buffer -- never a silent drop after
+buffering. `max_requests_per_conn` (default 100,000) closes a
+connection after it, answering the request that hit the limit
+normally first.
+
+`max_connections` (default 10,000, `MAX_CONNECTIONS`) caps open
+connections across every acceptor. A connection past it is answered `503`
+with `Retry-After: 1` and closed at once, so a load balancer retries
+elsewhere instead of waiting in the accept backlog. Refusals are logged at
+most once a second. Raise the process's open-file limit (`ulimit -n`) above
+the cap. If `accept` fails anyway (out of file descriptors), the loop logs
+it once and backs off from 5ms up to 1s instead of spinning. Measured on
+Linux at the limit: a full core spinning before, about 2% after.
+
+On `SIGTERM`/`SIGINT`, `listen_and_serve` stops accepting immediately
+and gives in-flight connections up to `shutdown_timeout` (default 30s)
+to finish on their own before returning anyway -- long enough for
+ordinary requests to complete, bounded so one stuck connection cannot
+hang a deployment's rollout forever.
+
+A panicking handler answers `500` instead of dropping the connection
+or taking the process down -- the handler call runs isolated in its
+own task, and the connection closes right after answering rather than
+serving more requests on whatever state the panic left behind. The
+static fast path (`GET /`, no handler call) never pays for this
+isolation, since nothing there can panic in the first place.
+
+## HTTPS
+
+zokor terminates TLS itself when it is given a certificate, so a service
+can serve HTTPS without a proxy in front of it:
+
+```
+TLS_CERT_FILE=/etc/certs/api.pem      # the chain, leaf first, PEM
+TLS_KEY_FILE=/etc/certs/api-key.pem
+TLS_CLIENT_CA_FILE=/etc/certs/ca.pem  # optional: mutual TLS
+TLS_HANDSHAKE_TIMEOUT=10s             # optional, the default
+```
+
+`server_config_from(cfg)` reads them into `sc.tls` (or set
+`sc.tls = zokor.tls_files(cert, key)` by hand), and `listen_and_serve_with`
+loads the pair once, before it binds: a missing file or a key that does not
+match its certificate stops the server starting, with the setting named,
+rather than leaving it listening on a port where every handshake fails.
+One file without the other is reported by `check(cfg)`.
+
+Each connection's handshake runs in that connection's own task, under
+`TLS_HANDSHAKE_TIMEOUT`, so a client that connects and never speaks holds
+one connection slot until then and holds up nobody else. A failed
+handshake -- a port scanner, a plaintext request, a browser dropping a
+preconnect -- has no request to answer, so it is closed and logged at
+`debug`. Past `MAX_CONNECTIONS` a TLS connection is closed without the
+plaintext 503, which a TLS client could not read. With
+`TLS_CLIENT_CA_FILE`, a client must present a certificate signed by one
+of those CAs.
+
+Everything else -- routing, timeouts, keep-alive, WebSockets, logging --
+is the same over HTTPS: the serve loop reads and writes the connection
+as it does plain TCP. A new certificate takes effect on restart. Behind a
+proxy or load balancer that terminates TLS for you, leave these unset and
+list it in `TRUSTED_PROXIES`.
+
+## Logging
+
+On by default. Every request gets one record, and the server writes its
+own lines too: routes mapped, listening, shutting down, stopped. On a
+terminal they look like NestJS's, in colour:
+
+```
+[zokor] 51734  - 2026-10-12 18:47:01.123Z     LOG [Router] Mapped {/users/:id, GET} route
+[zokor] 51734  - 2026-10-12 18:47:01.124Z     LOG [Server] Listening on :8080 +1ms
+[zokor] 51734  - 2026-10-12 18:47:03.551Z     LOG [HTTP] GET /users/:id 200 28B 10.0.0.4 req_1a2b… +0.41ms
+[zokor] 51734  - 2026-10-12 18:47:04.002Z    WARN [HTTP] GET /nope 404 124B 10.0.0.4 req_9f3c… +0.16ms
+```
+
+Anywhere else, such as a pipe, a file or a container's stdout, each line
+is one JSON object, which is what a log shipper wants:
+
+```
+{"time":"2026-10-12T18:47:03.551Z","level":"log","pid":51734,"context":"HTTP","msg":"GET /users/:id 200 28B 10.0.0.4 req_1a2b…","method":"GET","route":"/users/:id","status":200,"duration_ms":0.412,"bytes":28,"request_id":"req_1a2b…","client_ip":"10.0.0.4"}
+```
+
+| Setting | Values | Default |
+|---|---|---|
+| `LOG_FORMAT` | `pretty`, `json` | pretty on a terminal, json otherwise |
+| `LOG_LEVEL` | `debug`, `log`, `warn`, `error`, `off` | `log` |
+| `LOG_REQUESTS` | `true`, `false` | `true` |
+| `NO_COLOR` | any value | colour on a terminal |
+
+Settings are read by `server_config_from(cfg)`; plain `listen_and_serve`
+uses the defaults. A 4xx is a `warn` record and a 5xx an `error`, so
+`LOG_LEVEL=warn` keeps exactly the requests that went wrong. A panicking
+handler adds an `error` line with the panic and the request id.
+
+**What is never logged:** query strings, bodies or headers. A matched
+request is logged by its route pattern, not its path, so ids in paths stay
+out of the log and a dashboard sees one series per route. An unmatched path
+is cut to 64 bytes, and control characters, `"` and `\` are
+percent-encoded, so a client cannot forge a line or send a terminal
+escape.
+
+**It never slows a request down.** The serve loop hands each record to a
+bounded queue and moves on, and one task formats and writes the records in
+batches. If the queue is ever full, records are dropped and counted, and a
+`WARN [Logger] N log records dropped` line says so.
+
+**What it costs.** About 3 extra allocations per request. At saturation,
+`GET /users/:id` on a laptop with 32 connections went from about 62k to
+about 50k requests per second, with p99 rising from 1.6–3.0ms to
+1.9–3.3ms on the runs not hit by thermal throttling. That's 50k JSON
+lines a second written to a file. `LOG_REQUESTS=false` removes the cost
+and keeps the server's own lines.
+
+**Bring your own.** A `Logger` is a channel plus a level. To ship records
+somewhere else, make one with `channel_logger(ch, level, requests)`, put it
+in `ServerConfig.logger`, and drain `ch` from your own task.
+`new_log_format(pid)` gives you zokor's `json` and `pretty` formats to reuse.
+`no_logger()` turns logging off.
+
+## Background jobs
+
+Work on a schedule, and work queued to run later, on slang's tasks:
+
+```slang
+let jobs = zokor.new_jobs(state);
+jobs.logger = sc.logger;
+jobs.zone = timez.load_zone("Europe/Berlin") ?? timez.utc_zone();
+jobs.every("digest", "0 9 * * MON-FRI", send_digest, 60 * timez.SECOND);
+jobs.handle("welcome_email", send_welcome, 5);        // up to 5 attempts
+jobs.start();
+// ... in a handler:
+jobs.enqueue("welcome_email", to_str(user.id), timez.now());
+```
+
+A job is `fn(JobCtx[S]) -> result[int, str]`; the context carries the
+state, the job's name, a queued job's payload and attempt, when the run
+was due, and a `deadline` to pass to every call that can block.
+
+- **Schedules in a time zone.** Five-field cron (names, ranges, steps,
+  `@daily` and friends) read on the zone's clocks, so 09:00 in Berlin
+  stays 09:00 across daylight-saving changes (slang's `timez`).
+- **One run at a time per job.** A scheduled job due while its last run
+  is still going skips that turn, with a warning. Missed turns are not
+  replayed after downtime, as in cron.
+- **Isolated runs.** Each run is its own task: a panic fails that run,
+  logged with the job's name, and the scheduler carries on.
+- **Retries.** A queued job that returns `err` or panics is retried after
+  1 s, 2 s, 4 s ... (capped at an hour) until its attempts run out, then
+  logged and dropped.
+- **Shutdown.** On SIGTERM the scheduler stops starting runs within a
+  quarter second; runs in progress get the server's shutdown drain.
+- **In memory.** Queued jobs are lost when the process stops. Work that
+  must survive a restart belongs in a table or a Redis list that a
+  scheduled job drains.
+
+Tests set `jobs.clock = timez.fixed_clock(...)` and call
+`jobs.tick(instant)` and `jobs.wait_runs(timeout)`: no sleeping.
+
+## Errors
+
+Every failure names a code; every code is registered once with its status
+and its wording; every response is rendered by the same function. A
+client sees one shape:
+
+```json
+{"error":{"code":"org.not_found","message":"no such organisation",
+          "status":404,"request_id":"req-9"}}
+```
+
+```json
+{"error":{"code":"validation_failed","message":"some fields are not valid",
+          "status":422,
+          "fields":[{"field":"email","reason":"must be an email address"}]}}
+```
+
+All HTTP failure statuses ship registered (`bad_request` … `network_auth_required`).
+Add your own, or reword a built-in:
+
+```slang
+zokor.register(reg, "org.not_found", 404, "no such organisation");
+zokor.register(reg, "rate_limited", 429, "slow down");
+```
+
+A code nobody registered answers **500 and names itself** — the mistake
+belongs in your logs, not hidden behind a generic message.
+
+### The shape is a default
+
+That envelope is what you get until you say otherwise. A service with an
+existing contract — a different key, `application/problem+json`, whatever
+its clients already parse — installs its own renderer and keeps the
+registry, the codes and the statuses:
+
+```slang
+fn problem_json(v: zokor.ErrorView) -> http.Response {
+    let body = "{\"type\":\"about:blank\",\"title\":" + zokor.quote(v.code) +
+               ",\"detail\":" + zokor.quote(v.message) +
+               ",\"status\":" + to_str(v.status) + "}";
+    return zokor.bytes_of(v.status, "application/problem+json", to_bytes(body));
+}
+
+zokor.set_renderer(reg, problem_json);
+```
+
+`ErrorView` carries the code, the message, the status, the request id and
+the field errors — a struct, not a parameter list, so a later addition
+does not break renderers people have already written. One renderer per
+registry: every failure in a service still comes out the same way, which
+is the point of having a registry at all.
+
+## Metrics
+
+Metrics are opt-in: build `new_metrics(metrics_config())`, check its
+result, then call `r.metrics(metrics)`. The default endpoint is
+`GET /metrics` (HEAD also works), in Prometheus text format 0.0.4. It
+answers on a routing miss, so an explicit service route wins; the
+built-in scrape skips `before` hooks and does not count itself.
+
+`zokor_http_requests_total` and `zokor_http_request_duration_seconds`
+(cumulative histogram buckets, sum and count) label by method, registered
+route pattern and status. Client ids and unmatched paths never become
+labels: misses use `__unmatched__`, unknown methods use `OTHER`.
+`zokor_http_in_flight` covers dispatch and response writing, including
+static responses; panics complete as 500. Idle connections are excluded.
+
+`MetricsConfig` chooses the path, `max_series` (1000), `max_custom` (100),
+and increasing `buckets_ns`; exposition uses seconds. Configuration errors
+name every bad field. Beyond the series cap, completions increment
+`zokor_http_observations_dropped_total`; in-flight accounting still ends.
+Counters saturate at the largest integer rather than wrapping.
+
+Register service signals with `metrics.counter("jobs_completed_total",
+"Completed jobs")` or `metrics.gauge("queue_depth", "Queued jobs")`;
+each returns a checked `Metric`. `add(delta)` rejects negative counter
+deltas and overflow; `set(value)` is for gauges. Names use Prometheus
+ASCII identifiers, with `zokor_` reserved. Registration, updates and
+scrapes are concurrency-safe, and the framework reads no environment
+while serving.
+
+## Tracing
+
+Tracing is opt-in: check `new_tracer(trace_config())`, then call
+`r.tracing(tracer)` at startup. `c.trace()` returns the request's
+`TraceContext` (trace id, incoming parent id, current span id, sampled
+bit and vendor state). Missing, invalid or duplicate `traceparent`
+headers start a fresh trace; malformed `tracestate` is dropped without
+changing a valid parent. Limits default to 256 parent bytes, 512 state
+bytes and 32 state members, and can be lowered in `TraceConfig`.
+
+Use `c.trace_request(request)` before an `httpc` call. Check its result;
+it returns a copy with lowercase W3C headers and a fresh child span,
+without changing the original request or headers. For background work,
+pass `c.trace()` explicitly and call `trace_request(context, request)`.
+No context lives in thread-local storage.
+
+`c.logger(logger)` binds application log lines to the trace and request
+id; `traced_logger(logger, context)` does the same for an explicit
+context. Server request records and panic lines carry the same trace id.
+JSON logs always include `trace_id` (empty outside a trace); pretty logs
+append it when present. Framework errors use the request's `c.errors`
+registry: the default envelope includes `error.trace_id` when traced,
+and custom renderers receive it in `ErrorView.trace_id`. The startup
+registry remains shared and is never mutated per request. Use
+`trace_registry(registry, context)` for errors outside a handler.
+
+Sampling is propagated as a flag; this feature supplies context and
+correlation, without exporting spans. Entropy failures return an error
+from propagation helpers and a registered 500 from request dispatch.
+Tracing off creates no per-request context, registry or locals map.
+Idempotent replays retain the original response body, including its
+original error trace id; the replay's request log records the new trace.
+
+## OpenAPI
+
+Build an OpenAPI 3.1.1 document at startup from `r.routes_list()` and
+explicit JSON wire schemas. The generator reads no environment, creates
+no endpoint, and does no reflection over slang types.
+
+```slang
+let api = zokor.new_openapi("Users API", "1.0.0");
+api.schema("User", "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"}},\"required\":[\"id\"]}");
+let op = zokor.api_operation(zokor.Method.GET, "/users/:id");
+op.operation_id = "getUser";
+push(op.parameters, zokor.api_parameter("id", "path", "integer"));
+push(op.responses, zokor.api_response(200, "User"));
+push(op.errors, "not_found");
+api.operation(op);
+let generated = zokor.openapi_document(r.routes_list(), r.errors, api);
+// Check generated before saving or serving its JSON text.
+```
+
+`ApiOperation` declares an optional `request_schema`, request media type
+and required flag, response status/media/schema pairs, parameters, tags,
+summary and description. Schema names refer to registered DTOs;
+`string`, `integer`, `number`, `boolean`, `object`, `array` and `null`
+are inline primitives. `api_ref(name)` builds a reference definition.
+Schemas may use local component JSON pointers and recursive references;
+the generator preserves composition, formats and examples. It checks
+schema structure and references; services should also validate the full
+JSON Schema dialect in their contract checks.
+
+`:id` becomes `{id}` with a required string path parameter unless its
+metadata supplies another type. Routes without response metadata get a
+`default` response labelled as undeclared; success status and shape are
+never inferred. Exact duplicate registrations use the first route,
+matching the router. Colliding templates, duplicate operations or ids,
+unregistered metadata, invalid parameters, unknown schemas and unknown
+error codes are reported together. Unsupported `CONNECT` or wildcard
+routes must be explicitly excluded with `api.omit(method, pattern)`.
+Use the same method to exclude private routes from a published document.
+
+The document includes registered error codes, statuses and messages in
+`x-zokor-error-codes`; an operation's `errors` adds responses grouped by
+status. Error body contracts are explicit. For the default renderer,
+register `api_default_error_schema()` under your chosen name and set
+`api.error_schema` to that name. A custom renderer supplies its own schema
+and `api.error_media_type`. Without one, error responses make no body
+claim. Authentication metadata is not inferred from hooks; services can
+extend the generated JSON with their security schemes and requirements.
+
+`api.limits` defaults to 1000 routes, schemas and entries per metadata
+collection, 1 MiB per schema, 16 MiB total schema text and metadata text,
+schema depth 32 (maximum 64), and 16 MiB of generated JSON. Limits are
+caller-selected. Output preserves route registration order and sorts
+schema/error names, so map insertion order does not change it.
+
+
+# Realtime connections
+
+> A WebSocket route is a handshake handler plus the handlers for what happens after it.
+
+## WebSocket
+
+A WebSocket route is a handshake handler plus the handlers for what
+happens after it. The handshake goes through the router like any request
+-- its `before`s run, so authentication, rate limits and CORS apply --
+and once the `101` is written the connection belongs to the socket:
+
+```slang
+fn chat_open(c: zokor.Ctx[App]) -> http.Response {
+    if c.local("user") == "" {                      // set by an auth before
+        return zokor.respond(c.errors, "unauthorized", c.request_id);
+    }
+    let s = c.socket();                              // not yet open
+    s.set_local("user", c.local("user"));
+    c.state.hub.join_room(s, "lobby");
+    return c.accept_ws();                            // the 101; anything else refuses
+}
+
+fn chat_message(app: App, s: zokor.Socket, m: zokor.Message) {
+    app.hub.to_room("lobby", s.local("user") + ": " + m.text, s.id);
+}
+
+fn chat_left(app: App, s: zokor.Socket, code: int, reason: str) { ... }
+
+r.websocket("/chat", chat_open,
+            zokor.ws_route(zokor.ws_allowing(["chat"]), chat_message)
+                .on_close(chat_left));
+```
+
+`s.send_text`, `s.send_binary` and `s.close(code, reason)` work from any
+task -- this socket's handler, another connection's, a background job --
+and never wait: a send queues the message, and the connection's writer
+task puts it on the wire. A **`Hub`** holds sockets by id and in rooms:
+`add`, `join_room`, `leave_room`, `broadcast`, `to_room`, `get`, `count`,
+`room_size`. A socket leaves every hub it was in when its connection ends.
+The hub is in-process; several instances need their own fan-out between
+them (Redis pub/sub, say).
+
+Each connection is two tasks: one reads, decodes and calls the handlers in
+order, one message at a time; the other writes. What the settings in
+`WsRules` bound, and what happens at each:
+
+- **A client that stops reading** fills its queue (`max_queue`, 256
+  messages) and is closed instead of holding memory, or the broadcaster,
+  hostage.
+- **A peer that vanished** without a FIN is pinged after `ping_interval`
+  (25s) of silence and closed `pong_timeout` (20s) later.
+- **A handler that panics** closes its connection with 1011; every other
+  connection carries on. `on_close` runs once however the connection
+  ended, with the peer's code, ours, 1002 for a protocol error or 1006
+  when the peer vanished.
+- **SIGTERM** closes every open socket with 1001 ("server shutting down"),
+  so clients reconnect elsewhere, before the drain.
+- **Over TLS** (`TLS_CERT_FILE`) the same route serves `wss://`.
+
+Underneath, a connection is a **state machine, not a socket** (`new_conn`,
+`receive`, `pending`): bytes in, whole messages and bytes to send out. That
+is what the tests drive without a network, and what refuses, with 1002, an
+unmasked client frame, a reserved bit or opcode, a fragmented or oversized
+control frame, a length that is not minimally encoded, a continuation with
+nothing to continue, a new message before the last finished, text that is
+not UTF-8, an invalid close code, and anything over `max_frame_bytes` /
+`max_message_bytes`. Ping/pong and the closing handshake are answered by
+the connection, because they are protocol rather than application.
+
+### Socket.IO
+
+socket.io clients (socket.io-client 3 and 4: Engine.IO v4, Socket.IO v5)
+on the same server, with the same handshake handler shape:
+
+```slang
+fn on_chat(app: App, s: zokor.Socket, e: zokor.SioEvent) {
+    if e.name == "chat message" {
+        app.hub.emit_to_room("lobby", e.namespace, "chat message", e.args_json, s.id);
+        if e.ack >= 0 {
+            s.ack(e.namespace, e.ack, "[\"delivered\"]");    // the client's callback
+        }
+    }
+}
+
+r.socketio("/socket.io/", chat_open,
+           zokor.sio_route(on_chat).on_connect(joined).on_disconnect(left));
+```
+
+`on_connect(app, s, namespace, auth_json)` accepts a namespace with
+`ok(true)` or refuses it with `err(message)`, which the client sees as a
+`connect_error`; without one every namespace is accepted. Events for a
+namespace the client is not connected to are dropped. `s.emit`,
+`s.emit_with_ack` (the answer arrives as an `Ack` event), `s.ack` and
+`s.disconnect_ns` send; `hub.emit_all` and `hub.emit_to_room` encode an
+event once for every Socket.IO session they reach. A hub can hold
+WebSockets and Socket.IO sessions together: `to_room` reaches the first,
+`emit_to_room` the second, so a chat open to both calls both.
+`on_disconnect(app, s, namespace, reason)` runs once per connected
+namespace with socket.io's reasons (`client namespace disconnect`,
+`transport close`, `ping timeout`, `server shutting down`, `server error`
+for a panicking handler). The Engine.IO heartbeat is run for you on
+`route.settings` (`ping_interval_ms`, `ping_timeout_ms`, `max_payload`).
+
+Both of socket.io's transports are served, so a client needs no options:
+it starts on **HTTP long-polling** (a GET that waits for packets, a POST
+that carries its own) and moves to WebSocket once a probe over it succeeds,
+or stays on polling where WebSockets do not get through. The session -- its
+id, hubs, namespaces and locals -- is the same `Socket` throughout, and
+handlers cannot tell which transport a packet came by. Polling sessions
+live between requests: they are capped by `max_polling_sessions` (10,000;
+past it the handshake is answered 503), and one heartbeat task per route
+pings them and ends those that stop answering. Two GETs or two POSTs at
+once for one session end it, as Engine.IO requires. A polling POST is one
+HTTP request, so it is bounded by `MAX_REQUEST_BYTES` (16KB by default):
+raise it towards `max_payload` if clients send large events over polling.
+
+**Binary attachments** work both ways. An event's attachments arrive in
+`e.attachments` (in order; `args_json` holds a placeholder where each
+was), and `s.emit_binary(namespace, name, args_json, [data])` /
+`hub.emit_binary_to_room(..)` send them: binary frames over WebSocket,
+base64 over polling. An event may carry up to `max_attachments` (16).
+
+`examples/chat` is one room for both kinds of client, served for real:
+`make example-chat` runs it against stand-in clients, and
+`slangc examples/chat/main.sl --run -- serve` serves it on :8080 for a
+browser. Checked against socket.io-client 4.7.5 and the `ws` package.
+
+
+# Project structure
+
+> A request builder and response readers, so a test says what it means instead of assembling an http.Request by hand: request, get request, .header, .bearer, .basic, .content type, .json, .json body, .body str, .multipart (with upload part), and on the way back resp status, resp text, resp header, resp json, resp error code, resp error fields.
+
+## Testing
+
+A request builder and response readers, so a test says what it means
+instead of assembling an `http.Request` by hand:
+
+```slang
+let resp = r.serve(zokor.request(zokor.Method.POST, "/api/orgs")
+    .bearer("token")
+    .json_body("{\"name\":\"acme\"}")
+    .build());
+
+assert(zokor.resp_status(resp) == 201);
+assert(zokor.resp_json(resp).get("id").str_or("") == "org_7");
+assert(zokor.resp_error_code(denied) == "unauthorized");
+assert(zokor.resp_error_fields(invalid)[0] == "seats");
+```
+
+`request`, `get_request`, `.header`, `.bearer`, `.basic`,
+`.content_type`, `.json`, `.json_body`, `.body_str`, `.multipart` (with
+`upload_part`), and on the way back `resp_status`, `resp_text`,
+`resp_header`, `resp_json`, `resp_error_code`, `resp_error_fields`.
+It ships in the package because your service's tests need it too.
+
+## Layout
+
+```
+zokor/            the package your service imports
+  router.sl       Router[S], Route[S], Ctx[S]
+  errors.sl       Registry, Code, ErrorView, the envelope
+  config.sl       Config, load_config, require_*
+  respond.sl      success responses
+  ids.sl          request and session ids
+  json.sl         Json, the checker, DTO helpers
+  testkit.sl      the request builder and response readers
+  upload.sl       uploads: rules, Form, Upload, safe filenames
+  ratelimit.sl    RateLimiter, rate_limit
+  tokens.sl       TokenStore, bearer_subject
+  ws.sl           WebSocket connections and Socket.IO
+  socket.sl       Socket, Hub: a served connection and its rooms
+  ws_serve.sl     r.websocket: the handshake and a connection's two tasks
+  sio_serve.sl    r.socketio: Engine.IO sessions over the WebSocket
+  internal/
+    path/         split, query parsing, percent-decoding
+    envfile/      .env parsing
+    validate/     the value rules
+    multipart/    the multipart/form-data parser
+    ws/           RFC 6455 frames and the handshake
+    sio/          Engine.IO and Socket.IO packets
+examples/
+  hello/          routes, config, errors, DTOs, uploads
+  chat/           WebSocket and socket.io
+www/              docs-site builder, theme and resized logo assets
+assets/           the logo
+todo.md           what is next, checkable
+docs/             generated site, benchmarks, llms-small.txt (the agent
+                guide: every snippet compile-checked by `make snippets`),
+                api.txt (every public symbol, generated by gen_api.sh)
+.github/          CI: tests, guide snippets, API and site freshness
+```
+
+`internal/` holds the pure parts: no sockets, no clock, no environment.
+That is where the tests are cheapest and the hot paths easiest to keep
+honest.
+
+## Tests
+
+```
+make test
+```
+
+`make check` runs the tests, all examples, the agent guide's snippets
+(`docs/llms-small.txt`, via `make snippets`), and the API and site
+freshness checks. CI runs the same against slangc built from slang `dev`.
+
+## Dependencies: ports and fakes
+
+Use a struct of function values, wired once at startup. A service holds
+that port and calls it; concrete database or HTTP clients live in adapters.
+Slang has no closures, so pass adapter state explicitly rather than hiding
+it in globals:
+
+```slang
+pub gc struct StockPort[C] {
+    context: C,
+    lookup: fn(C, str, str) -> result[opt[Stock], str],
+}
+// A top-level adapter function has the same signature:
+// lookup(context, tenant_id, sku). Startup injects its function and context.
+```
+
+The application defines the port. Infrastructure imports that definition
+and implements it; application code imports domain types and never the
+adapter. The bootstrap imports both and connects them. Tenant identity
+remains an explicit argument through each call. An optional result
+separates a missing record from an unavailable dependency. The HTTP edge
+maps failures to registered errors without exposing adapter diagnostics.
+
+[examples/ports/src/main.sl](examples/ports/src/main.sl) is the worked
+example: a tenant-scoped stock service, an immutable memory adapter,
+a protected route, and startup configuration. `make example-ports` drives
+the real router pipeline without opening sockets. It prints an
+unauthenticated 401, the seeded stock, and a registered missing-stock 404.
+The existing hello/chat examples keep their behavior.
+
+Application fakes live in `fakes_test.sl`, so the compiler excludes them
+from service builds. They supply the same function signature with their
+own explicit state, return canned success/absence/failure, and record calls.
+Tests prove that invalid input never reaches a port, tenant identity is
+passed through, another tenant's record is rejected, unauthenticated HTTP
+requests cannot invoke the port, and adapter details do not reach clients.
+`make test` lists all four example packages; `make check` also runs its
+startup wiring.
+
+For generic application services, use small concrete top-level route
+functions in the bootstrap to call the generic HTTP helpers. The example
+uses this ordinary function-value pattern for registration and gives tests
+their own wrappers. Each adapter owns its concurrency rules: the example
+copies its seed data once and never mutates it after startup; a mutable
+adapter must synchronize its state.
+
+## Agent guide
+
+An agent writing a service reads slang's `llms-small.txt` then
+[docs/llms-small.txt](docs/llms-small.txt): one page, example-first, with
+the one way for errors, config, validation, routing and tests, and
+recipes for headers, rate limits, bearer tokens, uploads, shared state,
+background workers and graceful shutdown. Every snippet in it is a whole
+program that compiles and runs; `make snippets` proves it.
+
+[docs/api.txt](docs/api.txt) is the companion: every public symbol, its
+signature and one line, small enough to keep in context instead of
+reading `zokor/`. It is generated (`make api`, which runs
+`docs/gen_api.sh`); CI fails if it is stale.
+
+`make docs` builds the static site at `docs/index.html` from this README,
+the generated API reference and the service examples. `make docs-check`
+fails when the committed site is stale.
+
+## Not yet
+
+The full list, ordered and checkable, is [todo.md](todo.md). The remaining
+work is the `v0.2.0` release after slang ships the required compiler and
+package features, the measured performance gap described in
+[docs/benchmarks.md](docs/benchmarks.md), and the MongoDB adapter, which is
+currently deferred. The HTTP, realtime, migrations, metrics, tracing,
+pagination and OpenAPI work listed earlier in this README is implemented.
+
+## Contributing and licence
+
+zokor is MIT-licensed ([LICENSE](LICENSE)), by Dolph Tech Limited.
+[CONTRIBUTING.md](CONTRIBUTING.md) says how to build, test and send a change;
+report security problems privately as [SECURITY.md](SECURITY.md) describes;
+everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+
+# zokor API (generated by docs/gen_api.sh from zokor/; do not edit)
+#
+# `import "zokor";` then `zokor.<name>`. Methods are `value.name(..)`;
+# `self` is omitted. Times are int nanoseconds, statuses i32.
+# Recipes: docs/llms-small.txt.
+
+## auth.sl -- Authentication helpers: bearer JWTs, Basic credentials and API keys.
+gc struct JwtAuth { keys: [bytes], audience: str, issuer: str, leeway: int }
+jwt_auth(secrets: [str]) -> result[JwtAuth, str]
+    Secrets of at least 32 bytes each, newest first.
+jwt_auth_from(cfg: Config) -> JwtAuth
+    JWT_SECRETS (comma-separated, newest first), JWT_AUDIENCE, JWT_ISSUER and JWT_LEEWAY (seconds, default 30).
+sign_token[T](claims: T, a: JwtAuth) -> result[str, str]
+    A token for `claims`, signed with the newest key.
+token_problem(token: str, a: JwtAuth, now: int) -> str
+    Why `token` is not acceptable at `now`, or "" when it is.
+bearer_claims[S, T](c: Ctx[S], a: JwtAuth) -> result[T, http.Response]
+    The token's claims as your own type, once the token has passed every check; otherwise the 401 to send.
+gc struct BasicCredentials { user: str, password: str }
+basic_credentials[S](c: Ctx[S]) -> opt[BasicCredentials]
+    The credentials of an `Authorization: Basic` header, or none when there is no such header or it does not decode to...
+basic_matches(got: BasicCredentials, user: str, password: str) -> bool
+    Whether `got` is `user` / `password`.
+basic_denied[S](c: Ctx[S], realm: str) -> http.Response
+    The 401 that asks a browser for Basic credentials for `realm`.
+gc struct ApiKeys { names: [str], digests: [bytes] }
+api_keys(entries: [str]) -> result[ApiKeys, str]
+    `name:key` entries; each key at least 24 bytes.
+api_keys_from(cfg: Config) -> ApiKeys
+    API_KEYS: comma-separated `name:key` entries.
+api_key_client[S](c: Ctx[S], keys: ApiKeys) -> opt[str]
+    The name of the client whose key is in the X-Api-Key header, or none.
+
+## client.sl -- The client's address: who is actually on the other end of a request.
+gc struct TrustedProxies { nets: [int], header: str }
+no_trusted_proxies() -> TrustedProxies
+parse_ipv4(s: str) -> int
+    "a.b.c.d" as an unsigned 32-bit value, or -1.
+parse_trusted_proxies(list: str) -> result[TrustedProxies, str]
+    TRUSTED_PROXIES's value: comma-separated IPv4 addresses and CIDRs ("10.0.0.0/8, 192.168.1.10").
+ipv4_str(v: int) -> str
+TrustedProxies.trusts(ip: int) -> bool
+TrustedProxies.is_empty() -> bool
+peer_ip_of(rendered: str) -> str
+    The address part of `inspect(link.peer())`, "a.b.c.d:port" -> "a.b.c.d".
+client_ip_of(peer_ip: str, headers: bytes, tp: TrustedProxies) -> str
+    Who the request came from.
+
+## compression.sl -- Response compression: gzip through slang's `compress` (zlib), for clients that accept it, on bodies worth it.
+gc struct Compression { min_size: int, level: int, types: [str] }
+compression() -> Compression
+accepts_gzip(header: str) -> bool
+    Whether an Accept-Encoding value allows gzip.
+
+## conditional.sl -- Conditional requests (RFC 9110 section 13): answer "not modified" when the client already has the current version, and refuse...
+etag_of(data: bytes) -> str
+    A strong entity tag for `data`: its length and 64-bit FNV-1a hash, quoted.
+with_validators(resp: http.Response, etag: str, last_modified: opt[timez.Time]) -> http.Response
+    `resp` with ETag (when `etag` is not "") and Last-Modified (when known, to the second: an HTTP date has no fraction).
+not_modified(etag: str, last_modified: opt[timez.Time]) -> http.Response
+    The 304 for a read whose validators matched: no body, and the validators the 200 would have carried.
+preconditions[S](c: Ctx[S], etag: str, last_modified: opt[timez.Time]) -> opt[http.Response]
+    What a conditional request's headers decide, before the handler does its work: some(304) or some(412) to send as is, none to...
+
+## config.sl -- Configuration: read once, validated once, then held as a value.
+gc struct Problem { key: str, reason: str, shown: str }
+gc struct Config { values: map[str]str, problems: [Problem], source: str, profile: str, sources: [str] }
+gc struct ConfigLoad { profile: str, directory: str, max_file_bytes: int }
+    Profile selection and file limits, chosen before startup loading.
+config_load() -> ConfigLoad
+config_from_values(values: map[str]str) -> Config
+    Own a copy of supplied values, with no process-state reads: useful for fakes.
+default_env_path() -> str { return ".env"; } // Base .env, then .env.<profile>, then one environment snapshot. pub fn load_config() -> Config { return load_config_with(config_load()); } // Explicit dev/test/prod overrides ZOKOR_PROFILE for file selection. pub fn load_config_profile(profile: str) -> Config
+load_config_with(options: ConfigLoad) -> Config
+load_config_from(path: str) -> Config { return load_config_file(path, config_load().max_file_bytes); } pub fn load_config_file(path: str, max_file_bytes: int) -> Config
+    Load one explicit file, then apply the captured environment; no profile overlay.
+get(c: Config, key: str) -> opt[str]
+has_key(c: Config, key: str) -> bool
+str_or(c: Config, key: str, fallback: str) -> str
+int_or(c: Config, key: str, fallback: int) -> int
+bool_or(c: Config, key: str, fallback: bool) -> bool
+duration_or(c: Config, key: str, fallback_ns: int) -> int
+    A duration in nanoseconds, the unit every slang timeout takes.
+require(c: Config, key: str) -> str
+require_int(c: Config, key: str) -> int
+require_range(c: Config, key: str, lo: int, hi: int) -> int
+require_port(c: Config, key: str) -> int
+require_bool(c: Config, key: str) -> bool
+require_float(c: Config, key: str) -> float
+require_email(c: Config, key: str) -> str
+require_url(c: Config, key: str) -> str
+require_dsn(c: Config, key: str) -> str
+require_host(c: Config, key: str) -> str
+require_ipv4(c: Config, key: str) -> str
+require_uuid(c: Config, key: str) -> str
+require_one_of(c: Config, key: str, allowed: [str]) -> str
+require_duration(c: Config, key: str) -> int
+require_min_len(c: Config, key: str, n: int) -> str
+require_max_len(c: Config, key: str, n: int) -> str
+optional_one_of(c: Config, key: str, allowed: [str], fallback: str) -> str
+    An optional value that still has to be valid WHEN it is set: the common case of a feature that is off until configured.
+optional_url(c: Config, key: str, fallback: str) -> str
+optional_dsn(c: Config, key: str, fallback: str) -> str
+    Same shape as optional_url, for a connection string rather than an HTTP one: `is_dsn` accepts any scheme with a host...
+problems(c: Config) -> [Problem]
+is_valid(c: Config) -> bool
+check(c: Config) -> result[bool, str]
+    Every problem, one per line, named and explained.
+
+## cookies.sl -- Cookies.
+enum SameSite { LAX, STRICT, NONE }
+gc struct Cookie { name: str, value: str, path: str, domain: str, max_age: int, expires: opt[timez.Time], secure: bool, http_only: bool, same_site: SameSite, partitioned: bool }
+new_cookie(name: str, value: str) -> Cookie
+cookie_problem(c: Cookie) -> str
+    What is wrong with `c`, or "".
+cookie_string(c: Cookie) -> str
+    The Set-Cookie value for `c`, unchecked: callers check first.
+set_cookie(resp: http.Response, c: Cookie) -> result[http.Response, str]
+    `resp` with a Set-Cookie header for `c`, or why `c` cannot be sent.
+clear_cookie(resp: http.Response, name: str, path: str, domain: str) -> result[http.Response, str]
+    Tells the browser to delete `name`.
+parse_cookies(header: str) -> map[str]str
+    Every well-formed name=value pair in a Cookie header, in order; a pair without `=`, with a bad name or with bytes a cookie...
+gc struct CookieKeys { keys: [bytes] }
+cookie_keys(keys: [str]) -> result[CookieKeys, str]
+    Keys of at least 32 bytes each, newest first.
+cookie_keys_from(cfg: Config) -> CookieKeys
+    COOKIE_KEYS, comma-separated, newest first.
+constant_time_equal(a: bytes, b: bytes) -> bool
+    Compares in time that depends only on the lengths, so a forged signature cannot be found a byte at a time by timing the answer.
+signed_cookie(name: str, value: str, keys: CookieKeys) -> result[Cookie, str]
+    A cookie whose value is `value.signature`.
+signed_value[S](c: Ctx[S], name: str, keys: CookieKeys) -> opt[str]
+    The value of signed cookie `name` when its signature matches any key, none when it is missing, unsigned or forged.
+verify_signed(name: str, raw: str, keys: CookieKeys) -> opt[str]
+
+## cors.sl -- CORS.
+gc struct CorsPolicy { origins: [str], methods: [str], headers: [str], expose: [str], credentials: bool, max_age: int }
+no_cors() -> CorsPolicy
+    Off: no origins.
+cors_policy(origins: [str]) -> CorsPolicy
+    The defaults, for these origins.
+cors_problem(p: CorsPolicy) -> str
+    What is wrong with `p`, or "" when it is usable.
+cors_from(cfg: Config) -> CorsPolicy
+    CORS_ORIGINS (comma-separated), CORS_METHODS, CORS_HEADERS, CORS_EXPOSE (comma-separated, replacing the defaults),...
+gc struct Cors { on: bool, any: bool, credentials: bool, origins: [str], allow_methods: str, allow_headers: str, allow_headers_lower: [str], expose: str, max_age: str }
+    What the router keeps: the policy, and the header values built once.
+cors_off() -> Cors
+Cors.allows(origin: str) -> bool
+    Whether `origin` (an Origin header's value) is allowed.
+Cors.apply(resp: http.Response, origin: str) -> http.Response
+    The headers for an ordinary response to a request with this Origin ("" when it had none).
+Cors.preflight(origin: str) -> http.Response
+    The answer to a preflight from `origin`.
+is_preflight(method: str, raw_headers: bytes) -> bool
+    Whether a request is a CORS preflight: OPTIONS, with an Origin and the method the real request will use.
+
+## errors.sl -- Failure, as one shape.
+gc struct Code { name: str, status: i32, message: str }
+gc struct FieldError { field: str, reason: str }
+gc struct ErrorView { code: str, message: str, status: i32, request_id: str, fields: [FieldError], trace_id: str }
+    Everything the renderer is given.
+gc struct Registry { codes: map[str]Code, render: fn(ErrorView) -> http.Response, trace_id: str }
+new_registry() -> Registry
+    Every HTTP failure status, under the name a handler will reach for.
+set_renderer(r: Registry, f: fn(ErrorView) -> http.Response) -> int
+    Replace the shape every failure is rendered in.
+register(r: Registry, name: str, status: i32, message: str) -> int
+lookup(r: Registry, name: str) -> opt[Code]
+status_of(r: Registry, name: str) -> i32
+    A code nobody registered is a bug in the service, not a client error: it answers 500 and says which name was missing, so the...
+message_of(r: Registry, name: str) -> str
+code_names(r: Registry) -> [str]
+respond(r: Registry, code: str, request_id: str) -> http.Response
+    The registered wording.
+respond_with(r: Registry, code: str, detail: str, request_id: str) -> http.Response
+    The registered code, with wording for this one occurrence ("no such organisation 'acme'").
+respond_fields(r: Registry, code: str, fields: [FieldError], request_id: str) -> http.Response
+field(name: str, reason: str) -> FieldError
+default_render(v: ErrorView) -> http.Response
+    zokor's own shape, and the one a service gets until it says otherwise.
+quote(s: str) -> str
+    A JSON string, escaped.
+quote_into(sb: builder.Str, s: str) -> builder.Str
+    The same, appended to a builder.
+status_text(status: i32) -> str
+
+## files.sl -- Static files: a directory served under a path prefix, safely.
+gc struct FileMount { prefix: str, root: str, index: str, max_age: int, immutable: bool, max_size: int }
+files_at(prefix: str, dir: str) -> result[FileMount, str]
+    A mount of `dir` under `prefix`.
+content_type_for(name: str) -> str
+parse_range(header: str, size: int) -> [int]
+    One byte range of a file of `size`: [first, last] inclusive; [-1, -1] when the header is not one usable range (several,...
+
+## health.sl -- Health and readiness.
+gc struct ReadyCheck[S] { name: str, check: fn(S) -> result[int, str], lock: mutex, started: int, finished: int, passed: bool, reported: str }
+gc struct Readiness[S] { live_path: str, ready_path: str, checks: [ReadyCheck[S]], timeout: int, logger: Logger }
+default_ready_timeout() -> int
+    0.9s: inside Kubernetes' default 1s probe timeout, so a slow dependency is answered as a 503 naming it rather than as a probe...
+check_name_ok(name: str) -> bool
+    A check name is 1-64 of [A-Za-z0-9_.-]: it is written into the JSON body and to stderr as is.
+
+## idempotency.sl -- Idempotency keys (the IETF Idempotency-Key header): a client retrying a POST or PATCH after a timeout gets the first answer...
+gc struct Idempotency { ttl: int, lock_ttl: int, max_body: int, scope_local: str, required: bool, shards: [IdemShard], remote: opt[redis.Pool] }
+idempotency_in_memory() -> Idempotency
+    Answers kept in this process: right for one instance.
+idempotency_redis(p: redis.Pool) -> Idempotency
+    Answers kept in Redis, shared by every instance behind the balancer.
+
+## ids.sl -- Identifiers.
+new_request_id() -> str
+    128 bits of randomness, hex, prefixed so it is recognisable in a log that carries other people's ids too.
+new_session_id() -> str
+    A longer one, for a session or a socket.io sid, where a collision matters more than the length does.
+request_id_for(headers: bytes) -> str
+    The id a request is answered and logged under: the client's own X-Request-Id when it is 1-64 characters of [A-Za-z0-9._-], so...
+
+## jobs.sl -- Background jobs: work on a schedule, and work queued to run later.
+gc struct JobCtx[S] { state: S, name: str, payload: str, attempt: int, due: timez.Time, deadline: until }
+    What a run gets: the service's state, which run this is, and the deadline to pass to everything that can block.
+gc struct Jobs[S] { state: S, zone: timez.Zone, clock: timez.Clock, logger: Logger, default_timeout: int, scheduled: [ScheduledJob[S]], kinds: [JobKind[S]], queue: [QueuedJob], lock: mutex, in_flight: int, stopping: bool, failures: int }
+new_jobs[S](state: S) -> Jobs[S]
+job_backoff(attempt: int) -> int
+    The wait before try `attempt + 1`: 1 s, 2 s, 4 s ...
+Jobs.every(name: str, spec: str, run: fn(JobCtx[S]) -> result[int, str], timeout: int) -> result[int, str]
+    Runs `run` on the cron schedule `spec` (see timez.parse_cron), each run given `timeout` nanoseconds as its deadline.
+Jobs.handle(kind: str, run: fn(JobCtx[S]) -> result[int, str], attempts: int) -> result[int, str]
+    Registers what runs a queued job of `kind`, and how many tries it gets (at least 1).
+Jobs.enqueue(kind: str, payload: str, at: timez.Time) -> result[int, str]
+    Queues one run of `kind` with `payload`, due at `at` (now or in the past runs at the next tick).
+Jobs.queued() -> int
+    Queued runs not yet started.
+Jobs.running() -> int
+    Runs started and not yet finished.
+Jobs.tick(now: timez.Time) -> int
+    Starts every run due at `now` -- scheduled turns and queued jobs -- each in its own task, and returns how many it started.
+Jobs.start() -> int
+    Starts the scheduler: a task that ticks at each due time, and at least every quarter second so a stop or SIGTERM is seen quickly.
+Jobs.stop() -> int
+    Stops starting runs.
+Jobs.wait_runs(timeout: int) -> bool
+    Waits until no run is in progress, or `timeout` nanoseconds pass; true when none is.
+
+## json.sl -- JSON, for the shapes you know and the ones you do not.
+enum JsonKind { Null, Bool, Number, String, Array, Object }
+gc struct Json { kind: JsonKind, bool_val: bool, raw: str, text: str, items: [Json], keys: [str], values: [Json] }
+jnull() -> Json
+jbool(v: bool) -> Json
+jint(v: int) -> Json
+jfloat(v: float) -> Json
+jstr(v: str) -> Json
+jobj() -> Json
+jarr() -> Json
+user_json(id: str) -> bytes
+user_json_bytes(id: bytes) -> bytes
+    user_json_bytes: the id as BYTES (already sliced out of a path).
+message_json(message: str) -> bytes
+Json.set(key: str, v: Json) -> Json
+    Sets a key, replacing it if present, and returns the object so calls chain.
+Json.set_str(key: str, v: str) -> Json
+Json.set_int(key: str, v: int) -> Json
+Json.set_float(key: str, v: float) -> Json
+Json.set_bool(key: str, v: bool) -> Json
+Json.set_opt_str(key: str, v: opt[str]) -> Json
+    Only when the value is there: the difference between "absent" and "null" belongs to the caller, not to the encoder.
+Json.add(v: Json) -> Json
+Json.add_str(v: str) -> Json
+Json.add_int(v: int) -> Json
+Json.get(key: str) -> Json
+    A missing key, or an index that is not there, gives Null rather than an error -- so a chain of lookups never has to be guarded...
+Json.at(i: int) -> Json
+Json.path(p: str) -> Json
+    "user.address.city", "items.0.name": one call instead of five.
+Json.has_key(key: str) -> bool
+    Present, even if its value is null -- which is how a PATCH tells "set this to nothing" from "leave it alone".
+Json.is_null() -> bool
+Json.is_object() -> bool
+Json.is_array() -> bool
+Json.is_string() -> bool
+Json.is_number() -> bool
+Json.is_bool() -> bool
+Json.size() -> int
+    Items in an array, keys in an object, bytes in a string.
+Json.keys_of() -> [str]
+Json.items_of() -> [Json]
+Json.str_or(fallback: str) -> str
+Json.int_or(fallback: int) -> int
+Json.float_or(fallback: float) -> float
+Json.bool_or(fallback: bool) -> bool
+Json.render() -> str
+    The JSON text of this value.
+Json.render_bytes() -> bytes
+    Renders straight into a Bytes builder: no two-element parts list, no join, no str in between.
+parse(text: str) -> result[Json, str]
+snake_keys(text: str) -> str
+    slang has no struct tags, so a wire name is a field name.
+camel_keys(text: str) -> str
+to_snake_case(s: str) -> str
+to_camel(s: str) -> str
+parse_body(content_type: str, body: bytes) -> result[Json, FormError]
+    The body as a value you can walk, with the failure already carrying a registered code.
+decode_failed(reg: Registry, why: str, request_id: str) -> http.Response
+    The failure of slang's own `json.decode`, mapped into the envelope with the offending field named where the message carries...
+gc struct Checker { fields: [FieldError] }
+    Decoding says a field is a string; it does not say the string is an email, or between 3 and 40 characters, or one of four words.
+checker() -> Checker
+Checker.failed() -> bool
+Checker.note(field: str, reason: str) -> int
+Checker.req_str(j: Json, key: str, min: int, max: int) -> str
+    A required string, with a length range.
+Checker.opt_str(j: Json, key: str, max: int, fallback: str) -> str
+Checker.req_int(j: Json, key: str, min: int, max: int) -> int
+Checker.opt_int(j: Json, key: str, min: int, max: int, fallback: int) -> int
+Checker.req_bool(j: Json, key: str) -> bool
+Checker.req_email(j: Json, key: str) -> str
+Checker.req_url(j: Json, key: str) -> str
+Checker.req_uuid(j: Json, key: str) -> str
+Checker.req_one_of(j: Json, key: str, allowed: [str]) -> str
+Checker.req_strs(j: Json, key: str, max_items: int) -> [str]
+    A list of strings, with a cap on how many: the shape of "tags", "recipients", "ids".
+Checker.req_obj(j: Json, key: str) -> Json
+    A nested object, so a checker can walk into it and report "address.city" rather than "address".
+Checker.under(prefix: str, other: Checker) -> int
+    Everything found so far, re-reported under a prefix: for a nested object checked by its own function.
+
+## log.sl -- Logging.
+enum LogLevel { DEBUG, LOG, WARN, ERROR, OFF }
+level_rank(l: LogLevel) -> int
+level_name(l: LogLevel) -> str
+parse_level(s: str) -> opt[LogLevel]
+gc struct LogEvent { time: int, level: LogLevel, context: str, message: str, request: bool, method: str, route: str, path: str, status: int, duration_ns: int, size: int, request_id: str, client_ip: str, trace_id: str, ack: opt[chan[int]] }
+gc struct Logger { events: opt[chan[LogEvent]], level: LogLevel, requests: bool, console: bool, json: bool, color: bool, capacity: int, lock: mutex, dropped: int, no_ack: opt[chan[int]] }
+default_log_capacity() -> int
+    How many events may wait for the writer: enough to absorb a burst of a few thousand requests between two wake-ups.
+no_logger() -> Logger
+    Logs nothing.
+console_logger(json: bool, color: bool, level: LogLevel, requests: bool) -> Logger
+    zokor's own writer, to stdout, configured but not started: `start` (which listen_and_serve_with calls) makes the channel and...
+channel_logger(ch: chan[LogEvent], level: LogLevel, requests: bool) -> Logger
+    A logger whose events go to `ch`, drained by the caller's own task.
+default_logger() -> Logger
+    The default: pretty and coloured on a terminal, JSON otherwise, level LOG, request lines on.
+logger_from(cfg: Config) -> Logger
+    LOG_FORMAT, LOG_LEVEL, LOG_REQUESTS and NO_COLOR over the default.
+Logger.start()
+    Starts the console writer if this is an unstarted console logger; otherwise does nothing.
+Logger.own_tasks() -> int
+    Tasks this logger runs for itself: 1 once the console writer is started.
+Logger.enabled(l: LogLevel) -> bool
+    Whether an event at `l` would be sent at all: lets a caller skip building one.
+Logger.emit(ev: LogEvent)
+    Offers `ev` without waiting: dropped and counted when the channel is full or below the level.
+Logger.record_request(method: str, route: str, raw_path: str, status: int, duration_ns: int, size: int, request_id: str, client_ip: str)
+    The serve loop's call: one request's record, if requests are logged at its level.
+Logger.debug(context: str, message: str)
+Logger.log(context: str, message: str)
+Logger.warn(context: str, message: str)
+Logger.error(context: str, message: str)
+Logger.take_dropped() -> int
+    Events dropped and not yet reported; resets the count.
+Logger.flush(timeout_ns: int)
+    Waits until everything emitted before this call is written, or `timeout_ns` passes.
+request_event(method: str, route: str, raw_path: str, status: int, duration_ns: int, size: int, request_id: str, client_ip: str) -> LogEvent
+    A request's record.
+logs_requests(lg: Logger, status: int) -> bool
+    Whether the serve loop should build a request record at all.
+safe_path(raw: str) -> str
+    A client-supplied path made safe to print: the query dropped, at most 64 bytes kept, and every byte outside printable ASCII --...
+utc_parts(unix_ns: int) -> [int]
+    Unix nanoseconds as UTC civil time: [year, month, day, hour, minute, second, millisecond].
+gc struct LogFormat { pid: str, three: [str], plain: [str], sec: int, stamp_t: str, stamp_sp: str, quoted: map[str]str }
+    Formatting state, made once and reused for every line: tables of the numbers a line needs (so a status, a size or a...
+new_log_format(pid: int) -> LogFormat
+LogFormat.stamp(unix_ns: int, t: bool) -> str
+    "2026-10-12T18:47:01.123Z" (t) or "2026-10-12 18:47:01.123Z".
+LogFormat.json_into(sb: builder.Str, ev: LogEvent) -> builder.Str
+    One JSON object and a newline, appended to `sb`.
+LogFormat.pretty_into(sb: builder.Str, ev: LogEvent, color: bool, since_ns: int) -> builder.Str
+    The NestJS layout and a newline, appended to `sb`:   [zokor] <pid>  - <utc time>     LOG [Context] message +3.21ms The...
+LogFormat.json(ev: LogEvent) -> str
+    The same as single strings, without the newline: for a consumer that wants one line at a time.
+LogFormat.pretty(ev: LogEvent, color: bool, since_ns: int) -> str
+
+## metrics.sl -- Opt-in Prometheus metrics with bounded request series and custom scalars.
+gc struct MetricsConfig { path: str, max_series: int, max_custom: int, buckets_ns: [int] }
+metrics_config() -> MetricsConfig
+enum MetricKind { Counter, Gauge }
+gc struct Metric { name: str, help: str, kind: MetricKind, lock: mutex, value: int }
+gc struct Metrics { path: str, max_series: int, max_custom: int, bounds: [int], lock: mutex, active: int, dropped: int, routes: map[str]int, series_index: map[int]int, series: [RequestSeries], custom: [Metric] }
+new_metrics(cfg: MetricsConfig) -> result[Metrics, str]
+    Copies configuration so later caller mutations cannot change bucket shapes.
+Metrics.enter()
+Metrics.leave(method: str, route: str, status: int, ns: int)
+    One completion for each enter, including a panic or failed socket write.
+Metrics.counter(name: str, help: str) -> result[Metric, str]
+Metrics.gauge(name: str, help: str) -> result[Metric, str]
+Metric.add(delta: int) -> result[bool, str]
+    Counters only increase; gauges can add a signed delta.
+Metric.set(value: int) -> result[bool, str]
+Metric.read() -> int
+metrics_text(m: Metrics) -> str
+    A consistent snapshot is copied under the lock; text formatting happens after unlocking so scrapes do not hold up request...
+
+## migrations.sl -- Forward-only SQL migrations: immutable history and an atomic pending batch.
+gc struct Migration { version: int, name: str, sql: str, checksum: str }
+gc struct MigrationLimits { max_files: int, max_file_bytes: int, max_total_bytes: int }
+    Limits for reading files, chosen by the caller before startup.
+migration_limits() -> MigrationLimits
+migration_checksum(sql: str) -> str
+new_migration(version: int, name: str, sql: str) -> Migration
+load_migrations(dir: str, limits: MigrationLimits) -> result[[Migration], str]
+    Load N_description.sql files, sort numerically, and reject duplicates.
+migrate(p: pg.Pool, ms: [Migration], deadline: until) -> result[int, str]
+    Validate all historical files, then apply the pending batch in one transaction under a database-wide advisory lock.
+
+## negotiation.sl -- Startup-compiled representations and bounded RFC 9110 Accept negotiation.
+gc struct AcceptLimits { max_bytes: int, max_ranges: int, max_params: int, max_offers: int, max_offer_bytes: int }
+accept_limits() -> AcceptLimits
+gc struct Negotiator { offers: [str], types: [str], subtypes: [str], params: [[str]], max_bytes: int, max_ranges: int, max_params: int }
+    Treat the compiled vectors as immutable after startup.
+new_negotiator(offers: [str], limits: AcceptLimits) -> result[Negotiator, str]
+    Offer order breaks otherwise equal preferences.
+Negotiator.choose(header: opt[str]) -> result[opt[str], str]
+    none means no acceptable offer; err means malformed Accept.
+negotiate[S](c: Ctx[S], n: Negotiator) -> result[str, http.Response]
+    A selected media type, or a registered 400/406 response.
+
+## openapi.sl -- Startup OpenAPI generation from registered routes and explicit wire schemas.
+gc struct OpenApiLimits { max_routes: int, max_schemas: int, max_schema_bytes: int, max_total_schema_bytes: int, max_schema_depth: int, max_document_bytes: int, max_collection_entries: int, max_metadata_bytes: int }
+    Resource limits for startup metadata and the generated document.
+openapi_limits() -> OpenApiLimits
+gc struct ApiParameter { name: str, location: str, schema: str, required: bool, description: str }
+    schema is a registered DTO name or a primitive JSON Schema type.
+gc struct ApiResponse { status: i32, description: str, schema: str, media_type: str }
+    An empty schema declares a response without a body.
+gc struct ApiOperation { method: Method, pattern: str, operation_id: str, summary: str, description: str, tags: [str], parameters: [ApiParameter], request_schema: str, request_media_type: str, request_required: bool, responses: [ApiResponse], errors: [str] }
+    Metadata cannot create routes: method/pattern must occur in routes_list.
+gc struct OpenApi { title: str, version: str, description: str, server_urls: [str], schemas: map[str]str, operations: [ApiOperation], omitted: [str], error_schema: str, error_media_type: str, limits: OpenApiLimits }
+    Configure before generation.
+new_openapi(title: str, version: str) -> OpenApi
+api_operation(method: Method, pattern: str) -> ApiOperation
+api_parameter(name: str, location: str, schema: str) -> ApiParameter
+api_response(status: i32, schema: str) -> ApiResponse
+OpenApi.schema(name: str, definition: str) -> int
+    A JSON Schema definition, parsed within limits at generation.
+OpenApi.operation(op: ApiOperation) -> int
+OpenApi.omit(method: Method, pattern: str) -> int
+    Explicitly exclude an unsupported or private route from this document.
+api_default_error_schema() -> str
+    Embed this definition when the application's renderer uses the default envelope.
+api_ref(name: str) -> str
+    A self-contained reference, or an inline primitive schema.
+openapi_document(routes: [str], reg: Registry, api: OpenApi) -> result[str, str]
+    Generate at startup; returns every detected metadata problem together.
+
+## pagination.sl -- Pagination: offset pages and keyset (cursor) pages, one envelope for both, so a client reads every list the same way:
+struct Page { limit: int, offset: int, cursor: str, by_cursor: bool }
+    What the request asked for, checked.
+Page.fetch() -> int
+    How many rows to ask the database for: one more than the page, so the response knows whether there is a next page without a count.
+page_of[S](c: Ctx[S], default_limit: int, max_limit: int) -> result[Page, http.Response]
+    The page `c` asks for: `limit` (default `default_limit`, at most `max_limit`), and either `offset` or `cursor`.
+encode_cursor(parts: [str]) -> str
+    The opaque cursor for a row whose sort key is `parts`.
+decode_cursor(cursor: str) -> result[[str], str]
+    The key parts of a cursor, err when it is not one encode_cursor made.
+cursor_parts(p: Page) -> [str]
+    The key parts of the cursor `p` came with ([] on the first page).
+offset_page[S, T](c: Ctx[S], p: Page, rows: [T], total: opt[int]) -> http.Response
+    An offset page of `rows` -- up to p.fetch() of them; one past the limit means there is a next page -- in the envelope, with Link.
+cursor_page[S, T](c: Ctx[S], p: Page, rows: [T], key: fn(T) -> [str]) -> http.Response
+    A keyset page of `rows` -- up to p.fetch(); one past the limit means there is a next page, whose cursor is `key` of the last...
+
+## postgres.sl -- Postgres, wired to zokor's config, results and error envelope.
+pg_from_config(cfg: Config) -> result[pg.Pool, str]
+    DATABASE_URL (postgres://user:pass@host:port/db?sslmode=require) and DB_POOL_SIZE (default 10).
+has_postgres(cfg: Config) -> bool
+pg_close(p: pg.Pool)
+row_json(rows: pg.Rows, r: int) -> str
+    Row `r` as a JSON object keyed by column name.
+rows_as[T](rows: pg.Rows) -> result[[T], str]
+    Every row as a T, matched by column name without intermediate JSON text.
+query_all[T](p: pg.Pool, sql: str, args: [pg.Arg], deadline: until) -> result[[T], str]
+    Runs `sql` with `args` on a pooled connection and returns every row as a T.
+query_one[T](p: pg.Pool, sql: str, args: [pg.Arg], deadline: until) -> result[opt[T], str]
+    The first row as a T, none when the query returned no row.
+conn_query_all[T](c: pg.Conn, sql: str, args: [pg.Arg], deadline: until) -> result[[T], str]
+    The same on a connection you hold -- inside a transaction body.
+transaction[A, R](p: pg.Pool, arg: A, body: fn(pg.Conn, A) -> result[R, str], deadline: until) -> result[R, str]
+    Runs `body(conn, arg)` inside BEGIN ...
+is_unique_violation(e: str) -> bool
+db_failure(reg: Registry, e: str, request_id: str) -> http.Response
+    A database error as the answer to send, in the service's envelope.
+
+## ratelimit.sl -- Rate limiting.
+gc struct RateShard { hits: map[str][int], lock: mutex, since_sweep: int }
+gc struct RateLimiter { limit: int, window: int, shards: [RateShard], sweep_every: int }
+new_rate_limiter(limit: int, window_ns: int) -> RateLimiter
+    At most `limit` requests per client in any `window_ns` nanoseconds (1000000000 is one second).
+retry_after_secs(wait_ns: int) -> int
+    Whole seconds until `wait_ns` has passed, never below 1: a Retry-After of 0 invites an immediate retry that will be refused.
+struct RateCheck { wait: int, remaining: int, reset: int }
+    One check's answer, for the RateLimit-* headers.
+RateLimiter.take_at(key: str, now: int) -> int
+    Counts one request for `key` at `now` (time.mono nanoseconds).
+RateLimiter.check_at(key: str, now: int) -> RateCheck
+    take_at, with what is left: what the RateLimit-* headers report.
+RateLimiter.take(key: str) -> int
+    The same, now.
+RateLimiter.tracked() -> int
+    How many client keys are being tracked.
+rate_limit[S](c: Ctx[S], l: RateLimiter, key: str) -> opt[http.Response]
+    The body of a rate-limiting `before`: `none` to continue, or the registered `rate_limited` failure (429 unless re-registered)...
+rate_limit_client[S](c: Ctx[S], l: RateLimiter) -> opt[http.Response]
+    rate_limit keyed on the client's address: the socket's peer, or, behind a proxy listed in TRUSTED_PROXIES, the address that...
+
+## redirect.sl -- Checked redirects for variable destinations; redirect remains the raw constructor.
+gc struct RedirectRules { max_location_bytes: int, allow_external: bool }
+redirect_rules() -> RedirectRules
+    Relative references by default.
+redirect_checked(status: i32, location: str, rules: RedirectRules) -> result[http.Response, str]
+    Validate status and destination together without including destination secrets in errors.
+redirect_to(location: str) -> result[http.Response, str]
+    A checked 303 for the usual POST/redirect/GET flow, using relative references.
+
+## redis.sl -- Redis, wired to zokor's config system.
+redis_from_config(cfg: Config) -> result[redis.Pool, str]
+    REDIS_URL, read the same way every other optional dependency in this package is: config.optional_dsn, so a malformed value (a...
+has_redis(cfg: Config) -> bool
+    true iff REDIS_URL is set -- for a service that wants to know whether to wire Redis-backed features in at all before trying to...
+redis_close(p: redis.Pool)
+    Closes every idle connection and marks the pool closed; an in-flight acquire finishes normally, and the next one fails with...
+
+## respond.sl -- Success responses.
+json_response(status: i32, body: str) -> http.Response
+json_response_bytes(status: i32, body: bytes) -> http.Response
+    `json_response` with a BYTES body: same shape, no `to_bytes` copy.
+ok_json(body: str) -> http.Response
+    `ok` is a slang builtin (the result constructor), so the 200 helper is named for what it sends.
+ok_json_bytes(body: bytes) -> http.Response
+    `ok_json` with a BYTES body: the `render_bytes` path -- no str, no `to_bytes`, no copy between the renderer and the socket.
+created(body: str, location: str) -> http.Response
+created_bytes(body: bytes, location: str) -> http.Response
+accepted(body: str) -> http.Response
+accepted_bytes(body: bytes) -> http.Response
+    `accepted` with a BYTES body: same shape, no `to_bytes` copy.
+no_content() -> http.Response
+text(status: i32, body: str) -> http.Response
+text_bytes(status: i32, body: bytes) -> http.Response
+    `text` with a BYTES body: same shape, no `to_bytes` copy.
+html(status: i32, body: str) -> http.Response
+html_bytes(status: i32, body: bytes) -> http.Response
+    `html` with a BYTES body: same shape, no `to_bytes` copy.
+bytes_of(status: i32, content_type: str, body: bytes) -> http.Response
+redirect(status: i32, location: str) -> http.Response
+    303 after a POST, 307/308 to preserve the method, 301/302 for the older shapes.
+with_header(r: http.Response, name: str, value: str) -> http.Response
+no_store(r: http.Response) -> http.Response
+    Cache-Control in the two forms a service actually needs.
+cache_for(r: http.Response, seconds: int) -> http.Response
+
+## router.sl -- The router: a request goes in, a response comes out, and the application's own state comes with it.
+enum Method { GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, TRACE, CONNECT }
+    The HTTP methods, as a closed set.
+gc struct Ctx[S] { state: S, req: http.Request, params: opt[map[str]str], param1_name: str, param1_value: str, route: str, request_id: str, client_ip: str, out: opt[[str]], locals: opt[map[str]str], errors: Registry, upgrade: opt[Socket] }
+struct Served { resp: http.Response, route: str, upgrade: opt[Socket] }
+    A response and the route pattern that produced it, for the request log.
+gc struct Route[S] { method: Method, pattern: str, befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], segs: [str], names: [str], wild: int, fkind: int, fpath: str, handler: fn(Ctx[S]) -> http.Response, has_static: bool, static_status: i32, static_ctype: str, static_body: bytes, static_rendered: bytes, static_hit: opt[http.StaticBody], static_close_hit: opt[http.StaticBody], no_map: opt[map[str]str], ws: int }
+gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security, sanitize: SanitizeMode, auto_etag: bool, rindex: [RNode], static_paths: map[str]int, idem: opt[Idempotency], gzip: opt[Compression], mounts: [FileMount], no_lines: opt[[str]], observations: opt[Metrics], tracer: opt[Tracer], no_tracer: opt[Tracer], request_locals: opt[map[str]str], sockets: [WsRoute[S]], no_socket: opt[Socket] }
+    A `before` runs ahead of the handler and may end the request by returning a response; `none` carries on.
+new_router[S](state: S) -> Router[S]
+    An application builds its router from its state alone; everything else starts empty or at the default a correct server should...
+new_group[S](r: Router[S], prefix: str) -> Group[S]
+    The function-call equivalent of `r.group(prefix)`, for a service that wants its setup to read as a list of constructors rather...
+Router.handle(method: Method, pattern: str, h: fn(Ctx[S]) -> http.Response) -> int
+    Every method goes through here, including the ones with their own helper below, so a pattern is split exactly once and the...
+Router.handle_with(method: Method, pattern: str, h: fn(Ctx[S]) -> http.Response, befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response]) -> int
+    The one registration path: a pattern is split exactly once, and the rules about `:params` and `*rest` live here alone.
+Router.static_bytes(p: str, status: i32, content_type: str, body: bytes, h: fn(Ctx[S]) -> http.Response) -> int
+    The full set of HTTP methods, so no service has to fall back to `handle` with a string for anything standard.
+Router.websocket(p: str, open: fn(Ctx[S]) -> http.Response, w: WsRoute[S]) -> int
+    A WebSocket route (ws_serve.sl).
+Router.socketio(p: str, open: fn(Ctx[S]) -> http.Response, s: SioRoute[S]) -> int
+    A Socket.IO route (sio_serve.sl), usually at "/socket.io/".
+Router.get(p: str, h: fn(Ctx[S]) -> http.Response) -> int
+Router.head(p: str, h: fn(Ctx[S]) -> http.Response) -> int
+Router.post(p: str, h: fn(Ctx[S]) -> http.Response) -> int
+Router.put(p: str, h: fn(Ctx[S]) -> http.Response) -> int
+Router.patch(p: str, h: fn(Ctx[S]) -> http.Response) -> int
+Router.delete(p: str, h: fn(Ctx[S]) -> http.Response) -> int
+Router.options(p: str, h: fn(Ctx[S]) -> http.Response) -> int
+Router.trace(p: str, h: fn(Ctx[S]) -> http.Response) -> int
+Router.connect(p: str, h: fn(Ctx[S]) -> http.Response) -> int
+Router.any(methods: [Method], p: str, h: fn(Ctx[S]) -> http.Response) -> int
+    One handler for several methods on one pattern.
+Router.group(prefix: str) -> Group[S]
+    A prefix with its own middleware.
+Router.guarded(method: Method, pattern: str, h: fn(Ctx[S]) -> http.Response, befores: [fn(Ctx[S]) -> opt[http.Response]]) -> int
+    Middleware for one route, which is the other half of the same need: `r.guarded(Method.DELETE, "/orgs/:id", drop,...
+Router.before(f: fn(Ctx[S]) -> opt[http.Response]) -> int
+Router.after(f: fn(Ctx[S], http.Response) -> http.Response) -> int
+Router.etags() -> int
+    Tags every 200 answer to a GET or HEAD with a strong ETag -- a hash of the body it sends -- and answers a matching...
+Router.idempotency(store: Idempotency) -> int
+    Answers a retried POST or PATCH that carries an Idempotency-Key with the first answer, from `store` (see idempotency.sl).
+Router.compress(z: Compression) -> int
+    Gzips answers worth it for clients that accept it (see compression.sl).
+Router.files(m: FileMount) -> int
+    Serves the directory of `m` under its prefix (see files.sl): a GET or HEAD no route claims.
+Router.security_headers(h: SecurityHeaders) -> int
+    Replaces the security headers (see security.sl); no_security_headers() turns them off.
+Router.mongo_sanitize(mode: SanitizeMode) -> int
+    Turns the operator-injection guard on (REJECT, STRIP) or off; see sanitize.sl.
+Router.cors(p: CorsPolicy) -> int
+    Turns CORS on with `p` (see cors.sl).
+Router.health() -> int
+    Answers GET /healthz (liveness) and GET /readyz (the checks below).
+Router.health_at(live_path: str, ready_path: str) -> int
+    The same at paths of the service's choosing.
+Router.ready_check(name: str, f: fn(S) -> result[int, str]) -> int
+    Registers a dependency /readyz waits on.
+Router.ready_timeout(ns: int) -> int
+    How long /readyz waits for its checks, in nanoseconds; below 1ms is raised to 1ms.
+Router.routes_list() -> [str]
+    "METHOD /pattern" per route, in registration order: for a boot log, for `zokor check`, and for a test that pins down the...
+Router.metrics(m: Metrics) -> int
+    Opt-in Prometheus endpoint; a service's explicit route still wins.
+Router.tracing(driver: Tracer) -> int
+Router.allowed(p: str) -> [Method]
+    The methods registered for a path, for `Allow` on a 405 and for an automatic OPTIONS.
+Router.serve(req: http.Request) -> http.Response
+    Dispatch: befores, the handler, then afters -- and the afters run even when a before ended the request, so a logging or header...
+Router.match_static(f: http.WireFrame) -> opt[http.StaticBody]
+    Frame dispatch: route on the ALREADY-PARSED method/path strs, with no raw bytes, no offsets, no segs list, no params map...
+Router.serve_static(f: http.WireFrame) -> result[http.StaticBody, http.Response]
+Router.serve_frame(f: http.WireFrame, request_id: str) -> http.Response
+    serve() stays for callers that already hold a Request (tests, middleware fixtures); serve_conn uses this via serve_static.
+Router.serve_frame_for(f: http.WireFrame, request_id: str, client_ip: str) -> http.Response
+    serve_frame, with the client's address for Ctx.client_ip.
+Router.serve_frame_routed(f: http.WireFrame, request_id: str, client_ip: str) -> Served
+    What the serve loop calls: the response, and the route pattern that answered it for the request log ("" when none did).
+Router.serve_id(req: http.Request, request_id: str) -> http.Response
+Router.serve_id_for(req: http.Request, request_id: str, client_ip: str) -> http.Response
+Router.serve_id_routed(req: http.Request, request_id: str, client_ip: str) -> Served
+Router.fail(c: Ctx[S], code: str) -> http.Response
+    The registry's codes, rendered with this request's id.
+Router.fail_with(c: Ctx[S], code: str, detail: str) -> http.Response
+Router.fail_fields(c: Ctx[S], code: str, fields: [FieldError]) -> http.Response
+join_methods(ms: [Method]) -> str
+gc struct Group[S] { router: Router[S], prefix: str, befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response] }
+    A prefix and the middleware that goes with it.
+Group.group(prefix: str) -> Group[S]
+    A group inside this one: the prefixes join and the middleware accumulates.
+Group.before(f: fn(Ctx[S]) -> opt[http.Response]) -> int
+Group.after(f: fn(Ctx[S], http.Response) -> http.Response) -> int
+Group.handle(method: Method, pattern: str, h: fn(Ctx[S]) -> http.Response) -> int
+Group.websocket(p: str, open: fn(Ctx[S]) -> http.Response, w: WsRoute[S]) -> int
+    r.websocket, under the group's prefix and with its hooks.
+Group.get(p: str, h: fn(Ctx[S]) -> http.Response) -> int
+Group.head(p: str, h: fn(Ctx[S]) -> http.Response) -> int
+Group.post(p: str, h: fn(Ctx[S]) -> http.Response) -> int
+Group.put(p: str, h: fn(Ctx[S]) -> http.Response) -> int
+Group.patch(p: str, h: fn(Ctx[S]) -> http.Response) -> int
+Group.delete(p: str, h: fn(Ctx[S]) -> http.Response) -> int
+Group.options(p: str, h: fn(Ctx[S]) -> http.Response) -> int
+Ctx.trace() -> TraceContext
+    Empty identifiers when tracing is off.
+Ctx.trace_request(req: httpc.Request) -> result[httpc.Request, str]
+Ctx.logger(log: Logger) -> TraceLogger
+Ctx.param(name: str) -> str
+Ctx.param_int(name: str, fallback: int) -> int
+Ctx.header(name: str) -> str
+Ctx.add_header(name: str, value: str) -> int
+    Adds a header to whatever response this request ends with: the handler's, or a `before`'s short-circuit, or an error.
+Ctx.cookie(name: str) -> str
+    The value of cookie `name`, "" when the request carried none.
+Ctx.cookies() -> map[str]str
+    Every cookie the request carried.
+Ctx.set_local(key: str, v: str) -> int
+    What a `before` resolved, read by the handler: the user a token belongs to, the tenant a subdomain names, the plan a customer...
+Ctx.socket() -> Socket
+    The socket a WebSocket route's handshake is opening: put it in a hub, set its locals.
+Ctx.accept_ws() -> http.Response
+    The 101 that accepts the upgrade.
+Ctx.local(key: str) -> str
+Ctx.has_local(key: str) -> bool
+Ctx.body_str() -> str
+Ctx.body_bytes() -> bytes
+Ctx.method() -> Method
+    The verb as a checked value.
+Ctx.method_str() -> str
+    The verb exactly as the client sent it, for logs.
+Ctx.path() -> str
+Ctx.query(name: str) -> str
+    One query parameter, percent-decoded, or "".
+Ctx.query_int(name: str, fallback: int) -> int
+Ctx.bearer() -> str
+    The bearer token without its scheme, or "".
+Ctx.content_type() -> str
+Ctx.json_body() -> result[Json, FormError]
+    The body as a JSON value, for a shape you have not declared.
+Ctx.form(rules: UploadRules) -> result[Form, FormError]
+    The multipart form this request carries, under the caller's rules.
+Ctx.upload(rules: UploadRules) -> result[Form, FormError]
+    The same, refused unless the request is a POST/PUT/PATCH: a body on a GET is a client doing something strange.
+Ctx.wants_close() -> bool
+dto[S, T](c: Ctx[S]) -> result[T, http.Response]
+    The body decoded into a declared shape, in one call: the wire's camelCase keys become the struct's snake_case fields (slang's...
+query_as[S, T](c: Ctx[S]) -> result[T, http.Response]
+    The query string bound into a declared shape, in one call, with the same field-level errors a bad body gets --      let r:...
+
+## sanitize.sl -- Operator injection: the NoSQL half of input sanitisation.
+enum SanitizeMode { OFF, REJECT, STRIP }
+sanitize_from(cfg: Config) -> SanitizeMode
+    MONGO_SANITIZE: off (default), reject or strip.
+operator_key(k: str) -> bool
+    A key MongoDB would read as an operator or a path.
+find_operator_key(j: Json) -> str
+    The first operator key in `j`, as a path ("filter.$where", "items[2].$gt"), or "" when there is none.
+strip_operator_keys(j: Json) -> int
+    Removes every operator key in `j`, at any depth, in place; returns how many were removed.
+sanitize_request(req: http.Request, mode: SanitizeMode) -> str
+    What the guard says about `req` under `mode`: "" to carry on (after stripping in place, in STRIP mode), or the offending key's...
+
+## security.sl -- Security headers.
+gc struct SecurityHeaders { csp: str, hsts_max_age: int, hsts_subdomains: bool, hsts_preload: bool, nosniff: bool, frame_options: str, referrer_policy: str, coop: str, corp: str }
+default_security_headers() -> SecurityHeaders
+no_security_headers() -> SecurityHeaders
+security_problem(h: SecurityHeaders) -> str
+    What is wrong with `h`, or "".
+security_lines(h: SecurityHeaders) -> [str]
+    The header lines, "name: value", in a fixed order.
+security_from(cfg: Config) -> SecurityHeaders
+    SECURITY_HEADERS (false turns all of them off), CONTENT_SECURITY_POLICY ("off" for none), HSTS_MAX_AGE (seconds, 0 = off),...
+gc struct Security { lines: [str], prefixes: [str] }
+    What the router keeps: the lines, and each line's lowercase name for the "a handler set its own" check.
+security_compile(h: SecurityHeaders) -> Security
+Security.apply(resp: http.Response) -> http.Response
+    `resp` with every line it does not already carry.
+static_render_with(status: i32, content_type: str, lines: [str], body: bytes, keep_alive: bool) -> bytes
+    A static route's bytes: status line, content type, the security lines, length, connection, the date line, body.
+
+## serve.sl -- The server edge: the accept loop that turns a Router into a running server.
+gc struct ServerConfig { idle_timeout: int, header_timeout: int, body_timeout: int, write_timeout: int, max_request_bytes: int, max_requests_per_conn: int, shutdown_timeout: int, request_ids: bool, trusted_proxies: TrustedProxies, logger: Logger, max_connections: int, tls: TlsSettings }
+    Four deadlines, not one, because "how long should this wait" has different honest answers depending on what a connection is...
+gc struct TlsSettings { on: bool, cert_file: str, key_file: str, client_ca_file: str, handshake_timeout: int }
+    A certificate chain and its private key, as PEM files, read once when the server starts: a missing or mismatched pair stops it...
+no_tls() -> TlsSettings
+tls_files(cert_file: str, key_file: str) -> TlsSettings
+    HTTPS from these two PEM files, with every other setting at its default.
+default_server_config() -> ServerConfig
+    Safe rather than infinite, per the todo item this answers.
+server_config_from(cfg: Config) -> ServerConfig
+    The same defaults, overridable per field from config: IDLE_TIMEOUT, READ_HEADER_TIMEOUT, READ_BODY_TIMEOUT, WRITE_TIMEOUT,...
+serve_conn[S](r: Router[S], c: link, sc: ServerConfig)
+    One connection, until the client goes away or asks to close.
+gc struct ConnGate { lock: mutex, open: int, max: int, refused: int, reported_at: int }
+    The server-wide connection count, shared by every acceptor.
+new_conn_gate(max: int) -> ConnGate
+ConnGate.enter() -> bool
+    Takes a slot for a new connection; false (and counted as refused) when every slot is taken.
+ConnGate.leave()
+ConnGate.open_now() -> int
+ConnGate.refusals_to_report(now: int) -> int
+    The refusals to report, at most once per second of `now`: 0 when there are none or the last report was under a second ago.
+serve_tls_conn[S](r: Router[S], c: link, sc: ServerConfig, ctx: rawptr)
+    serve_conn over TLS: the handshake first, under its own deadline, then the same loop.
+accept_backoff(prev_ns: int) -> int
+    The pause after a failed accept: 5ms, doubling to 1s while it keeps failing.
+listen_and_serve[S](r: Router[S], port: int) -> result[int, str]
+    Bind, then accept until the process is asked to stop.
+listen_and_serve_with[S](r: Router[S], port: int, sc: ServerConfig) -> result[int, str]
+    Same, with timeouts, limits, and the shutdown drain window under the caller's control -- built from config with...
+
+## sio_serve.sl -- Socket.IO routes, served: Engine.IO v4 and Socket.IO v5 (what socket.io-client 3 and 4 speak), on both of its transports.
+gc struct SioRoute[S] { settings: SioSettings, event: fn(S, Socket, SioEvent), connect: opt[fn(S, Socket, str, str) -> result[bool, str]], disconnect: opt[fn(S, Socket, str, str)], sessions: SioSessions }
+sio_route[S](event: fn(S, Socket, SioEvent)) -> SioRoute[S]
+SioRoute.on_connect(f: fn(S, Socket, str, str) -> result[bool, str]) -> SioRoute[S]
+SioRoute.on_disconnect(f: fn(S, Socket, str, str)) -> SioRoute[S]
+
+## socket.sl -- A live connection the serve loop holds open after an upgrade, and the hub that lets one connection's handler reach the others.
+gc struct Socket { id: str, route: str, protocol: str, client_ip: str, locals: map[str]str, lock: mutex, out: chan[Out], open: bool, ended: str, close_code: int, close_reason: str, hubs: [Hub], namespaces: map[str]bool, handler: int, handshake: http.Response, sio: bool, accepted: bool }
+Socket.send_text(s: str) -> bool
+    Queues a text message.
+Socket.send_binary(b: bytes) -> bool
+Socket.emit(namespace: str, name: str, args_json: str) -> bool
+    Socket.IO: `emit(name, ...args)` on a namespace ("/" by default).
+Socket.emit_with_ack(namespace: str, name: str, args_json: str, id: int) -> bool
+    The same, asking the client to acknowledge: its answer arrives as an Ack event carrying `id`.
+Socket.ack(namespace: str, id: int, args_json: str) -> bool
+    The answer to a client event that asked for one (SioEvent.ack >= 0).
+Socket.emit_binary(namespace: str, name: str, args_json: str, data: [bytes]) -> bool
+    emit with binary attachments: `args_json` is the other arguments, as for emit, and each of `data` follows them as a binary...
+Socket.disconnect_ns(namespace: str) -> bool
+    Disconnects the client from one namespace; the session stays.
+Socket.close(code: int, reason: str) -> bool
+    Starts the closing handshake with `code` (1000 normal, 1001 going away, 1008 policy, 4000-4999 the application's own) and...
+Socket.is_open() -> bool
+Socket.local(key: str) -> str
+    A value the handshake's hooks set on the request, "" when none did.
+Socket.set_local(key: str, v: str) -> int
+gc struct Hub { id: str, lock: mutex, sockets: map[str]Socket, rooms: map[str]map[str]bool }
+    Sockets by id, and rooms of them: what a chat, a live dashboard or a notification fan-out needs to reach more than the one...
+new_hub() -> Hub
+Hub.add(s: Socket) -> int
+Hub.remove(s: Socket) -> int
+    Takes the socket out of the hub and every room in it.
+Hub.join_room(s: Socket, room: str) -> int
+    Puts the socket in a room (adding it to the hub first if needed).
+Hub.leave_room(s: Socket, room: str) -> int
+Hub.count() -> int
+Hub.room_size(room: str) -> int
+Hub.get(id: str) -> opt[Socket]
+    The socket with this id, if it is in the hub.
+Hub.broadcast(text: str, except: str) -> int
+    Text to every WebSocket in the hub but `except` (an id, or "").
+Hub.broadcast_binary(b: bytes, except: str) -> int
+Hub.to_room(room: str, text: str, except: str) -> int
+Hub.to_room_binary(room: str, b: bytes, except: str) -> int
+Hub.emit_all(namespace: str, name: str, args_json: str, except: str) -> int
+    Socket.IO: one event to every Socket.IO session in the hub, encoded once.
+Hub.emit_to_room(room: str, namespace: str, name: str, args_json: str, except: str) -> int
+Hub.emit_binary_to_room(room: str, namespace: str, name: str, args_json: str, data: [bytes], except: str) -> int
+    emit_binary to every Socket.IO session in a room ("" for the hub).
+
+## testkit.sl -- Building a request, and reading a response.
+gc struct TestRequest { method: Method, path: str, headers: map[str]str, body: bytes }
+request(method: Method, path: str) -> TestRequest
+get_request(path: str) -> TestRequest
+TestRequest.header(name: str, value: str) -> TestRequest
+TestRequest.bearer(token: str) -> TestRequest
+TestRequest.basic(credentials: str) -> TestRequest
+TestRequest.content_type(ct: str) -> TestRequest
+TestRequest.body_str(body: str) -> TestRequest
+TestRequest.body_bytes(body: bytes) -> TestRequest
+TestRequest.json_body(body: str) -> TestRequest
+    Sets the content type too, because a body without one is a body a real client would not send.
+TestRequest.json(body: Json) -> TestRequest
+TestRequest.multipart(boundary: str, fields: map[str]str, files: [Upload]) -> TestRequest
+    A multipart body, built from the parts given: each file is `name:filename:content-type:content`, each field `name:value`.
+TestRequest.build() -> http.Request
+    Not fallible: a header that fails http.request()'s validation (CR or LF in a name or value, a colon in a name) here is a bug...
+upload_part(field: str, filename: str, content_type: str, content: str) -> Upload
+    One part for `multipart`, without going near a real encoder.
+resp_status(r: http.Response) -> int
+    `status_of` is taken by the registry, so responses read as `resp_status`, `resp_text`, `resp_header`, `resp_json`.
+resp_text(r: http.Response) -> str
+resp_header(r: http.Response, name: str) -> str
+resp_json(r: http.Response) -> Json
+    The body as JSON, or Null when it is not JSON at all -- so an assertion reads `json_of(resp).get("id")` without a guard.
+resp_error_code(r: http.Response) -> str
+    The error code in zokor's envelope: "not_found", "validation_failed".
+resp_error_fields(r: http.Response) -> [str]
+    The field names an error envelope complains about, in order, so a test asserts on the shape rather than on an exact string.
+
+## tokens.sl -- Opaque bearer tokens.
+gc struct TokenStore { subjects: map[str]str, expires: map[str]int, ttl: int, lock: mutex, since_sweep: int }
+new_token_store(ttl_ns: int) -> TokenStore
+    `ttl_ns` is how long a token stays valid after it is issued, in nanoseconds; 0 means until it is revoked.
+new_token() -> result[str, str]
+    32 random bytes as 64 lowercase hex characters.
+TokenStore.issue(subject: str) -> result[str, str]
+    A new token for `subject`.
+TokenStore.issue_at(subject: str, now: int) -> result[str, str]
+TokenStore.lookup(token: str) -> opt[str]
+    The subject a live token was issued to; none for an unknown, revoked or expired token (an expired one is dropped on the way).
+TokenStore.lookup_at(token: str, now: int) -> opt[str]
+TokenStore.revoke(token: str) -> bool
+    Ends one token (logout).
+TokenStore.revoke_subject(subject: str) -> int
+    Ends every token issued to `subject` ("log out everywhere", a password change).
+TokenStore.count() -> int
+    How many tokens are held (expired ones count until swept).
+bearer_subject[S](c: Ctx[S], store: TokenStore) -> opt[str]
+    The subject behind the request's `Authorization: Bearer <token>`, or none when the header is missing or the token is not live.
+
+## tracing.sl -- Request-scoped W3C context, carried explicitly across tasks and calls.
+gc struct TraceConfig { max_parent_bytes: int, max_state_bytes: int, max_state_members: int }
+    Startup limits for incoming W3C headers.
+gc struct Tracer { max_parent_bytes: int, max_state_bytes: int, max_state_members: int }
+    Validated, immutable startup tracing settings.
+struct TraceContext { trace_id: str, parent_id: str, span_id: str, sampled: bool, state: str }
+    Explicit request context; pass this value when spawning background work.
+trace_config() -> TraceConfig
+    Default limits: 256 parent bytes, 512 state bytes, 32 state members.
+new_tracer(cfg: TraceConfig) -> result[Tracer, str]
+    Validate all startup limits together and copy them.
+trace_context(t: Tracer, headers: bytes) -> result[TraceContext, str]
+    Invalid, absent or duplicate parents start a new trace.
+trace_header(ctx: TraceContext) -> result[str, str]
+    A validated version-00 header; reserved flags are always zero.
+trace_request(ctx: TraceContext, req: httpc.Request) -> result[httpc.Request, str]
+    Copy the request and its headers; never mutate a shared caller request.
+trace_registry(reg: Registry, ctx: TraceContext) -> Registry
+    Bind a registry by copying its startup references, never changing the shared registry as concurrent requests arrive with...
+struct TraceLogger { logger: Logger, trace_id: str, request_id: str }
+    A request binding over a shared Logger, without changing its configuration.
+traced_logger(log: Logger, ctx: TraceContext) -> TraceLogger
+    Bind application records to a validated trace id.
+
+## upload.sl -- File uploads.
+gc struct UploadRules { limits: multipart.Limits, allowed_types: [str], allowed_extensions: [str], require_content_type: bool }
+gc struct Upload { field: str, filename: str, raw_filename: str, content_type: str, data: bytes }
+gc struct Form { values: map[str]str, files: [Upload] }
+gc struct FormError { code: str, detail: str }
+    The reason a form was refused: a registered error code, and a sentence naming what was wrong.
+default_uploads() -> UploadRules
+uploads_allowing(types: [str]) -> UploadRules
+with_max_file_bytes(r: UploadRules, n: int) -> UploadRules
+with_max_total_bytes(r: UploadRules, n: int) -> UploadRules
+with_max_files(r: UploadRules, n: int) -> UploadRules
+with_extensions(r: UploadRules, exts: [str]) -> UploadRules
+parse_form(content_type: str, body: bytes, rules: UploadRules) -> result[Form, FormError]
+value(f: Form, name: str) -> str
+has_value(f: Form, name: str) -> bool
+file(f: Form, field: str) -> opt[Upload]
+    The first file posted under a field name, which is the usual case.
+files_for(f: Form, field: str) -> [Upload]
+    Every file under one field name: `<input multiple>` posts repeats.
+total_bytes(f: Form) -> int
+safe_filename(raw: str) -> str
+    A client's filename, made safe to use as ONE path segment.
+extension_of(filename: str) -> str
+    ".png" for "a.png", lowercased; "" when there is no extension.
+media_type_of(header: str) -> str
+    The media type without its parameters: "image/png" from "image/png; charset=binary".
+
+## ws.sl -- WebSocket, and Socket.IO on top of it.
+gc struct WsRules { max_frame_bytes: int, max_message_bytes: int, protocols: [str], ping_interval: int, pong_timeout: int, max_queue: int, close_timeout: int }
+default_ws() -> WsRules
+ws_allowing(protocols: [str]) -> WsRules
+enum Incoming { Text, Binary, Ping, Pong, Close }
+gc struct Message { kind: Incoming, text: str, data: bytes, code: int, reason: str }
+gc struct Conn { rules: WsRules, inbox: builder.Bytes, have: int, need: int, partial: builder.Bytes, partial_op: ws.Op, fragmenting: bool, outbox: bytes, closed: bool, sid: str }
+new_conn(rules: WsRules) -> Conn
+is_upgrade(req: http.Request) -> bool
+    Is this request asking to become a WebSocket? Cheap enough to call on every request, so a route can serve both.
+upgrade(req: http.Request, rules: WsRules) -> result[http.Response, str]
+    The 101 to send back, or the failure to report.
+receive(c: Conn, chunk: bytes) -> result[[Message], str]
+    Feeds bytes in and takes whole messages out.
+pending(c: Conn) -> bytes
+    Bytes the connection owes the peer (pongs, the close echo), taken out: call it after `receive` and write whatever it returns.
+is_closed(c: Conn) -> bool
+text_frame(s: str) -> bytes
+binary_frame(b: bytes) -> bytes
+ping_frame(payload: bytes) -> bytes
+pong_frame(payload: bytes) -> bytes
+close_frame(code: int, reason: str) -> bytes
+close_because(c: Conn, why: str) -> bytes
+    The close a protocol error calls for: 1002, with the reason, and the connection marked shut so nothing else is sent.
+gc struct SioSettings { ping_interval_ms: int, ping_timeout_ms: int, max_payload: int, max_polling_sessions: int, max_attachments: int }
+default_sio() -> SioSettings
+enum SioKind { Open, Connect, Event, Ack, Ping, Disconnect, Other }
+gc struct SioEvent { kind: SioKind, namespace: str, name: str, args_json: str, ack: int, attachments: [bytes], expecting: int }
+sio_open(c: Conn, sid: str, s: SioSettings) -> bytes
+    The first thing a socket.io connection needs: its session id and the keepalive timings, as a text frame.
+sio_receive(c: Conn, m: Message) -> result[SioEvent, str]
+    Turns one WebSocket text message into a socket.io event.
+sio_connect_ok(c: Conn, namespace: str) -> bytes
+    The answer to a CONNECT.
+sio_connect_error(namespace: str, why: str) -> bytes
+sio_emit(namespace: str, name: str, args_json: str) -> bytes
+    `emit(name, args)`.
+sio_emit_with_ack(namespace: str, name: str, args_json: str, id: int) -> bytes
+sio_ack(namespace: str, id: int, args_json: str) -> bytes
+    The reply to an event that carried an ack id.
+sio_disconnect(namespace: str) -> bytes
+
+## ws_serve.sl -- WebSocket routes, served: the handshake goes through the router like any request -- its `before`s run, so authentication and...
+gc struct WsRoute[S] { rules: WsRules, message: opt[fn(S, Socket, Message)], closed: opt[fn(S, Socket, int, str)], sio: opt[SioRoute[S]] }
+ws_route[S](rules: WsRules, message: fn(S, Socket, Message)) -> WsRoute[S]
+    The message handler is the one a route cannot do without; on_close is optional.
+WsRoute.on_close(f: fn(S, Socket, int, str)) -> WsRoute[S]
+    Called once when the connection ends, however it ended, with the code and reason: the peer's, the ones this side closed with,...
+
+## internal/multipart (reached as UploadRules.limits)
+gc struct Limits { max_parts: int, max_files: int, max_file_bytes: int, max_field_bytes: int, max_total_bytes: int, max_headers_bytes: int, max_filename_bytes: int }
+
+
+# Examples
+
+> Runnable Slang services from the examples/ tree.
+
+- [Hello service](hello.html) — make example
+
+- [Chat service](chat.html) — make example-chat
+
+- [Ports and fakes](ports.html) — make example-ports
+
+
+# Hello service
+
+> A zokor service.
+
+# Hello service
+
+A zokor service.
+
+Run from the repository root: `make example`.
+
+## `examples/hello/main.sl`
+
+```slang
+// A zokor service.
+//
+// Read the "the service" section below: that is the whole API, and it
+// ends at `listen_and_serve`. The section after that is a client, not a
+// server: it makes the same requests a curl would, over a real socket,
+// so this file demonstrates the service by running it rather than by
+// describing it.
+import "http";
+import "httpc";
+import "time";
+import "../../zokor" as zokor;
+
+// ---------------------------------------------------------------- //
+// the service                                                        //
+// ---------------------------------------------------------------- //
+
+gc struct App {
+    name: str,
+    requests: int,
+    token: str,
+}
+
+fn home(c: zokor.Ctx[App]) -> http.Response {
+    return zokor.text(200, "hello from " + c.state.name);
+}
+
+fn search(c: zokor.Ctx[App]) -> http.Response {
+    return zokor.text(200, "q=" + c.query("q") +
+                           " page=" + to_str(c.query_int("page", 1)));
+}
+
+fn show_org(c: zokor.Ctx[App]) -> http.Response {
+    let _who = c.local("user_id");     // put there by require_token
+    if c.param("id") != "7" {
+        return zokor.respond_with(c.errors, "org.not_found",
+                                  "no such organisation '" + c.param("id") + "'",
+                                  c.request_id);
+    }
+    return zokor.ok_json("{\"org\":\"7\"}");
+}
+
+// A DTO: a declared shape. `zokor.dto` fills it (slang's own
+// json.decode underneath), a missing field is an error rather than a
+// silent zero, and the field it names is already in the envelope.
+gc struct CreateOrg {
+    name: str,
+    plan: str,
+    seats: i32,
+    website: opt[str],
+}
+
+fn create_org(c: zokor.Ctx[App]) -> http.Response {
+    // the wire is camelCase, the struct is snake_case: no tags needed,
+    // and a decode failure is already the response to return
+    let r: result[CreateOrg, http.Response] = zokor.dto(c);
+    guard let dto = r else let resp = err_of(r) {
+        return resp;
+    }
+
+    // types are checked by the decoder; VALUES are checked here, and
+    // every problem is reported at once
+    let v = zokor.checker();
+    if len(dto.name) == 0 {
+        v.note("name", "must not be empty");
+    }
+    if dto.seats < 1 || dto.seats > 500 {
+        v.note("seats", "must be between 1 and 500");
+    }
+    if dto.plan != "free" && dto.plan != "pro" {
+        v.note("plan", "must be one of: free, pro");
+    }
+    if v.failed() {
+        return zokor.respond_fields(c.errors, "validation_failed",
+                                    v.fields, c.request_id);
+    }
+
+    let body = zokor.jobj()
+        .set_str("id", "org_7")
+        .set_str("name", dto.name)
+        .set_str("plan", dto.plan)
+        .set_int("seats", dto.seats as int)
+        .set_opt_str("website", dto.website);
+    return zokor.created(zokor.camel_keys(body.render()), "/orgs/org_7");
+}
+
+// A shape nobody declared: a webhook whose fields belong to somebody
+// else. `json_body` walks it without a struct.
+fn webhook(c: zokor.Ctx[App]) -> http.Response {
+    let r = c.json_body();
+    guard let body = r else let e = err_of(r) {
+        return zokor.respond_with(c.errors, e.code, e.detail,
+                                  c.request_id);
+    }
+    let event = body.get("type").str_or("unknown");
+    let city = body.path("data.customer.address.city").str_or("nowhere");
+    let first_item = body.path("data.items.0.sku").str_or("none");
+    return zokor.ok_json(zokor.jobj()
+        .set_str("event", event)
+        .set_str("city", city)
+        .set_str("first_item", first_item)
+        .set_int("item_count", body.path("data.items").size())
+        .render());
+}
+
+fn asset(c: zokor.Ctx[App]) -> http.Response {
+    return zokor.text(200, "file " + c.param("rest"));
+}
+
+// An upload: the rules say what is acceptable, and anything else comes
+// back as a registered failure rather than reaching this handler.
+fn upload_avatar(c: zokor.Ctx[App]) -> http.Response {
+    let rules = zokor.with_max_file_bytes(
+        zokor.uploads_allowing(["image/png", "image/jpeg"]), 1048576);
+    let r = c.upload(rules);
+    guard let form = r else let e = err_of(r) {
+        return zokor.respond_with(c.errors, e.code, e.detail,
+                                  c.request_id);
+    }
+    guard let avatar = zokor.file(form, "avatar") else {
+        return zokor.respond_with(c.errors, "validation_failed",
+                                  "no file was posted under 'avatar'",
+                                  c.request_id);
+    }
+    // avatar.filename is already safe to use as one path segment
+    return zokor.ok_json("{\"stored\":\"" + avatar.filename +
+                         "\",\"type\":\"" + avatar.content_type +
+                         "\",\"bytes\":" + to_str(len(avatar.data)) +
+                         ",\"title\":\"" + zokor.value(form, "title") + "\"}");
+}
+
+// Middleware. A `before` may end the request, or resolve something and
+// hand it to the handler through the context; an `after` sees whatever
+// response came back, including one a before produced.
+//
+// Note what is NOT here: a list of public paths. This hook is attached
+// to a group, so it only ever runs for the routes inside it.
+fn require_token(c: zokor.Ctx[App]) -> opt[http.Response] {
+    if c.bearer() != c.state.token {
+        return some(zokor.respond(c.errors, "unauthorized",
+                                  c.request_id));
+    }
+    // resolved once, at the edge, instead of in every handler
+    c.set_local("user_id", "u_1");
+    return none;
+}
+
+fn count(c: zokor.Ctx[App], r: http.Response) -> http.Response {
+    c.state.requests = c.state.requests + 1;
+    return zokor.with_header(r, "x-request-count", to_str(c.state.requests));
+}
+
+// Configuration is read once, here, and validated before anything runs.
+let cfg = zokor.load_config();          // base, profile, startup environment
+
+let app = App {
+    name: zokor.str_or(cfg, "SERVICE_NAME", "hello"),
+    requests: 0,
+    token: zokor.str_or(cfg, "API_TOKEN", "s3cret")
+};
+
+// new_router's own registry, carried onto every Ctx from here on --
+// register the app's own codes on top of the built-ins it already has.
+let r = zokor.new_router(app);
+zokor.register(r.errors, "org.not_found", 404, "no such organisation");
+
+// public: no authentication
+r.get("/", home);
+r.get("/search", search);
+r.get("/files/*rest", asset);
+
+// everything under /api needs a token, and says so once
+let api = r.group("/api");
+api.before(require_token);
+api.get("/orgs/:id", show_org);
+api.post("/orgs", create_org);
+api.post("/avatars", upload_avatar);
+api.post("/webhooks/stripe", webhook);
+
+// counted for every request, public or not
+r.after(count);
+
+
+// The whole server, from here on. `listen_and_serve` accepts and spawns
+// one task per connection; it returns when the process is asked to stop.
+// A real service calls it and nothing else -- the spawn here is only so
+// this file can also play the client below.
+//
+// It would also log every request (README, "Logging"). The client below
+// prints each exchange itself and the program ends the moment it is done,
+// so this demo turns the log off rather than interleave the two; a real
+// service keeps it.
+let sc = zokor.default_server_config();
+sc.logger = zokor.no_logger();
+spawn zokor.listen_and_serve_with(r, port(), sc);
+
+// ---------------------------------------------------------------- //
+// the demo: a real client, over a real socket                        //
+//                                                                    //
+// Nothing below is part of zokor's API -- it is here so `make check`  //
+// exercises the server end to end rather than describing it.         //
+// ---------------------------------------------------------------- //
+
+// A function, not a top-level `let`: the client helpers below are
+// functions, and a top-level binding is local to the main task.
+fn port() -> int {
+    return 18080;
+}
+
+fn base() -> str {
+    return "http://127.0.0.1:" + to_str(port());
+}
+
+fn deadline() -> until {
+    return until_of(time.mono() + 5000000000);
+}
+
+fn send(rq: httpc.Request) -> httpc.Response {
+    let c = httpc.new_client();
+    let r2 = httpc.client_send(c, rq, deadline());
+    guard let resp = r2 else let e = err_of(r2) {
+        println("request failed: " + e);
+        exit(1);
+    }
+    return resp;
+}
+
+// Every request carries its own X-Request-Id, which the server reuses
+// (it is well-formed): the ids in the envelopes below are this one, so
+// the output is the same on every run instead of a fresh random id each.
+fn call(method: str, p: str, token: str, body: str, ctype: str) -> httpc.Response {
+    let rq = httpc.new_request(method, base() + p);
+    rq.headers["x-request-id"] = "example-req-1";
+    if len(token) > 0 {
+        rq.headers["authorization"] = "Bearer " + token;
+    }
+    if len(body) > 0 {
+        rq.headers["content-type"] = ctype;
+        rq.body = to_bytes(body);
+    }
+    return send(rq);
+}
+
+fn get(p: str) -> httpc.Response {
+    return call("GET", p, "", "", "");
+}
+
+fn json_call(method: str, p: str, token: str, body: str) -> httpc.Response {
+    return call(method, p, token, body, "application/json");
+}
+
+fn show(label: str, resp: httpc.Response) {
+    println(label + " -> " + to_str(resp.status) + " " + to_str(resp.body));
+}
+
+// wait for the listener to be up before the first request
+fn wait_ready() {
+    let i = 0;
+    while i < 200 {
+        let c = httpc.new_client();
+        let r2 = httpc.client_get(c, base() + "/", deadline());
+        guard let _ok = r2 else {
+            time.sleep(10000000);
+            i = i + 1;
+            continue;
+        }
+        return;
+    }
+    println("server never came up");
+    exit(1);
+}
+
+wait_ready();
+
+println("routes:");
+for line in r.routes_list() {
+    println("  " + line);
+}
+println("");
+
+show("GET    /", get("/"));
+show("GET    /search?q=slang&page=2", get("/search?q=slang&page=2"));
+show("GET    /api/orgs/7", call("GET", "/api/orgs/7", "s3cret", "", ""));
+show("GET    /api/orgs/9", call("GET", "/api/orgs/9", "s3cret", "", ""));
+show("GET    /api/orgs/7 (no token)", get("/api/orgs/7"));
+show("POST   /api/orgs (empty body)", call("POST", "/api/orgs", "s3cret", "", ""));
+show("POST   /api/orgs (bad values)",
+     json_call("POST", "/api/orgs", "s3cret",
+               "{\"name\":\"\",\"plan\":\"gold\",\"seats\":0}"));
+show("POST   /api/orgs (wrong type)",
+     json_call("POST", "/api/orgs", "s3cret",
+               "{\"name\":\"acme\",\"plan\":\"pro\",\"seats\":\"many\"}"));
+show("POST   /api/orgs (missing field)",
+     json_call("POST", "/api/orgs", "s3cret", "{\"name\":\"acme\"}"));
+show("POST   /api/orgs",
+     json_call("POST", "/api/orgs", "s3cret",
+               "{\"name\":\"acme\",\"plan\":\"pro\",\"seats\":12,\"website\":\"https://acme.test\"}"));
+show("POST   /api/webhooks/stripe",
+     json_call("POST", "/api/webhooks/stripe", "s3cret",
+               "{\"type\":\"invoice.paid\",\"data\":{\"customer\":{\"address\":{\"city\":\"Lagos\"}},\"items\":[{\"sku\":\"A1\"},{\"sku\":\"B2\"}]}}"));
+
+let avatar = "--B\r\n" +
+    "Content-Disposition: form-data; name=\"title\"\r\n\r\n" +
+    "My avatar\r\n" +
+    "--B\r\n" +
+    "Content-Disposition: form-data; name=\"avatar\"; filename=\"../../etc/passwd.png\"\r\n" +
+    "Content-Type: image/png\r\n\r\n" +
+    "PNGDATA\r\n" +
+    "--B--\r\n";
+show("POST   /avatars",
+     call("POST", "/api/avatars", "s3cret", avatar,
+          "multipart/form-data; boundary=B"));
+
+let bad_avatar = "--B\r\n" +
+    "Content-Disposition: form-data; name=\"avatar\"; filename=\"x.svg\"\r\n" +
+    "Content-Type: image/svg+xml\r\n\r\n" +
+    "<svg/>\r\n" +
+    "--B--\r\n";
+show("POST   /avatars (svg)",
+     call("POST", "/api/avatars", "s3cret", bad_avatar,
+          "multipart/form-data; boundary=B"));
+
+show("GET    /files/a/b.txt", get("/files/a/b.txt"));
+show("HEAD   /", call("HEAD", "/", "", "", ""));
+show("DELETE /api/orgs/7", call("DELETE", "/api/orgs/7", "s3cret", "", ""));
+show("BREW   /", call("BREW", "/", "", "", ""));
+show("GET    /nope", call("GET", "/nope", "s3cret", "", ""));
+println("");
+// one more than the calls above: wait_ready's probe is a request
+// like any other, and the `count` hook counts every one.
+println("requests served: " + to_str(app.requests));
+```
+
+
+# Chat service
+
+> A chat service: the same room for WebSocket clients and socket.io clients, on one server.
+
+# Chat service
+
+A chat service: the same room for WebSocket clients and socket.io clients, on one server.
+
+Run from the repository root: `make example-chat`.
+
+## `examples/chat/main.sl`
+
+```slang
+// A chat service: the same room for WebSocket clients and socket.io
+// clients, on one server.
+//
+//     slangc examples/chat/main.sl --run            the scripted demo below
+//     slangc examples/chat/main.sl --run -- serve   a real server on :8080
+//
+// With `serve`, point a browser at it:
+//
+//     const ws = new WebSocket("ws://localhost:8080/ws?name=ada", "chat");
+//     ws.onmessage = (m) => console.log(m.data);
+//     ws.send("hello");
+//
+//     const socket = io("http://localhost:8080", { query: { name: "leo" } });
+//     socket.on("chat message", (m) => console.log(m));
+//     socket.emit("chat message", "hi", (reply) => console.log(reply));
+//
+// Read "the service": that is everything a real one writes. The demo after
+// it is a stand-in browser -- real connections to a real server on a free
+// port -- so `make example-chat` shows the exchange without one.
+import "http";
+import "proc";
+import "time";
+import "../../zokor" as zokor;
+
+// ---------------------------------------------------------------- //
+// the service                                                        //
+// ---------------------------------------------------------------- //
+
+gc struct App {
+    name: str,
+    // everyone in the chat, WebSocket and socket.io alike
+    hub: zokor.Hub,
+    history: [str],
+    lock: mutex,
+}
+
+fn remember(app: App, line: str) {
+    mutex_lock(app.lock);
+    push(app.history, line);
+    mutex_unlock(app.lock);
+}
+
+// The handshake, for both kinds of client. Every `before` has run by now
+// (an auth hook would have set c.local("user")); this one only wants a name.
+fn arrive(c: zokor.Ctx[App]) -> http.Response {
+    let name = c.query("name");
+    if name == "" {
+        return zokor.respond_with(c.errors, "unauthorized", "say who you are: ?name=",
+                                  c.request_id);
+    }
+    let s = c.socket();
+    s.set_local("name", name);
+    c.state.hub.join_room(s, "chat");
+    return c.accept_ws();
+}
+
+// WebSocket clients: every text message goes to the room.
+fn on_text(app: App, s: zokor.Socket, m: zokor.Message) {
+    if m.kind != zokor.Incoming.Text {
+        s.send_text("only text, please");
+        return;
+    }
+    if m.text == "/history" {
+        mutex_lock(app.lock);
+        let h = join_lines(app.history);
+        mutex_unlock(app.lock);
+        s.send_text(h);
+        return;
+    }
+    let line = s.local("name") + ": " + m.text;
+    remember(app, line);
+    // to WebSocket clients as text, to socket.io clients as an event
+    app.hub.to_room("chat", line, s.id);
+    app.hub.emit_to_room("chat", "/", "chat message", zokor.jstr(line).render(), s.id);
+}
+
+fn on_ws_close(app: App, s: zokor.Socket, code: int, reason: str) {
+    remember(app, s.local("name") + " left (" + to_str(code) + ")");
+}
+
+// socket.io clients.
+fn on_event(app: App, s: zokor.Socket, e: zokor.SioEvent) {
+    if e.kind != zokor.SioKind.Event {
+        return;
+    }
+    if e.name == "chat message" {
+        remember(app, s.local("name") + " said " + e.args_json);
+        app.hub.emit_to_room("chat", e.namespace, "chat message", e.args_json, s.id);
+        let said = "";
+        let pr = zokor.parse(e.args_json);
+        if let args = pr {
+            said = args.at(0).str_or("");
+        }
+        app.hub.to_room("chat", s.local("name") + ": " + said, s.id);
+        if e.ack >= 0 {
+            // the client used socket.emit(..., callback)
+            s.ack(e.namespace, e.ack, "[\"delivered\"]");
+        }
+        return;
+    }
+    s.emit(e.namespace, "error", "\"unknown event: " + e.name + "\"");
+}
+
+fn on_sio_leave(app: App, s: zokor.Socket, ns: str, why: str) {
+    remember(app, s.local("name") + " left " + ns + " (" + why + ")");
+}
+
+fn chat_router(app: App) -> zokor.Router[App] {
+    let r = zokor.new_router(app);
+    r.websocket("/ws", arrive,
+                zokor.ws_route(zokor.ws_allowing(["chat"]), on_text).on_close(on_ws_close));
+    r.socketio("/socket.io/", arrive,
+               zokor.sio_route(on_event).on_disconnect(on_sio_leave));
+    return r;
+}
+
+fn join_lines(xs: [str]) -> str {
+    let out = "";
+    let i = 0;
+    while i < len(xs) {
+        if i > 0 {
+            out = out + " | ";
+        }
+        out = out + xs[i];
+        i = i + 1;
+    }
+    return out;
+}
+
+fn new_app() -> App {
+    return App { name: "zokor chat", hub: zokor.new_hub(), history: [], lock: make_mutex() };
+}
+
+// ---------------------------------------------------------------- //
+// the demo: a stand-in browser, printed                              //
+//                                                                    //
+// Real connections to the server above. Nothing below is part of     //
+// zokor's API: a browser does all of this for you.                   //
+// ---------------------------------------------------------------- //
+
+import "../../zokor/internal/ws" as frames;
+
+fn soon() -> until {
+    return until_of(time.mono() + 2000000000);
+}
+
+// A client's frames are masked, which the server requires.
+fn client_frame(op: int, payload: bytes) -> bytes {
+    let n = len(payload);
+    let head: bytes = b"..";
+    head[0] = 128 | op;
+    head[1] = 128 | n;
+    let key = b"\x2a\x07\x63\x01";
+    let body = b"";
+    let one: bytes = b".";
+    let i = 0;
+    while i < n {
+        one[0] = payload[i] ^ key[i % 4];
+        body = body + one;
+        i = i + 1;
+    }
+    return head + key + body;
+}
+
+fn says(c: &mut link, s: str) {
+    let _s = c.send_bytes(client_frame(1, to_bytes(s)), soon());
+}
+
+fn bye(c: &mut link) {
+    let b: bytes = b"..";
+    b[0] = 3;
+    b[1] = 232;
+    let _s = c.send_bytes(client_frame(8, b), soon());
+}
+
+// Sends the upgrade request and returns the status line; whatever came
+// after the response head is kept in `got`.
+gc struct Inbox {
+    got: bytes,
+}
+
+fn open(c: &mut link, path: str, box: Inbox) -> str {
+    let req = "GET " + path + " HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n" +
+              "Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\n" +
+              "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
+              "Sec-WebSocket-Protocol: chat\r\n\r\n";
+    let _s = c.send_bytes(to_bytes(req), soon());
+    let a = arena_new(4096);
+    let w = a.wire(4096);
+    let got = b"";
+    while true {
+        let rr = c.recv(w, soon());
+        guard let n = rr else { return "no answer"; }
+        if n == 0 { return "closed"; }
+        got = got + to_bytes(w[0..n]);
+        let i = 0;
+        while i + 3 < len(got) {
+            if got[i] == 13 && got[i + 1] == 10 && got[i + 2] == 13 && got[i + 3] == 10 {
+                box.got = got[i + 4..len(got)];
+                let j = 0;
+                while got[j] != 13 { j = j + 1; }
+                return to_str(got[0..j]);
+            }
+            i = i + 1;
+        }
+    }
+    return "no answer";
+}
+
+// The next frame from the server, printed as a browser would see it.
+fn hears(label: str, c: &mut link, box: Inbox) {
+    let a = arena_new(4096);
+    let w = a.wire(4096);
+    while true {
+        let dr = frames.decode(box.got, 0, 1048576, false);
+        guard let d = dr else { println(label + " <- (undecodable)"); return; }
+        if d.kind == frames.Decoded.Frame {
+            let f = d.frame;
+            box.got = box.got[f.size..len(box.got)];
+            if f.op == frames.Op.Text {
+                println(label + " <- " + to_str(f.payload));
+            } else if f.op == frames.Op.Close {
+                let cr = frames.decode_close(f.payload);
+                if let body = cr {
+                    println(label + " <- close " + to_str(body.code) + " " + body.reason);
+                } else {
+                    println(label + " <- close");
+                }
+            } else {
+                println(label + " <- frame " + to_str(frames.code_of(f.op)));
+            }
+            return;
+        }
+        let rr = c.recv(w, soon());
+        guard let n = rr else { println(label + " <- (nothing)"); return; }
+        if n == 0 { println(label + " <- (connection closed)"); return; }
+        box.got = box.got + to_bytes(w[0..n]);
+    }
+}
+
+fn serve_all(ln: link, r: zokor.Router[App]) {
+    let sc = zokor.default_server_config();
+    sc.logger = zokor.no_logger();
+    let mut_ln = ln;
+    while true {
+        let ar = mut_ln.accept(until_never());
+        guard let c = ar else { return; }
+        spawn zokor.serve_conn(r, c, sc);
+    }
+}
+
+// Waits until the server has finished with a client that left, so the
+// history printed at the end is complete.
+fn settle(app: App, lines: int) {
+    let waited = 0;
+    while waited < 200 {
+        mutex_lock(app.lock);
+        let n = len(app.history);
+        mutex_unlock(app.lock);
+        if n >= lines { return; }
+        time.sleep(10000000);
+        waited = waited + 1;
+    }
+}
+
+fn demo() {
+    let app = new_app();
+    let r = chat_router(app);
+    let lr = link_listen(0);
+    guard let ln = lr else { panic("cannot listen"); }
+    let port = ln.port();
+    spawn serve_all(ln, r);
+
+    println("websocket:");
+    let ada = link_dial("127.0.0.1", port, soon()) ?? panic_link();
+    let ab = Inbox { got: b"" };
+    println("  ada  handshake -> " + open(&mut ada, "/ws?name=ada", ab));
+    let bo = link_dial("127.0.0.1", port, soon()) ?? panic_link();
+    let bb = Inbox { got: b"" };
+    println("  bo   handshake -> " + open(&mut bo, "/ws?name=bo", bb));
+    let anon = link_dial("127.0.0.1", port, soon()) ?? panic_link();
+    let nb = Inbox { got: b"" };
+    println("  anon handshake -> " + open(&mut anon, "/ws", nb));
+    says(&mut ada, "hello");
+    hears("  bo  ", &mut bo, bb);
+    says(&mut bo, "hi ada");
+    hears("  ada ", &mut ada, ab);
+    println("");
+
+    println("socket.io:");
+    let leo = link_dial("127.0.0.1", port, soon()) ?? panic_link();
+    let lb = Inbox { got: b"" };
+    println("  leo  handshake -> " +
+            open(&mut leo, "/socket.io/?EIO=4&transport=websocket&name=leo", lb));
+    // the session id is random; the rest of the open packet is not
+    let a = arena_new(4096);
+    let w = a.wire(4096);
+    let opened = false;
+    while !opened {
+        let dr = frames.decode(lb.got, 0, 1048576, false);
+        guard let d = dr else { break; }
+        if d.kind == frames.Decoded.Frame {
+            let f = d.frame;
+            lb.got = lb.got[f.size..len(lb.got)];
+            let text = to_str(f.payload);
+            let at = 0;
+            let tb = to_bytes(text);
+            while at < len(tb) && tb[at] != 44 { at = at + 1; }
+            println("  leo  <- 0{\"sid\":\"...\"" + to_str(tb[at..len(tb)]));
+            opened = true;
+        } else {
+            let rr = a_recv(&mut leo, w);
+            lb.got = lb.got + rr;
+        }
+    }
+    says(&mut leo, "40");
+    let _ok = skip_one(&mut leo, lb);
+    println("  leo  -> 40           (connected to /)");
+    says(&mut leo, "421[\"chat message\",\"hi from socket.io\"]");
+    hears("  ada ", &mut ada, ab);
+    hears("  bo  ", &mut bo, bb);
+    hears("  leo ", &mut leo, lb);
+    says(&mut ada, "and back");
+    hears("  bo  ", &mut bo, bb);
+    hears("  leo ", &mut leo, lb);
+    says(&mut leo, "42[\"whatever\"]");
+    hears("  leo ", &mut leo, lb);
+    println("");
+
+    println("leaving:");
+    bye(&mut ada);
+    hears("  ada ", &mut ada, ab);
+    settle(app, 5);
+    says(&mut leo, "41");
+    settle(app, 6);
+    says(&mut bo, "/history");
+    hears("  bo  ", &mut bo, bb);
+}
+
+fn a_recv(c: &mut link, w: wire) -> bytes {
+    let rr = c.recv(w, soon());
+    guard let n = rr else { return b""; }
+    return to_bytes(w[0..n]);
+}
+
+// The CONNECT answer carries the random session id too: read past it.
+fn skip_one(c: &mut link, box: Inbox) -> bool {
+    let a = arena_new(4096);
+    let w = a.wire(4096);
+    while true {
+        let dr = frames.decode(box.got, 0, 1048576, false);
+        guard let d = dr else { return false; }
+        if d.kind == frames.Decoded.Frame {
+            box.got = box.got[d.frame.size..len(box.got)];
+            return true;
+        }
+        let rr = c.recv(w, soon());
+        guard let n = rr else { return false; }
+        if n == 0 { return false; }
+        box.got = box.got + to_bytes(w[0..n]);
+    }
+    return false;
+}
+
+fn panic_link() -> link {
+    panic("cannot connect");
+}
+
+let args = proc.args();
+if len(args) > 1 && args[len(args) - 1] == "serve" {
+    let r = chat_router(new_app());
+    let sr = zokor.listen_and_serve(r, 8080);
+    guard let _ok = sr else let e = err_of(sr) {
+        println(e);
+        exit(1);
+    }
+} else {
+    demo();
+}
+```
+
+
+# Ports and fakes
+
+> Ports and fakes
+
+# Ports and fakes
+
+The example source files are shown below.
+
+Run from the repository root: `make example-ports`.
+
+## `examples/ports/src/application/inventory/ports.sl`
+
+```slang
+import "../../domain/inventory" as stock;
+
+// C is explicit adapter state: function fields never capture credentials or globals.
+pub gc struct StockPort[C] {
+    context: C,
+    lookup: fn(C, str, str) -> result[opt[stock.Stock], str],
+}
+```
+
+## `examples/ports/src/application/inventory/service.sl`
+
+```slang
+import "../../domain/inventory" as stock;
+import "strings";
+
+pub gc struct Service[C] { port: StockPort[C] }
+
+pub fn new_service[C](port: StockPort[C]) -> Service[C] { return Service[C] { port: port }; }
+
+// Tenant identity is resolved at the edge and passed through every port call.
+pub fn find[C](service: Service[C], tenant_id: str, sku: str) -> result[opt[stock.Stock], str] {
+    let checked = stock.key(tenant_id, sku);
+    guard let _key = checked else let e = err_of(checked) { return err(e); }
+    let lookup = service.port.lookup;
+    let loaded = lookup(service.port.context, tenant_id, sku);
+    guard let maybe = loaded else let e = err_of(loaded) { return err(e); }
+    if let row = maybe {
+        if row.tenant_id != tenant_id || row.sku != sku { return err("adapter returned a different tenant_id or sku"); }
+        if row.available < 0 { return err("adapter returned a negative available count"); }
+    }
+    return ok(maybe);
+}
+
+// Share the domain rule with the HTTP edge without importing adapters.
+pub fn valid_sku(sku: str) -> bool { return stock.identifier(sku); }
+```
+
+## `examples/ports/src/domain/inventory/stock.sl`
+
+```slang
+import "strings";
+
+pub struct Stock { tenant_id: str, sku: str, available: int }
+
+pub fn identifier(value: str) -> bool {
+    if len(value) < 1 || len(value) > 64 { return false; }
+    for ch in to_bytes(value) {
+        if !((ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122) ||
+             (ch >= 48 && ch <= 57) || ch == 45 || ch == 95) { return false; }
+    }
+    return true;
+}
+
+// The separator cannot occur in either identifier: tenant keys stay distinct.
+pub fn key(tenant_id: str, sku: str) -> result[str, str] {
+    let problems: [str] = [];
+    if !identifier(tenant_id) { push(problems, "tenant_id must contain 1..64 ASCII letters, digits, - or _"); }
+    if !identifier(sku) { push(problems, "sku must contain 1..64 ASCII letters, digits, - or _"); }
+    if len(problems) > 0 { return err(strings.join(problems, "; ")); }
+    return ok(tenant_id + ":" + sku);
+}
+
+pub fn new_stock(tenant_id: str, sku: str, available: int) -> result[Stock, str] {
+    let problems: [str] = [];
+    let checked = key(tenant_id, sku);
+    if let _key = checked {} else let e = err_of(checked) { push(problems, e); }
+    if available < 0 { push(problems, "available must be nonnegative"); }
+    if len(problems) > 0 { return err(strings.join(problems, "; ")); }
+    return ok(Stock { tenant_id: tenant_id, sku: sku, available: available });
+}
+```
+
+## `examples/ports/src/infrastructure/memory/client.sl`
+
+```slang
+import "../../application/inventory" as inventory;
+import "../../domain/inventory" as stock;
+import "strings";
+
+// Seed once at startup; immutable afterwards, so readers do not need a lock.
+pub gc struct Store { stocks: map[str]stock.Stock }
+
+pub fn new_store(rows: [stock.Stock]) -> result[Store, str] {
+    let values: map[str]stock.Stock = {};
+    let problems: [str] = [];
+    let i = 0;
+    for row in rows {
+        let made = stock.new_stock(row.tenant_id, row.sku, row.available);
+        guard let checked = made else let e = err_of(made) {
+            push(problems, "rows[" + to_str(i) + "]: " + e); i += 1; continue;
+        }
+        let key = stock.key(checked.tenant_id, checked.sku) ?? "";
+        if has(values, key) { push(problems, "rows[" + to_str(i) + "]: duplicate tenant_id and sku"); }
+        else { values[key] = checked; }
+        i += 1;
+    }
+    if len(problems) > 0 { return err(strings.join(problems, "; ")); }
+    return ok(Store { stocks: values });
+}
+
+pub fn lookup(ctx: Store, tenant_id: str, sku: str) -> result[opt[stock.Stock], str] {
+    let checked = stock.key(tenant_id, sku);
+    guard let key = checked else let e = err_of(checked) { return err(e); }
+    if !has(ctx.stocks, key) { let absent: opt[stock.Stock] = none; return ok(absent); }
+    return ok(some(ctx.stocks[key]));
+}
+
+pub fn new_stock_port(ctx: Store) -> inventory.StockPort[Store] {
+    return inventory.StockPort[Store] { context: ctx, lookup: lookup };
+}
+```
+
+## `examples/ports/src/interfaces/web/router.sl`
+
+```slang
+import "../../../../../zokor" as zokor;
+import "../../application/inventory" as inventory;
+import "http";
+import "json";
+
+pub fn register_errors(errors: zokor.Registry) {
+    zokor.register(errors, "inventory.not_found", 404, "stock not found");
+    zokor.register(errors, "inventory.unavailable", 503, "inventory is unavailable");
+}
+
+// The route wrapper resolves authentication and passes explicit values here.
+pub fn show[C](service: inventory.Service[C], tenant_id: str, sku: str,
+               errors: zokor.Registry, request_id: str) -> http.Response {
+    if !inventory.valid_sku(sku) {
+        return zokor.respond_fields(errors, "validation_failed",
+            [zokor.field("sku", "must contain 1..64 ASCII letters, digits, - or _")], request_id);
+    }
+    let loaded = inventory.find(service, tenant_id, sku);
+    guard let maybe = loaded else { return zokor.respond(errors, "inventory.unavailable", request_id); }
+    guard let row = maybe else { return zokor.respond(errors, "inventory.not_found", request_id); }
+    return zokor.ok_json(json.encode(row));
+}
+```
+
+## `examples/ports/src/main.sl`
+
+```slang
+// Startup wiring is the only package that knows the concrete adapter.
+import "application/inventory" as inventory;
+import "domain/inventory" as stock;
+import "infrastructure/memory" as memory;
+import "interfaces/web" as rest;
+import "../../../zokor" as zokor;
+import "http";
+
+gc struct App { inventory: inventory.Service[memory.Store], tokens: zokor.TokenStore }
+fn require_tenant(c: zokor.Ctx[App]) -> opt[http.Response] {
+    guard let tenant_id = zokor.bearer_subject(c, c.state.tokens) else {
+        return some(zokor.respond(c.errors, "unauthorized", c.request_id));
+    }
+    c.set_local("tenant_id", tenant_id);
+    return none;
+}
+fn show_stock(c: zokor.Ctx[App]) -> http.Response {
+    return rest.show(c.state.inventory, c.local("tenant_id"), c.param("sku"), c.errors, c.request_id);
+}
+
+fn main() {
+    let cfg = zokor.load_config();
+    let count = zokor.int_or(cfg, "EXAMPLE_STOCK", 7);
+    let checked = zokor.check(cfg);
+    guard let _config = checked else let e = err_of(checked) { println(e); exit(1); }
+    let made = stock.new_stock("tenant_a", "pen", count);
+    guard let row = made else let e = err_of(made) { println(e); exit(1); }
+    let seeded = memory.new_store([row]);
+    guard let adapter = seeded else let e = err_of(seeded) { println(e); exit(1); }
+    let service = inventory.new_service(memory.new_stock_port(adapter));
+    let tokens = zokor.new_token_store(0);
+    let issued = tokens.issue("tenant_a");
+    guard let token = issued else { println("token issue failed"); exit(1); }
+    let router = zokor.new_router(App { inventory: service, tokens: tokens });
+    rest.register_errors(router.errors);
+    router.before(require_tenant);
+    router.get("/stock/:sku", show_stock);
+    // Drive the same handler pipeline hermetically. A server passes router to listen_and_serve.
+    let denied = router.serve(zokor.get_request("/stock/pen").build());
+    println("unauthenticated -> " + to_str(denied.status));
+    let found = router.serve(zokor.get_request("/stock/pen").bearer(token).build());
+    println("stock -> " + to_str(found.status) + " " + zokor.resp_text(found));
+    let missing = router.serve(zokor.get_request("/stock/missing").bearer(token).build());
+    println("missing -> " + to_str(missing.status) + " " + zokor.resp_error_code(missing));
+}
+main();
+```
