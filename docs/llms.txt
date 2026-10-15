@@ -1,0 +1,22 @@
+# Zokor
+
+> A backend framework for slang.
+
+## Pages
+
+- [zokor](index.md): A backend framework for slang.
+- [Start here](guide/start.md): zokor new writes a service that compiles and passes its tests as it stands, laid out so a person or an agent changing one feature reads one directory: add route registers the route under the feature's prefix (here POST /orders/:id/cancel), behind the feature's authentication, with a handler that answers 501 until it is written and a test that the route is mounted and authenticated.
+- [HTTP APIs](guide/http.md): Three helpers.
+- [Data and storage](guide/data.md): slang's pg package is the driver.
+- [Operations](guide/operations.md): Read once, at startup, into a value you hold.
+- [Realtime connections](guide/realtime.md): A WebSocket route is a handshake handler plus the handlers for what happens after it.
+- [Project structure](guide/architecture.md): A request builder and response readers, so a test says what it means instead of assembling an http.Request by hand: request, get request, .header, .bearer, .basic, .content type, .json, .json body, .body str, .multipart (with upload part), and on the way back resp status, resp text, resp header, resp json, resp error code, resp error fields.
+- [API reference](api/index.md): 589 public symbols in 38 source modules, generated from zokor/.
+- [Hello service](examples/hello.md): A zokor service.
+- [Chat service](examples/chat.md): A chat service: the same room for WebSocket clients and socket.io clients, on one server.
+- [Ports and fakes](examples/ports.md): Ports and fakes
+- [Examples](examples/index.md): Runnable Slang services from the examples/ tree.
+
+## Source
+
+The guide is pulled from README.md. API entries come from docs/api.txt, generated and checked from zokor/. Examples are read directly from examples/.

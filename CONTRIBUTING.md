@@ -34,7 +34,9 @@ zlib1g-dev`). Then, in zokor:
 slangc get               # fetch the pinned packages (jwt)
 make test                # every package's suite
 make check               # what CI runs: tests, examples, the guide's
-                         # snippets, api.txt freshness, the CLI
+                         # snippets, API/site freshness and the CLI
+make docs                # build the static site in docs/
+make docs-check          # check that generated pages are current
 ```
 
 The Postgres and Redis tests run against a live server when they can reach

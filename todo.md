@@ -304,11 +304,15 @@ to its generic response helper. No compiler change is included here.
   as slang's; CONTRIBUTING covers building against slang `dev`, live
   Postgres/Redis tests, what a change needs and the branch workflow;
   SECURITY scopes zokor's own surface and sends slang problems to slang.
-- [ ] **Docs site**, generated from the README, the `zokor/` signatures and the
+- [x] **Docs site**, generated from the README, the `zokor/` signatures and the
   examples, the way slang's `www/build.py` does. Uses `assets/zokor.png`:
   the header, the social card, and a favicon. The source image is 1024 x 1024
   and 358 KB, so produce sized variants (a 64 px favicon, a ~256 px header,
-  a 1200 x 630 card) instead of shipping the original everywhere.
+  a 1200 x 630 card) instead of shipping the original everywhere. Done:
+  `www/build.py` renders README guide pages, the generated `docs/api.txt`
+  signatures and source examples into `docs/`, with Markdown twins, search,
+  `llms.txt`, and `api.json`. `make docs-check` checks freshness in CI. The
+  64 px, 256 px and 1200 x 630 assets are resized derivatives of the source.
 - [x] A `slangc new`-style scaffold: `zokor new <name>` producing a service
   with the layout, config, one route and one test. Done: feature-first, one
   package per layer (`domain/ service/ store/ server/`) plus `platform/`

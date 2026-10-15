@@ -1,0 +1,768 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API reference · Zokor</title>
+<meta name="description" content="589 public symbols in 38 source modules, generated from zokor/.">
+<meta name="author" content="Dolphlabs">
+<meta property="og:site_name" content="Zokor">
+<meta property="og:title" content="API reference · Zokor">
+<meta property="og:description" content="589 public symbols in 38 source modules, generated from zokor/.">
+<meta property="og:type" content="website">
+<link rel="canonical" href="https://dolphlabs.github.io/zokor/api/index.html">
+<link rel="alternate" type="text/markdown" href="../api/index.md" title="Markdown">
+<link rel="alternate" type="text/plain" href="../llms.txt" title="llms.txt">
+<link rel="stylesheet" href="../style.css">
+<link rel="icon" type="image/png" sizes="64x64" href="../assets/zokor-icon-64.png">
+<meta property="og:image" content="https://dolphlabs.github.io/zokor/assets/zokor-card-1200x630.jpg"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <a class="brand" href="../index.html">
+    <img src="../assets/zokor-header-256.png" width="40" height="40" alt="">
+    <span>zokor</span>
+  </a>
+  <button id="navtoggle" class="navtoggle" type="button" aria-label="Toggle navigation"
+          aria-expanded="false" aria-controls="mainnav">
+    <span></span><span></span><span></span>
+  </button>
+  <nav class="mainnav" id="mainnav" aria-label="Main navigation"><a href="../index.html">Home</a><a href="../guide/start.html">Start</a><a href="../api/index.html" class="active" aria-current="page">API</a><a href="../examples/index.html">Examples</a></nav>
+  <div class="tools">
+    <label class="search-label" for="search">Search</label>
+    <input id="search" type="search" placeholder="Search docs…" autocomplete="off"
+           aria-label="Search documentation" aria-controls="results">
+    <button id="theme" type="button" aria-label="Toggle color theme">◐</button>
+  </div>
+</header>
+<div id="navscrim" class="navscrim" hidden></div>
+<div id="results" class="results" role="listbox" aria-label="Search results" hidden></div>
+
+<main id="main">
+
+<div class="page">
+  <article class="content">
+<header class="page-head"><p class="page-kicker">Zokor documentation</p><h1>API reference</h1><p class="tagline">589 public symbols in 38 source modules, generated from zokor/.</p><p class="agentline"><a href="../api/index.md">Markdown</a> · <a href="../llms.txt">llms.txt</a> · <a href="../api.json">api.json</a></p></header>
+<p>The public package surface contains 589 entries across 38 source files. This page is generated from <code>docs/api.txt</code>, which is generated from <code>zokor/</code>.</p>
+<section class="api-module"><h2 id="auth-sl">auth.sl<a class="anchor" href="#auth-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Authentication helpers: bearer JWTs, Basic credentials and API keys.</p>
+<div class="api-item" id="auth-sl-gc"><code>gc struct JwtAuth { keys: [bytes], audience: str, issuer: str, leeway: int }</code></div>
+<div class="api-item" id="auth-sl-jwt-auth"><code>jwt_auth(secrets: [str]) -&gt; result[JwtAuth, str]</code><p>Secrets of at least 32 bytes each, newest first.</p></div>
+<div class="api-item" id="auth-sl-jwt-auth-from"><code>jwt_auth_from(cfg: Config) -&gt; JwtAuth</code><p>JWT_SECRETS (comma-separated, newest first), JWT_AUDIENCE, JWT_ISSUER and JWT_LEEWAY (seconds, default 30).</p></div>
+<div class="api-item" id="auth-sl-sign-token-t"><code>sign_token[T](claims: T, a: JwtAuth) -&gt; result[str, str]</code><p>A token for <code>claims</code>, signed with the newest key.</p></div>
+<div class="api-item" id="auth-sl-token-problem"><code>token_problem(token: str, a: JwtAuth, now: int) -&gt; str</code><p>Why <code>token</code> is not acceptable at <code>now</code>, or &quot;&quot; when it is.</p></div>
+<div class="api-item" id="auth-sl-bearer-claims-s"><code>bearer_claims[S, T](c: Ctx[S], a: JwtAuth) -&gt; result[T, http.Response]</code><p>The token&#x27;s claims as your own type, once the token has passed every check; otherwise the 401 to send.</p></div>
+<div class="api-item" id="auth-sl-gc-2"><code>gc struct BasicCredentials { user: str, password: str }</code></div>
+<div class="api-item" id="auth-sl-basic-credentials-s"><code>basic_credentials[S](c: Ctx[S]) -&gt; opt[BasicCredentials]</code><p>The credentials of an <code>Authorization: Basic</code> header, or none when there is no such header or it does not decode to...</p></div>
+<div class="api-item" id="auth-sl-basic-matches"><code>basic_matches(got: BasicCredentials, user: str, password: str) -&gt; bool</code><p>Whether <code>got</code> is <code>user</code> / <code>password</code>.</p></div>
+<div class="api-item" id="auth-sl-basic-denied-s"><code>basic_denied[S](c: Ctx[S], realm: str) -&gt; http.Response</code><p>The 401 that asks a browser for Basic credentials for <code>realm</code>.</p></div>
+<div class="api-item" id="auth-sl-gc-3"><code>gc struct ApiKeys { names: [str], digests: [bytes] }</code></div>
+<div class="api-item" id="auth-sl-api-keys"><code>api_keys(entries: [str]) -&gt; result[ApiKeys, str]</code><p><code>name:key</code> entries; each key at least 24 bytes.</p></div>
+<div class="api-item" id="auth-sl-api-keys-from"><code>api_keys_from(cfg: Config) -&gt; ApiKeys</code><p>API_KEYS: comma-separated <code>name:key</code> entries.</p></div>
+<div class="api-item" id="auth-sl-api-key-client-s"><code>api_key_client[S](c: Ctx[S], keys: ApiKeys) -&gt; opt[str]</code><p>The name of the client whose key is in the X-Api-Key header, or none.</p></div>
+</section>
+<section class="api-module"><h2 id="client-sl">client.sl<a class="anchor" href="#client-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">The client&#x27;s address: who is actually on the other end of a request.</p>
+<div class="api-item" id="client-sl-gc"><code>gc struct TrustedProxies { nets: [int], header: str }</code></div>
+<div class="api-item" id="client-sl-no-trusted-proxies"><code>no_trusted_proxies() -&gt; TrustedProxies</code></div>
+<div class="api-item" id="client-sl-parse-ipv4"><code>parse_ipv4(s: str) -&gt; int</code><p>&quot;a.b.c.d&quot; as an unsigned 32-bit value, or -1.</p></div>
+<div class="api-item" id="client-sl-parse-trusted-proxies"><code>parse_trusted_proxies(list: str) -&gt; result[TrustedProxies, str]</code><p>TRUSTED_PROXIES&#x27;s value: comma-separated IPv4 addresses and CIDRs (&quot;10.0.0.0/8, 192.168.1.10&quot;).</p></div>
+<div class="api-item" id="client-sl-ipv4-str"><code>ipv4_str(v: int) -&gt; str</code></div>
+<div class="api-item" id="client-sl-trustedproxies-trusts"><code>TrustedProxies.trusts(ip: int) -&gt; bool</code></div>
+<div class="api-item" id="client-sl-trustedproxies-is-empty"><code>TrustedProxies.is_empty() -&gt; bool</code></div>
+<div class="api-item" id="client-sl-peer-ip-of"><code>peer_ip_of(rendered: str) -&gt; str</code><p>The address part of <code>inspect(link.peer())</code>, &quot;a.b.c.d:port&quot; -&gt; &quot;a.b.c.d&quot;.</p></div>
+<div class="api-item" id="client-sl-client-ip-of"><code>client_ip_of(peer_ip: str, headers: bytes, tp: TrustedProxies) -&gt; str</code><p>Who the request came from.</p></div>
+</section>
+<section class="api-module"><h2 id="compression-sl">compression.sl<a class="anchor" href="#compression-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Response compression: gzip through slang&#x27;s <code>compress</code> (zlib), for clients that accept it, on bodies worth it.</p>
+<div class="api-item" id="compression-sl-gc"><code>gc struct Compression { min_size: int, level: int, types: [str] }</code></div>
+<div class="api-item" id="compression-sl-compression"><code>compression() -&gt; Compression</code></div>
+<div class="api-item" id="compression-sl-accepts-gzip"><code>accepts_gzip(header: str) -&gt; bool</code><p>Whether an Accept-Encoding value allows gzip.</p></div>
+</section>
+<section class="api-module"><h2 id="conditional-sl">conditional.sl<a class="anchor" href="#conditional-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Conditional requests (RFC 9110 section 13): answer &quot;not modified&quot; when the client already has the current version, and refuse...</p>
+<div class="api-item" id="conditional-sl-etag-of"><code>etag_of(data: bytes) -&gt; str</code><p>A strong entity tag for <code>data</code>: its length and 64-bit FNV-1a hash, quoted.</p></div>
+<div class="api-item" id="conditional-sl-with-validators"><code>with_validators(resp: http.Response, etag: str, last_modified: opt[timez.Time]) -&gt; http.Response</code><p><code>resp</code> with ETag (when <code>etag</code> is not &quot;&quot;) and Last-Modified (when known, to the second: an HTTP date has no fraction).</p></div>
+<div class="api-item" id="conditional-sl-not-modified"><code>not_modified(etag: str, last_modified: opt[timez.Time]) -&gt; http.Response</code><p>The 304 for a read whose validators matched: no body, and the validators the 200 would have carried.</p></div>
+<div class="api-item" id="conditional-sl-preconditions-s"><code>preconditions[S](c: Ctx[S], etag: str, last_modified: opt[timez.Time]) -&gt; opt[http.Response]</code><p>What a conditional request&#x27;s headers decide, before the handler does its work: some(304) or some(412) to send as is, none to...</p></div>
+</section>
+<section class="api-module"><h2 id="config-sl">config.sl<a class="anchor" href="#config-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Configuration: read once, validated once, then held as a value.</p>
+<div class="api-item" id="config-sl-gc"><code>gc struct Problem { key: str, reason: str, shown: str }</code></div>
+<div class="api-item" id="config-sl-gc-2"><code>gc struct Config { values: map[str]str, problems: [Problem], source: str, profile: str, sources: [str] }</code></div>
+<div class="api-item" id="config-sl-gc-3"><code>gc struct ConfigLoad { profile: str, directory: str, max_file_bytes: int }</code><p>Profile selection and file limits, chosen before startup loading.</p></div>
+<div class="api-item" id="config-sl-config-load"><code>config_load() -&gt; ConfigLoad</code></div>
+<div class="api-item" id="config-sl-config-from-values"><code>config_from_values(values: map[str]str) -&gt; Config</code><p>Own a copy of supplied values, with no process-state reads: useful for fakes.</p></div>
+<div class="api-item" id="config-sl-default-env-path"><code>default_env_path() -&gt; str { return &quot;.env&quot;; } // Base .env, then .env.&lt;profile&gt;, then one environment snapshot. pub fn load_config() -&gt; Config { return load_config_with(config_load()); } // Explicit dev/test/prod overrides ZOKOR_PROFILE for file selection. pub fn load_config_profile(profile: str) -&gt; Config</code></div>
+<div class="api-item" id="config-sl-load-config-with"><code>load_config_with(options: ConfigLoad) -&gt; Config</code></div>
+<div class="api-item" id="config-sl-load-config-from"><code>load_config_from(path: str) -&gt; Config { return load_config_file(path, config_load().max_file_bytes); } pub fn load_config_file(path: str, max_file_bytes: int) -&gt; Config</code><p>Load one explicit file, then apply the captured environment; no profile overlay.</p></div>
+<div class="api-item" id="config-sl-get"><code>get(c: Config, key: str) -&gt; opt[str]</code></div>
+<div class="api-item" id="config-sl-has-key"><code>has_key(c: Config, key: str) -&gt; bool</code></div>
+<div class="api-item" id="config-sl-str-or"><code>str_or(c: Config, key: str, fallback: str) -&gt; str</code></div>
+<div class="api-item" id="config-sl-int-or"><code>int_or(c: Config, key: str, fallback: int) -&gt; int</code></div>
+<div class="api-item" id="config-sl-bool-or"><code>bool_or(c: Config, key: str, fallback: bool) -&gt; bool</code></div>
+<div class="api-item" id="config-sl-duration-or"><code>duration_or(c: Config, key: str, fallback_ns: int) -&gt; int</code><p>A duration in nanoseconds, the unit every slang timeout takes.</p></div>
+<div class="api-item" id="config-sl-require"><code>require(c: Config, key: str) -&gt; str</code></div>
+<div class="api-item" id="config-sl-require-int"><code>require_int(c: Config, key: str) -&gt; int</code></div>
+<div class="api-item" id="config-sl-require-range"><code>require_range(c: Config, key: str, lo: int, hi: int) -&gt; int</code></div>
+<div class="api-item" id="config-sl-require-port"><code>require_port(c: Config, key: str) -&gt; int</code></div>
+<div class="api-item" id="config-sl-require-bool"><code>require_bool(c: Config, key: str) -&gt; bool</code></div>
+<div class="api-item" id="config-sl-require-float"><code>require_float(c: Config, key: str) -&gt; float</code></div>
+<div class="api-item" id="config-sl-require-email"><code>require_email(c: Config, key: str) -&gt; str</code></div>
+<div class="api-item" id="config-sl-require-url"><code>require_url(c: Config, key: str) -&gt; str</code></div>
+<div class="api-item" id="config-sl-require-dsn"><code>require_dsn(c: Config, key: str) -&gt; str</code></div>
+<div class="api-item" id="config-sl-require-host"><code>require_host(c: Config, key: str) -&gt; str</code></div>
+<div class="api-item" id="config-sl-require-ipv4"><code>require_ipv4(c: Config, key: str) -&gt; str</code></div>
+<div class="api-item" id="config-sl-require-uuid"><code>require_uuid(c: Config, key: str) -&gt; str</code></div>
+<div class="api-item" id="config-sl-require-one-of"><code>require_one_of(c: Config, key: str, allowed: [str]) -&gt; str</code></div>
+<div class="api-item" id="config-sl-require-duration"><code>require_duration(c: Config, key: str) -&gt; int</code></div>
+<div class="api-item" id="config-sl-require-min-len"><code>require_min_len(c: Config, key: str, n: int) -&gt; str</code></div>
+<div class="api-item" id="config-sl-require-max-len"><code>require_max_len(c: Config, key: str, n: int) -&gt; str</code></div>
+<div class="api-item" id="config-sl-optional-one-of"><code>optional_one_of(c: Config, key: str, allowed: [str], fallback: str) -&gt; str</code><p>An optional value that still has to be valid WHEN it is set: the common case of a feature that is off until configured.</p></div>
+<div class="api-item" id="config-sl-optional-url"><code>optional_url(c: Config, key: str, fallback: str) -&gt; str</code></div>
+<div class="api-item" id="config-sl-optional-dsn"><code>optional_dsn(c: Config, key: str, fallback: str) -&gt; str</code><p>Same shape as optional_url, for a connection string rather than an HTTP one: <code>is_dsn</code> accepts any scheme with a host...</p></div>
+<div class="api-item" id="config-sl-problems"><code>problems(c: Config) -&gt; [Problem]</code></div>
+<div class="api-item" id="config-sl-is-valid"><code>is_valid(c: Config) -&gt; bool</code></div>
+<div class="api-item" id="config-sl-check"><code>check(c: Config) -&gt; result[bool, str]</code><p>Every problem, one per line, named and explained.</p></div>
+</section>
+<section class="api-module"><h2 id="cookies-sl">cookies.sl<a class="anchor" href="#cookies-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Cookies.</p>
+<div class="api-item" id="cookies-sl-enum"><code>enum SameSite { LAX, STRICT, NONE }</code></div>
+<div class="api-item" id="cookies-sl-gc"><code>gc struct Cookie { name: str, value: str, path: str, domain: str, max_age: int, expires: opt[timez.Time], secure: bool, http_only: bool, same_site: SameSite, partitioned: bool }</code></div>
+<div class="api-item" id="cookies-sl-new-cookie"><code>new_cookie(name: str, value: str) -&gt; Cookie</code></div>
+<div class="api-item" id="cookies-sl-cookie-problem"><code>cookie_problem(c: Cookie) -&gt; str</code><p>What is wrong with <code>c</code>, or &quot;&quot;.</p></div>
+<div class="api-item" id="cookies-sl-cookie-string"><code>cookie_string(c: Cookie) -&gt; str</code><p>The Set-Cookie value for <code>c</code>, unchecked: callers check first.</p></div>
+<div class="api-item" id="cookies-sl-set-cookie"><code>set_cookie(resp: http.Response, c: Cookie) -&gt; result[http.Response, str]</code><p><code>resp</code> with a Set-Cookie header for <code>c</code>, or why <code>c</code> cannot be sent.</p></div>
+<div class="api-item" id="cookies-sl-clear-cookie"><code>clear_cookie(resp: http.Response, name: str, path: str, domain: str) -&gt; result[http.Response, str]</code><p>Tells the browser to delete <code>name</code>.</p></div>
+<div class="api-item" id="cookies-sl-parse-cookies"><code>parse_cookies(header: str) -&gt; map[str]str</code><p>Every well-formed name=value pair in a Cookie header, in order; a pair without <code>=</code>, with a bad name or with bytes a cookie...</p></div>
+<div class="api-item" id="cookies-sl-gc-2"><code>gc struct CookieKeys { keys: [bytes] }</code></div>
+<div class="api-item" id="cookies-sl-cookie-keys"><code>cookie_keys(keys: [str]) -&gt; result[CookieKeys, str]</code><p>Keys of at least 32 bytes each, newest first.</p></div>
+<div class="api-item" id="cookies-sl-cookie-keys-from"><code>cookie_keys_from(cfg: Config) -&gt; CookieKeys</code><p>COOKIE_KEYS, comma-separated, newest first.</p></div>
+<div class="api-item" id="cookies-sl-constant-time-equal"><code>constant_time_equal(a: bytes, b: bytes) -&gt; bool</code><p>Compares in time that depends only on the lengths, so a forged signature cannot be found a byte at a time by timing the answer.</p></div>
+<div class="api-item" id="cookies-sl-signed-cookie"><code>signed_cookie(name: str, value: str, keys: CookieKeys) -&gt; result[Cookie, str]</code><p>A cookie whose value is <code>value.signature</code>.</p></div>
+<div class="api-item" id="cookies-sl-signed-value-s"><code>signed_value[S](c: Ctx[S], name: str, keys: CookieKeys) -&gt; opt[str]</code><p>The value of signed cookie <code>name</code> when its signature matches any key, none when it is missing, unsigned or forged.</p></div>
+<div class="api-item" id="cookies-sl-verify-signed"><code>verify_signed(name: str, raw: str, keys: CookieKeys) -&gt; opt[str]</code></div>
+</section>
+<section class="api-module"><h2 id="cors-sl">cors.sl<a class="anchor" href="#cors-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">CORS.</p>
+<div class="api-item" id="cors-sl-gc"><code>gc struct CorsPolicy { origins: [str], methods: [str], headers: [str], expose: [str], credentials: bool, max_age: int }</code></div>
+<div class="api-item" id="cors-sl-no-cors"><code>no_cors() -&gt; CorsPolicy</code><p>Off: no origins.</p></div>
+<div class="api-item" id="cors-sl-cors-policy"><code>cors_policy(origins: [str]) -&gt; CorsPolicy</code><p>The defaults, for these origins.</p></div>
+<div class="api-item" id="cors-sl-cors-problem"><code>cors_problem(p: CorsPolicy) -&gt; str</code><p>What is wrong with <code>p</code>, or &quot;&quot; when it is usable.</p></div>
+<div class="api-item" id="cors-sl-cors-from"><code>cors_from(cfg: Config) -&gt; CorsPolicy</code><p>CORS_ORIGINS (comma-separated), CORS_METHODS, CORS_HEADERS, CORS_EXPOSE (comma-separated, replacing the defaults),...</p></div>
+<div class="api-item" id="cors-sl-gc-2"><code>gc struct Cors { on: bool, any: bool, credentials: bool, origins: [str], allow_methods: str, allow_headers: str, allow_headers_lower: [str], expose: str, max_age: str }</code><p>What the router keeps: the policy, and the header values built once.</p></div>
+<div class="api-item" id="cors-sl-cors-off"><code>cors_off() -&gt; Cors</code></div>
+<div class="api-item" id="cors-sl-cors-allows"><code>Cors.allows(origin: str) -&gt; bool</code><p>Whether <code>origin</code> (an Origin header&#x27;s value) is allowed.</p></div>
+<div class="api-item" id="cors-sl-cors-apply"><code>Cors.apply(resp: http.Response, origin: str) -&gt; http.Response</code><p>The headers for an ordinary response to a request with this Origin (&quot;&quot; when it had none).</p></div>
+<div class="api-item" id="cors-sl-cors-preflight"><code>Cors.preflight(origin: str) -&gt; http.Response</code><p>The answer to a preflight from <code>origin</code>.</p></div>
+<div class="api-item" id="cors-sl-is-preflight"><code>is_preflight(method: str, raw_headers: bytes) -&gt; bool</code><p>Whether a request is a CORS preflight: OPTIONS, with an Origin and the method the real request will use.</p></div>
+</section>
+<section class="api-module"><h2 id="errors-sl">errors.sl<a class="anchor" href="#errors-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Failure, as one shape.</p>
+<div class="api-item" id="errors-sl-gc"><code>gc struct Code { name: str, status: i32, message: str }</code></div>
+<div class="api-item" id="errors-sl-gc-2"><code>gc struct FieldError { field: str, reason: str }</code></div>
+<div class="api-item" id="errors-sl-gc-3"><code>gc struct ErrorView { code: str, message: str, status: i32, request_id: str, fields: [FieldError], trace_id: str }</code><p>Everything the renderer is given.</p></div>
+<div class="api-item" id="errors-sl-gc-4"><code>gc struct Registry { codes: map[str]Code, render: fn(ErrorView) -&gt; http.Response, trace_id: str }</code></div>
+<div class="api-item" id="errors-sl-new-registry"><code>new_registry() -&gt; Registry</code><p>Every HTTP failure status, under the name a handler will reach for.</p></div>
+<div class="api-item" id="errors-sl-set-renderer"><code>set_renderer(r: Registry, f: fn(ErrorView) -&gt; http.Response) -&gt; int</code><p>Replace the shape every failure is rendered in.</p></div>
+<div class="api-item" id="errors-sl-register"><code>register(r: Registry, name: str, status: i32, message: str) -&gt; int</code></div>
+<div class="api-item" id="errors-sl-lookup"><code>lookup(r: Registry, name: str) -&gt; opt[Code]</code></div>
+<div class="api-item" id="errors-sl-status-of"><code>status_of(r: Registry, name: str) -&gt; i32</code><p>A code nobody registered is a bug in the service, not a client error: it answers 500 and says which name was missing, so the...</p></div>
+<div class="api-item" id="errors-sl-message-of"><code>message_of(r: Registry, name: str) -&gt; str</code></div>
+<div class="api-item" id="errors-sl-code-names"><code>code_names(r: Registry) -&gt; [str]</code></div>
+<div class="api-item" id="errors-sl-respond"><code>respond(r: Registry, code: str, request_id: str) -&gt; http.Response</code><p>The registered wording.</p></div>
+<div class="api-item" id="errors-sl-respond-with"><code>respond_with(r: Registry, code: str, detail: str, request_id: str) -&gt; http.Response</code><p>The registered code, with wording for this one occurrence (&quot;no such organisation &#x27;acme&#x27;&quot;).</p></div>
+<div class="api-item" id="errors-sl-respond-fields"><code>respond_fields(r: Registry, code: str, fields: [FieldError], request_id: str) -&gt; http.Response</code></div>
+<div class="api-item" id="errors-sl-field"><code>field(name: str, reason: str) -&gt; FieldError</code></div>
+<div class="api-item" id="errors-sl-default-render"><code>default_render(v: ErrorView) -&gt; http.Response</code><p>zokor&#x27;s own shape, and the one a service gets until it says otherwise.</p></div>
+<div class="api-item" id="errors-sl-quote"><code>quote(s: str) -&gt; str</code><p>A JSON string, escaped.</p></div>
+<div class="api-item" id="errors-sl-quote-into"><code>quote_into(sb: builder.Str, s: str) -&gt; builder.Str</code><p>The same, appended to a builder.</p></div>
+<div class="api-item" id="errors-sl-status-text"><code>status_text(status: i32) -&gt; str</code></div>
+</section>
+<section class="api-module"><h2 id="files-sl">files.sl<a class="anchor" href="#files-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Static files: a directory served under a path prefix, safely.</p>
+<div class="api-item" id="files-sl-gc"><code>gc struct FileMount { prefix: str, root: str, index: str, max_age: int, immutable: bool, max_size: int }</code></div>
+<div class="api-item" id="files-sl-files-at"><code>files_at(prefix: str, dir: str) -&gt; result[FileMount, str]</code><p>A mount of <code>dir</code> under <code>prefix</code>.</p></div>
+<div class="api-item" id="files-sl-content-type-for"><code>content_type_for(name: str) -&gt; str</code></div>
+<div class="api-item" id="files-sl-parse-range"><code>parse_range(header: str, size: int) -&gt; [int]</code><p>One byte range of a file of <code>size</code>: [first, last] inclusive; [-1, -1] when the header is not one usable range (several,...</p></div>
+</section>
+<section class="api-module"><h2 id="health-sl">health.sl<a class="anchor" href="#health-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Health and readiness.</p>
+<div class="api-item" id="health-sl-gc"><code>gc struct ReadyCheck[S] { name: str, check: fn(S) -&gt; result[int, str], lock: mutex, started: int, finished: int, passed: bool, reported: str }</code></div>
+<div class="api-item" id="health-sl-gc-2"><code>gc struct Readiness[S] { live_path: str, ready_path: str, checks: [ReadyCheck[S]], timeout: int, logger: Logger }</code></div>
+<div class="api-item" id="health-sl-default-ready-timeout"><code>default_ready_timeout() -&gt; int</code><p>0.9s: inside Kubernetes&#x27; default 1s probe timeout, so a slow dependency is answered as a 503 naming it rather than as a probe...</p></div>
+<div class="api-item" id="health-sl-check-name-ok"><code>check_name_ok(name: str) -&gt; bool</code><p>A check name is 1-64 of [A-Za-z0-9_.-]: it is written into the JSON body and to stderr as is.</p></div>
+</section>
+<section class="api-module"><h2 id="idempotency-sl">idempotency.sl<a class="anchor" href="#idempotency-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Idempotency keys (the IETF Idempotency-Key header): a client retrying a POST or PATCH after a timeout gets the first answer...</p>
+<div class="api-item" id="idempotency-sl-gc"><code>gc struct Idempotency { ttl: int, lock_ttl: int, max_body: int, scope_local: str, required: bool, shards: [IdemShard], remote: opt[redis.Pool] }</code></div>
+<div class="api-item" id="idempotency-sl-idempotency-in-memory"><code>idempotency_in_memory() -&gt; Idempotency</code><p>Answers kept in this process: right for one instance.</p></div>
+<div class="api-item" id="idempotency-sl-idempotency-redis"><code>idempotency_redis(p: redis.Pool) -&gt; Idempotency</code><p>Answers kept in Redis, shared by every instance behind the balancer.</p></div>
+</section>
+<section class="api-module"><h2 id="ids-sl">ids.sl<a class="anchor" href="#ids-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Identifiers.</p>
+<div class="api-item" id="ids-sl-new-request-id"><code>new_request_id() -&gt; str</code><p>128 bits of randomness, hex, prefixed so it is recognisable in a log that carries other people&#x27;s ids too.</p></div>
+<div class="api-item" id="ids-sl-new-session-id"><code>new_session_id() -&gt; str</code><p>A longer one, for a session or a socket.io sid, where a collision matters more than the length does.</p></div>
+<div class="api-item" id="ids-sl-request-id-for"><code>request_id_for(headers: bytes) -&gt; str</code><p>The id a request is answered and logged under: the client&#x27;s own X-Request-Id when it is 1-64 characters of [A-Za-z0-9._-], so...</p></div>
+</section>
+<section class="api-module"><h2 id="jobs-sl">jobs.sl<a class="anchor" href="#jobs-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Background jobs: work on a schedule, and work queued to run later.</p>
+<div class="api-item" id="jobs-sl-gc"><code>gc struct JobCtx[S] { state: S, name: str, payload: str, attempt: int, due: timez.Time, deadline: until }</code><p>What a run gets: the service&#x27;s state, which run this is, and the deadline to pass to everything that can block.</p></div>
+<div class="api-item" id="jobs-sl-gc-2"><code>gc struct Jobs[S] { state: S, zone: timez.Zone, clock: timez.Clock, logger: Logger, default_timeout: int, scheduled: [ScheduledJob[S]], kinds: [JobKind[S]], queue: [QueuedJob], lock: mutex, in_flight: int, stopping: bool, failures: int }</code></div>
+<div class="api-item" id="jobs-sl-new-jobs-s"><code>new_jobs[S](state: S) -&gt; Jobs[S]</code></div>
+<div class="api-item" id="jobs-sl-job-backoff"><code>job_backoff(attempt: int) -&gt; int</code><p>The wait before try <code>attempt + 1</code>: 1 s, 2 s, 4 s ...</p></div>
+<div class="api-item" id="jobs-sl-jobs-every"><code>Jobs.every(name: str, spec: str, run: fn(JobCtx[S]) -&gt; result[int, str], timeout: int) -&gt; result[int, str]</code><p>Runs <code>run</code> on the cron schedule <code>spec</code> (see timez.parse_cron), each run given <code>timeout</code> nanoseconds as its deadline.</p></div>
+<div class="api-item" id="jobs-sl-jobs-handle"><code>Jobs.handle(kind: str, run: fn(JobCtx[S]) -&gt; result[int, str], attempts: int) -&gt; result[int, str]</code><p>Registers what runs a queued job of <code>kind</code>, and how many tries it gets (at least 1).</p></div>
+<div class="api-item" id="jobs-sl-jobs-enqueue"><code>Jobs.enqueue(kind: str, payload: str, at: timez.Time) -&gt; result[int, str]</code><p>Queues one run of <code>kind</code> with <code>payload</code>, due at <code>at</code> (now or in the past runs at the next tick).</p></div>
+<div class="api-item" id="jobs-sl-jobs-queued"><code>Jobs.queued() -&gt; int</code><p>Queued runs not yet started.</p></div>
+<div class="api-item" id="jobs-sl-jobs-running"><code>Jobs.running() -&gt; int</code><p>Runs started and not yet finished.</p></div>
+<div class="api-item" id="jobs-sl-jobs-tick"><code>Jobs.tick(now: timez.Time) -&gt; int</code><p>Starts every run due at <code>now</code> -- scheduled turns and queued jobs -- each in its own task, and returns how many it started.</p></div>
+<div class="api-item" id="jobs-sl-jobs-start"><code>Jobs.start() -&gt; int</code><p>Starts the scheduler: a task that ticks at each due time, and at least every quarter second so a stop or SIGTERM is seen quickly.</p></div>
+<div class="api-item" id="jobs-sl-jobs-stop"><code>Jobs.stop() -&gt; int</code><p>Stops starting runs.</p></div>
+<div class="api-item" id="jobs-sl-jobs-wait-runs"><code>Jobs.wait_runs(timeout: int) -&gt; bool</code><p>Waits until no run is in progress, or <code>timeout</code> nanoseconds pass; true when none is.</p></div>
+</section>
+<section class="api-module"><h2 id="json-sl">json.sl<a class="anchor" href="#json-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">JSON, for the shapes you know and the ones you do not.</p>
+<div class="api-item" id="json-sl-enum"><code>enum JsonKind { Null, Bool, Number, String, Array, Object }</code></div>
+<div class="api-item" id="json-sl-gc"><code>gc struct Json { kind: JsonKind, bool_val: bool, raw: str, text: str, items: [Json], keys: [str], values: [Json] }</code></div>
+<div class="api-item" id="json-sl-jnull"><code>jnull() -&gt; Json</code></div>
+<div class="api-item" id="json-sl-jbool"><code>jbool(v: bool) -&gt; Json</code></div>
+<div class="api-item" id="json-sl-jint"><code>jint(v: int) -&gt; Json</code></div>
+<div class="api-item" id="json-sl-jfloat"><code>jfloat(v: float) -&gt; Json</code></div>
+<div class="api-item" id="json-sl-jstr"><code>jstr(v: str) -&gt; Json</code></div>
+<div class="api-item" id="json-sl-jobj"><code>jobj() -&gt; Json</code></div>
+<div class="api-item" id="json-sl-jarr"><code>jarr() -&gt; Json</code></div>
+<div class="api-item" id="json-sl-user-json"><code>user_json(id: str) -&gt; bytes</code></div>
+<div class="api-item" id="json-sl-user-json-bytes"><code>user_json_bytes(id: bytes) -&gt; bytes</code><p>user_json_bytes: the id as BYTES (already sliced out of a path).</p></div>
+<div class="api-item" id="json-sl-message-json"><code>message_json(message: str) -&gt; bytes</code></div>
+<div class="api-item" id="json-sl-json-set"><code>Json.set(key: str, v: Json) -&gt; Json</code><p>Sets a key, replacing it if present, and returns the object so calls chain.</p></div>
+<div class="api-item" id="json-sl-json-set-str"><code>Json.set_str(key: str, v: str) -&gt; Json</code></div>
+<div class="api-item" id="json-sl-json-set-int"><code>Json.set_int(key: str, v: int) -&gt; Json</code></div>
+<div class="api-item" id="json-sl-json-set-float"><code>Json.set_float(key: str, v: float) -&gt; Json</code></div>
+<div class="api-item" id="json-sl-json-set-bool"><code>Json.set_bool(key: str, v: bool) -&gt; Json</code></div>
+<div class="api-item" id="json-sl-json-set-opt-str"><code>Json.set_opt_str(key: str, v: opt[str]) -&gt; Json</code><p>Only when the value is there: the difference between &quot;absent&quot; and &quot;null&quot; belongs to the caller, not to the encoder.</p></div>
+<div class="api-item" id="json-sl-json-add"><code>Json.add(v: Json) -&gt; Json</code></div>
+<div class="api-item" id="json-sl-json-add-str"><code>Json.add_str(v: str) -&gt; Json</code></div>
+<div class="api-item" id="json-sl-json-add-int"><code>Json.add_int(v: int) -&gt; Json</code></div>
+<div class="api-item" id="json-sl-json-get"><code>Json.get(key: str) -&gt; Json</code><p>A missing key, or an index that is not there, gives Null rather than an error -- so a chain of lookups never has to be guarded...</p></div>
+<div class="api-item" id="json-sl-json-at"><code>Json.at(i: int) -&gt; Json</code></div>
+<div class="api-item" id="json-sl-json-path"><code>Json.path(p: str) -&gt; Json</code><p>&quot;user.address.city&quot;, &quot;items.0.name&quot;: one call instead of five.</p></div>
+<div class="api-item" id="json-sl-json-has-key"><code>Json.has_key(key: str) -&gt; bool</code><p>Present, even if its value is null -- which is how a PATCH tells &quot;set this to nothing&quot; from &quot;leave it alone&quot;.</p></div>
+<div class="api-item" id="json-sl-json-is-null"><code>Json.is_null() -&gt; bool</code></div>
+<div class="api-item" id="json-sl-json-is-object"><code>Json.is_object() -&gt; bool</code></div>
+<div class="api-item" id="json-sl-json-is-array"><code>Json.is_array() -&gt; bool</code></div>
+<div class="api-item" id="json-sl-json-is-string"><code>Json.is_string() -&gt; bool</code></div>
+<div class="api-item" id="json-sl-json-is-number"><code>Json.is_number() -&gt; bool</code></div>
+<div class="api-item" id="json-sl-json-is-bool"><code>Json.is_bool() -&gt; bool</code></div>
+<div class="api-item" id="json-sl-json-size"><code>Json.size() -&gt; int</code><p>Items in an array, keys in an object, bytes in a string.</p></div>
+<div class="api-item" id="json-sl-json-keys-of"><code>Json.keys_of() -&gt; [str]</code></div>
+<div class="api-item" id="json-sl-json-items-of"><code>Json.items_of() -&gt; [Json]</code></div>
+<div class="api-item" id="json-sl-json-str-or"><code>Json.str_or(fallback: str) -&gt; str</code></div>
+<div class="api-item" id="json-sl-json-int-or"><code>Json.int_or(fallback: int) -&gt; int</code></div>
+<div class="api-item" id="json-sl-json-float-or"><code>Json.float_or(fallback: float) -&gt; float</code></div>
+<div class="api-item" id="json-sl-json-bool-or"><code>Json.bool_or(fallback: bool) -&gt; bool</code></div>
+<div class="api-item" id="json-sl-json-render"><code>Json.render() -&gt; str</code><p>The JSON text of this value.</p></div>
+<div class="api-item" id="json-sl-json-render-bytes"><code>Json.render_bytes() -&gt; bytes</code><p>Renders straight into a Bytes builder: no two-element parts list, no join, no str in between.</p></div>
+<div class="api-item" id="json-sl-parse"><code>parse(text: str) -&gt; result[Json, str]</code></div>
+<div class="api-item" id="json-sl-snake-keys"><code>snake_keys(text: str) -&gt; str</code><p>slang has no struct tags, so a wire name is a field name.</p></div>
+<div class="api-item" id="json-sl-camel-keys"><code>camel_keys(text: str) -&gt; str</code></div>
+<div class="api-item" id="json-sl-to-snake-case"><code>to_snake_case(s: str) -&gt; str</code></div>
+<div class="api-item" id="json-sl-to-camel"><code>to_camel(s: str) -&gt; str</code></div>
+<div class="api-item" id="json-sl-parse-body"><code>parse_body(content_type: str, body: bytes) -&gt; result[Json, FormError]</code><p>The body as a value you can walk, with the failure already carrying a registered code.</p></div>
+<div class="api-item" id="json-sl-decode-failed"><code>decode_failed(reg: Registry, why: str, request_id: str) -&gt; http.Response</code><p>The failure of slang&#x27;s own <code>json.decode</code>, mapped into the envelope with the offending field named where the message carries...</p></div>
+<div class="api-item" id="json-sl-gc-2"><code>gc struct Checker { fields: [FieldError] }</code><p>Decoding says a field is a string; it does not say the string is an email, or between 3 and 40 characters, or one of four words.</p></div>
+<div class="api-item" id="json-sl-checker"><code>checker() -&gt; Checker</code></div>
+<div class="api-item" id="json-sl-checker-failed"><code>Checker.failed() -&gt; bool</code></div>
+<div class="api-item" id="json-sl-checker-note"><code>Checker.note(field: str, reason: str) -&gt; int</code></div>
+<div class="api-item" id="json-sl-checker-req-str"><code>Checker.req_str(j: Json, key: str, min: int, max: int) -&gt; str</code><p>A required string, with a length range.</p></div>
+<div class="api-item" id="json-sl-checker-opt-str"><code>Checker.opt_str(j: Json, key: str, max: int, fallback: str) -&gt; str</code></div>
+<div class="api-item" id="json-sl-checker-req-int"><code>Checker.req_int(j: Json, key: str, min: int, max: int) -&gt; int</code></div>
+<div class="api-item" id="json-sl-checker-opt-int"><code>Checker.opt_int(j: Json, key: str, min: int, max: int, fallback: int) -&gt; int</code></div>
+<div class="api-item" id="json-sl-checker-req-bool"><code>Checker.req_bool(j: Json, key: str) -&gt; bool</code></div>
+<div class="api-item" id="json-sl-checker-req-email"><code>Checker.req_email(j: Json, key: str) -&gt; str</code></div>
+<div class="api-item" id="json-sl-checker-req-url"><code>Checker.req_url(j: Json, key: str) -&gt; str</code></div>
+<div class="api-item" id="json-sl-checker-req-uuid"><code>Checker.req_uuid(j: Json, key: str) -&gt; str</code></div>
+<div class="api-item" id="json-sl-checker-req-one-of"><code>Checker.req_one_of(j: Json, key: str, allowed: [str]) -&gt; str</code></div>
+<div class="api-item" id="json-sl-checker-req-strs"><code>Checker.req_strs(j: Json, key: str, max_items: int) -&gt; [str]</code><p>A list of strings, with a cap on how many: the shape of &quot;tags&quot;, &quot;recipients&quot;, &quot;ids&quot;.</p></div>
+<div class="api-item" id="json-sl-checker-req-obj"><code>Checker.req_obj(j: Json, key: str) -&gt; Json</code><p>A nested object, so a checker can walk into it and report &quot;address.city&quot; rather than &quot;address&quot;.</p></div>
+<div class="api-item" id="json-sl-checker-under"><code>Checker.under(prefix: str, other: Checker) -&gt; int</code><p>Everything found so far, re-reported under a prefix: for a nested object checked by its own function.</p></div>
+</section>
+<section class="api-module"><h2 id="log-sl">log.sl<a class="anchor" href="#log-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Logging.</p>
+<div class="api-item" id="log-sl-enum"><code>enum LogLevel { DEBUG, LOG, WARN, ERROR, OFF }</code></div>
+<div class="api-item" id="log-sl-level-rank"><code>level_rank(l: LogLevel) -&gt; int</code></div>
+<div class="api-item" id="log-sl-level-name"><code>level_name(l: LogLevel) -&gt; str</code></div>
+<div class="api-item" id="log-sl-parse-level"><code>parse_level(s: str) -&gt; opt[LogLevel]</code></div>
+<div class="api-item" id="log-sl-gc"><code>gc struct LogEvent { time: int, level: LogLevel, context: str, message: str, request: bool, method: str, route: str, path: str, status: int, duration_ns: int, size: int, request_id: str, client_ip: str, trace_id: str, ack: opt[chan[int]] }</code></div>
+<div class="api-item" id="log-sl-gc-2"><code>gc struct Logger { events: opt[chan[LogEvent]], level: LogLevel, requests: bool, console: bool, json: bool, color: bool, capacity: int, lock: mutex, dropped: int, no_ack: opt[chan[int]] }</code></div>
+<div class="api-item" id="log-sl-default-log-capacity"><code>default_log_capacity() -&gt; int</code><p>How many events may wait for the writer: enough to absorb a burst of a few thousand requests between two wake-ups.</p></div>
+<div class="api-item" id="log-sl-no-logger"><code>no_logger() -&gt; Logger</code><p>Logs nothing.</p></div>
+<div class="api-item" id="log-sl-console-logger"><code>console_logger(json: bool, color: bool, level: LogLevel, requests: bool) -&gt; Logger</code><p>zokor&#x27;s own writer, to stdout, configured but not started: <code>start</code> (which listen_and_serve_with calls) makes the channel and...</p></div>
+<div class="api-item" id="log-sl-channel-logger"><code>channel_logger(ch: chan[LogEvent], level: LogLevel, requests: bool) -&gt; Logger</code><p>A logger whose events go to <code>ch</code>, drained by the caller&#x27;s own task.</p></div>
+<div class="api-item" id="log-sl-default-logger"><code>default_logger() -&gt; Logger</code><p>The default: pretty and coloured on a terminal, JSON otherwise, level LOG, request lines on.</p></div>
+<div class="api-item" id="log-sl-logger-from"><code>logger_from(cfg: Config) -&gt; Logger</code><p>LOG_FORMAT, LOG_LEVEL, LOG_REQUESTS and NO_COLOR over the default.</p></div>
+<div class="api-item" id="log-sl-logger-start"><code>Logger.start()</code><p>Starts the console writer if this is an unstarted console logger; otherwise does nothing.</p></div>
+<div class="api-item" id="log-sl-logger-own-tasks"><code>Logger.own_tasks() -&gt; int</code><p>Tasks this logger runs for itself: 1 once the console writer is started.</p></div>
+<div class="api-item" id="log-sl-logger-enabled"><code>Logger.enabled(l: LogLevel) -&gt; bool</code><p>Whether an event at <code>l</code> would be sent at all: lets a caller skip building one.</p></div>
+<div class="api-item" id="log-sl-logger-emit"><code>Logger.emit(ev: LogEvent)</code><p>Offers <code>ev</code> without waiting: dropped and counted when the channel is full or below the level.</p></div>
+<div class="api-item" id="log-sl-logger-record-request"><code>Logger.record_request(method: str, route: str, raw_path: str, status: int, duration_ns: int, size: int, request_id: str, client_ip: str)</code><p>The serve loop&#x27;s call: one request&#x27;s record, if requests are logged at its level.</p></div>
+<div class="api-item" id="log-sl-logger-debug"><code>Logger.debug(context: str, message: str)</code></div>
+<div class="api-item" id="log-sl-logger-log"><code>Logger.log(context: str, message: str)</code></div>
+<div class="api-item" id="log-sl-logger-warn"><code>Logger.warn(context: str, message: str)</code></div>
+<div class="api-item" id="log-sl-logger-error"><code>Logger.error(context: str, message: str)</code></div>
+<div class="api-item" id="log-sl-logger-take-dropped"><code>Logger.take_dropped() -&gt; int</code><p>Events dropped and not yet reported; resets the count.</p></div>
+<div class="api-item" id="log-sl-logger-flush"><code>Logger.flush(timeout_ns: int)</code><p>Waits until everything emitted before this call is written, or <code>timeout_ns</code> passes.</p></div>
+<div class="api-item" id="log-sl-request-event"><code>request_event(method: str, route: str, raw_path: str, status: int, duration_ns: int, size: int, request_id: str, client_ip: str) -&gt; LogEvent</code><p>A request&#x27;s record.</p></div>
+<div class="api-item" id="log-sl-logs-requests"><code>logs_requests(lg: Logger, status: int) -&gt; bool</code><p>Whether the serve loop should build a request record at all.</p></div>
+<div class="api-item" id="log-sl-safe-path"><code>safe_path(raw: str) -&gt; str</code><p>A client-supplied path made safe to print: the query dropped, at most 64 bytes kept, and every byte outside printable ASCII --...</p></div>
+<div class="api-item" id="log-sl-utc-parts"><code>utc_parts(unix_ns: int) -&gt; [int]</code><p>Unix nanoseconds as UTC civil time: [year, month, day, hour, minute, second, millisecond].</p></div>
+<div class="api-item" id="log-sl-gc-3"><code>gc struct LogFormat { pid: str, three: [str], plain: [str], sec: int, stamp_t: str, stamp_sp: str, quoted: map[str]str }</code><p>Formatting state, made once and reused for every line: tables of the numbers a line needs (so a status, a size or a...</p></div>
+<div class="api-item" id="log-sl-new-log-format"><code>new_log_format(pid: int) -&gt; LogFormat</code></div>
+<div class="api-item" id="log-sl-logformat-stamp"><code>LogFormat.stamp(unix_ns: int, t: bool) -&gt; str</code><p>&quot;2026-10-12T18:47:01.123Z&quot; (t) or &quot;2026-10-12 18:47:01.123Z&quot;.</p></div>
+<div class="api-item" id="log-sl-logformat-json-into"><code>LogFormat.json_into(sb: builder.Str, ev: LogEvent) -&gt; builder.Str</code><p>One JSON object and a newline, appended to <code>sb</code>.</p></div>
+<div class="api-item" id="log-sl-logformat-pretty-into"><code>LogFormat.pretty_into(sb: builder.Str, ev: LogEvent, color: bool, since_ns: int) -&gt; builder.Str</code><p>The NestJS layout and a newline, appended to <code>sb</code>:   [zokor] &lt;pid&gt;  - &lt;utc time&gt;     LOG [Context] message +3.21ms The...</p></div>
+<div class="api-item" id="log-sl-logformat-json"><code>LogFormat.json(ev: LogEvent) -&gt; str</code><p>The same as single strings, without the newline: for a consumer that wants one line at a time.</p></div>
+<div class="api-item" id="log-sl-logformat-pretty"><code>LogFormat.pretty(ev: LogEvent, color: bool, since_ns: int) -&gt; str</code></div>
+</section>
+<section class="api-module"><h2 id="metrics-sl">metrics.sl<a class="anchor" href="#metrics-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Opt-in Prometheus metrics with bounded request series and custom scalars.</p>
+<div class="api-item" id="metrics-sl-gc"><code>gc struct MetricsConfig { path: str, max_series: int, max_custom: int, buckets_ns: [int] }</code></div>
+<div class="api-item" id="metrics-sl-metrics-config"><code>metrics_config() -&gt; MetricsConfig</code></div>
+<div class="api-item" id="metrics-sl-enum"><code>enum MetricKind { Counter, Gauge }</code></div>
+<div class="api-item" id="metrics-sl-gc-2"><code>gc struct Metric { name: str, help: str, kind: MetricKind, lock: mutex, value: int }</code></div>
+<div class="api-item" id="metrics-sl-gc-3"><code>gc struct Metrics { path: str, max_series: int, max_custom: int, bounds: [int], lock: mutex, active: int, dropped: int, routes: map[str]int, series_index: map[int]int, series: [RequestSeries], custom: [Metric] }</code></div>
+<div class="api-item" id="metrics-sl-new-metrics"><code>new_metrics(cfg: MetricsConfig) -&gt; result[Metrics, str]</code><p>Copies configuration so later caller mutations cannot change bucket shapes.</p></div>
+<div class="api-item" id="metrics-sl-metrics-enter"><code>Metrics.enter()</code></div>
+<div class="api-item" id="metrics-sl-metrics-leave"><code>Metrics.leave(method: str, route: str, status: int, ns: int)</code><p>One completion for each enter, including a panic or failed socket write.</p></div>
+<div class="api-item" id="metrics-sl-metrics-counter"><code>Metrics.counter(name: str, help: str) -&gt; result[Metric, str]</code></div>
+<div class="api-item" id="metrics-sl-metrics-gauge"><code>Metrics.gauge(name: str, help: str) -&gt; result[Metric, str]</code></div>
+<div class="api-item" id="metrics-sl-metric-add"><code>Metric.add(delta: int) -&gt; result[bool, str]</code><p>Counters only increase; gauges can add a signed delta.</p></div>
+<div class="api-item" id="metrics-sl-metric-set"><code>Metric.set(value: int) -&gt; result[bool, str]</code></div>
+<div class="api-item" id="metrics-sl-metric-read"><code>Metric.read() -&gt; int</code></div>
+<div class="api-item" id="metrics-sl-metrics-text"><code>metrics_text(m: Metrics) -&gt; str</code><p>A consistent snapshot is copied under the lock; text formatting happens after unlocking so scrapes do not hold up request...</p></div>
+</section>
+<section class="api-module"><h2 id="migrations-sl">migrations.sl<a class="anchor" href="#migrations-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Forward-only SQL migrations: immutable history and an atomic pending batch.</p>
+<div class="api-item" id="migrations-sl-gc"><code>gc struct Migration { version: int, name: str, sql: str, checksum: str }</code></div>
+<div class="api-item" id="migrations-sl-gc-2"><code>gc struct MigrationLimits { max_files: int, max_file_bytes: int, max_total_bytes: int }</code><p>Limits for reading files, chosen by the caller before startup.</p></div>
+<div class="api-item" id="migrations-sl-migration-limits"><code>migration_limits() -&gt; MigrationLimits</code></div>
+<div class="api-item" id="migrations-sl-migration-checksum"><code>migration_checksum(sql: str) -&gt; str</code></div>
+<div class="api-item" id="migrations-sl-new-migration"><code>new_migration(version: int, name: str, sql: str) -&gt; Migration</code></div>
+<div class="api-item" id="migrations-sl-load-migrations"><code>load_migrations(dir: str, limits: MigrationLimits) -&gt; result[[Migration], str]</code><p>Load N_description.sql files, sort numerically, and reject duplicates.</p></div>
+<div class="api-item" id="migrations-sl-migrate"><code>migrate(p: pg.Pool, ms: [Migration], deadline: until) -&gt; result[int, str]</code><p>Validate all historical files, then apply the pending batch in one transaction under a database-wide advisory lock.</p></div>
+</section>
+<section class="api-module"><h2 id="negotiation-sl">negotiation.sl<a class="anchor" href="#negotiation-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Startup-compiled representations and bounded RFC 9110 Accept negotiation.</p>
+<div class="api-item" id="negotiation-sl-gc"><code>gc struct AcceptLimits { max_bytes: int, max_ranges: int, max_params: int, max_offers: int, max_offer_bytes: int }</code></div>
+<div class="api-item" id="negotiation-sl-accept-limits"><code>accept_limits() -&gt; AcceptLimits</code></div>
+<div class="api-item" id="negotiation-sl-gc-2"><code>gc struct Negotiator { offers: [str], types: [str], subtypes: [str], params: [[str]], max_bytes: int, max_ranges: int, max_params: int }</code><p>Treat the compiled vectors as immutable after startup.</p></div>
+<div class="api-item" id="negotiation-sl-new-negotiator"><code>new_negotiator(offers: [str], limits: AcceptLimits) -&gt; result[Negotiator, str]</code><p>Offer order breaks otherwise equal preferences.</p></div>
+<div class="api-item" id="negotiation-sl-negotiator-choose"><code>Negotiator.choose(header: opt[str]) -&gt; result[opt[str], str]</code><p>none means no acceptable offer; err means malformed Accept.</p></div>
+<div class="api-item" id="negotiation-sl-negotiate-s"><code>negotiate[S](c: Ctx[S], n: Negotiator) -&gt; result[str, http.Response]</code><p>A selected media type, or a registered 400/406 response.</p></div>
+</section>
+<section class="api-module"><h2 id="openapi-sl">openapi.sl<a class="anchor" href="#openapi-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Startup OpenAPI generation from registered routes and explicit wire schemas.</p>
+<div class="api-item" id="openapi-sl-gc"><code>gc struct OpenApiLimits { max_routes: int, max_schemas: int, max_schema_bytes: int, max_total_schema_bytes: int, max_schema_depth: int, max_document_bytes: int, max_collection_entries: int, max_metadata_bytes: int }</code><p>Resource limits for startup metadata and the generated document.</p></div>
+<div class="api-item" id="openapi-sl-openapi-limits"><code>openapi_limits() -&gt; OpenApiLimits</code></div>
+<div class="api-item" id="openapi-sl-gc-2"><code>gc struct ApiParameter { name: str, location: str, schema: str, required: bool, description: str }</code><p>schema is a registered DTO name or a primitive JSON Schema type.</p></div>
+<div class="api-item" id="openapi-sl-gc-3"><code>gc struct ApiResponse { status: i32, description: str, schema: str, media_type: str }</code><p>An empty schema declares a response without a body.</p></div>
+<div class="api-item" id="openapi-sl-gc-4"><code>gc struct ApiOperation { method: Method, pattern: str, operation_id: str, summary: str, description: str, tags: [str], parameters: [ApiParameter], request_schema: str, request_media_type: str, request_required: bool, responses: [ApiResponse], errors: [str] }</code><p>Metadata cannot create routes: method/pattern must occur in routes_list.</p></div>
+<div class="api-item" id="openapi-sl-gc-5"><code>gc struct OpenApi { title: str, version: str, description: str, server_urls: [str], schemas: map[str]str, operations: [ApiOperation], omitted: [str], error_schema: str, error_media_type: str, limits: OpenApiLimits }</code><p>Configure before generation.</p></div>
+<div class="api-item" id="openapi-sl-new-openapi"><code>new_openapi(title: str, version: str) -&gt; OpenApi</code></div>
+<div class="api-item" id="openapi-sl-api-operation"><code>api_operation(method: Method, pattern: str) -&gt; ApiOperation</code></div>
+<div class="api-item" id="openapi-sl-api-parameter"><code>api_parameter(name: str, location: str, schema: str) -&gt; ApiParameter</code></div>
+<div class="api-item" id="openapi-sl-api-response"><code>api_response(status: i32, schema: str) -&gt; ApiResponse</code></div>
+<div class="api-item" id="openapi-sl-openapi-schema"><code>OpenApi.schema(name: str, definition: str) -&gt; int</code><p>A JSON Schema definition, parsed within limits at generation.</p></div>
+<div class="api-item" id="openapi-sl-openapi-operation"><code>OpenApi.operation(op: ApiOperation) -&gt; int</code></div>
+<div class="api-item" id="openapi-sl-openapi-omit"><code>OpenApi.omit(method: Method, pattern: str) -&gt; int</code><p>Explicitly exclude an unsupported or private route from this document.</p></div>
+<div class="api-item" id="openapi-sl-api-default-error-schema"><code>api_default_error_schema() -&gt; str</code><p>Embed this definition when the application&#x27;s renderer uses the default envelope.</p></div>
+<div class="api-item" id="openapi-sl-api-ref"><code>api_ref(name: str) -&gt; str</code><p>A self-contained reference, or an inline primitive schema.</p></div>
+<div class="api-item" id="openapi-sl-openapi-document"><code>openapi_document(routes: [str], reg: Registry, api: OpenApi) -&gt; result[str, str]</code><p>Generate at startup; returns every detected metadata problem together.</p></div>
+</section>
+<section class="api-module"><h2 id="pagination-sl">pagination.sl<a class="anchor" href="#pagination-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Pagination: offset pages and keyset (cursor) pages, one envelope for both, so a client reads every list the same way:</p>
+<div class="api-item" id="pagination-sl-struct"><code>struct Page { limit: int, offset: int, cursor: str, by_cursor: bool }</code><p>What the request asked for, checked.</p></div>
+<div class="api-item" id="pagination-sl-page-fetch"><code>Page.fetch() -&gt; int</code><p>How many rows to ask the database for: one more than the page, so the response knows whether there is a next page without a count.</p></div>
+<div class="api-item" id="pagination-sl-page-of-s"><code>page_of[S](c: Ctx[S], default_limit: int, max_limit: int) -&gt; result[Page, http.Response]</code><p>The page <code>c</code> asks for: <code>limit</code> (default <code>default_limit</code>, at most <code>max_limit</code>), and either <code>offset</code> or <code>cursor</code>.</p></div>
+<div class="api-item" id="pagination-sl-encode-cursor"><code>encode_cursor(parts: [str]) -&gt; str</code><p>The opaque cursor for a row whose sort key is <code>parts</code>.</p></div>
+<div class="api-item" id="pagination-sl-decode-cursor"><code>decode_cursor(cursor: str) -&gt; result[[str], str]</code><p>The key parts of a cursor, err when it is not one encode_cursor made.</p></div>
+<div class="api-item" id="pagination-sl-cursor-parts"><code>cursor_parts(p: Page) -&gt; [str]</code><p>The key parts of the cursor <code>p</code> came with ([] on the first page).</p></div>
+<div class="api-item" id="pagination-sl-offset-page-s"><code>offset_page[S, T](c: Ctx[S], p: Page, rows: [T], total: opt[int]) -&gt; http.Response</code><p>An offset page of <code>rows</code> -- up to p.fetch() of them; one past the limit means there is a next page -- in the envelope, with Link.</p></div>
+<div class="api-item" id="pagination-sl-cursor-page-s"><code>cursor_page[S, T](c: Ctx[S], p: Page, rows: [T], key: fn(T) -&gt; [str]) -&gt; http.Response</code><p>A keyset page of <code>rows</code> -- up to p.fetch(); one past the limit means there is a next page, whose cursor is <code>key</code> of the last...</p></div>
+</section>
+<section class="api-module"><h2 id="postgres-sl">postgres.sl<a class="anchor" href="#postgres-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Postgres, wired to zokor&#x27;s config, results and error envelope.</p>
+<div class="api-item" id="postgres-sl-pg-from-config"><code>pg_from_config(cfg: Config) -&gt; result[pg.Pool, str]</code><p>DATABASE_URL (postgres://user:pass@host:port/db?sslmode=require) and DB_POOL_SIZE (default 10).</p></div>
+<div class="api-item" id="postgres-sl-has-postgres"><code>has_postgres(cfg: Config) -&gt; bool</code></div>
+<div class="api-item" id="postgres-sl-pg-close"><code>pg_close(p: pg.Pool)</code></div>
+<div class="api-item" id="postgres-sl-row-json"><code>row_json(rows: pg.Rows, r: int) -&gt; str</code><p>Row <code>r</code> as a JSON object keyed by column name.</p></div>
+<div class="api-item" id="postgres-sl-rows-as-t"><code>rows_as[T](rows: pg.Rows) -&gt; result[[T], str]</code><p>Every row as a T, matched by column name without intermediate JSON text.</p></div>
+<div class="api-item" id="postgres-sl-query-all-t"><code>query_all[T](p: pg.Pool, sql: str, args: [pg.Arg], deadline: until) -&gt; result[[T], str]</code><p>Runs <code>sql</code> with <code>args</code> on a pooled connection and returns every row as a T.</p></div>
+<div class="api-item" id="postgres-sl-query-one-t"><code>query_one[T](p: pg.Pool, sql: str, args: [pg.Arg], deadline: until) -&gt; result[opt[T], str]</code><p>The first row as a T, none when the query returned no row.</p></div>
+<div class="api-item" id="postgres-sl-conn-query-all-t"><code>conn_query_all[T](c: pg.Conn, sql: str, args: [pg.Arg], deadline: until) -&gt; result[[T], str]</code><p>The same on a connection you hold -- inside a transaction body.</p></div>
+<div class="api-item" id="postgres-sl-transaction-a"><code>transaction[A, R](p: pg.Pool, arg: A, body: fn(pg.Conn, A) -&gt; result[R, str], deadline: until) -&gt; result[R, str]</code><p>Runs <code>body(conn, arg)</code> inside BEGIN ...</p></div>
+<div class="api-item" id="postgres-sl-is-unique-violation"><code>is_unique_violation(e: str) -&gt; bool</code></div>
+<div class="api-item" id="postgres-sl-db-failure"><code>db_failure(reg: Registry, e: str, request_id: str) -&gt; http.Response</code><p>A database error as the answer to send, in the service&#x27;s envelope.</p></div>
+</section>
+<section class="api-module"><h2 id="ratelimit-sl">ratelimit.sl<a class="anchor" href="#ratelimit-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Rate limiting.</p>
+<div class="api-item" id="ratelimit-sl-gc"><code>gc struct RateShard { hits: map[str][int], lock: mutex, since_sweep: int }</code></div>
+<div class="api-item" id="ratelimit-sl-gc-2"><code>gc struct RateLimiter { limit: int, window: int, shards: [RateShard], sweep_every: int }</code></div>
+<div class="api-item" id="ratelimit-sl-new-rate-limiter"><code>new_rate_limiter(limit: int, window_ns: int) -&gt; RateLimiter</code><p>At most <code>limit</code> requests per client in any <code>window_ns</code> nanoseconds (1000000000 is one second).</p></div>
+<div class="api-item" id="ratelimit-sl-retry-after-secs"><code>retry_after_secs(wait_ns: int) -&gt; int</code><p>Whole seconds until <code>wait_ns</code> has passed, never below 1: a Retry-After of 0 invites an immediate retry that will be refused.</p></div>
+<div class="api-item" id="ratelimit-sl-struct"><code>struct RateCheck { wait: int, remaining: int, reset: int }</code><p>One check&#x27;s answer, for the RateLimit-* headers.</p></div>
+<div class="api-item" id="ratelimit-sl-ratelimiter-take-at"><code>RateLimiter.take_at(key: str, now: int) -&gt; int</code><p>Counts one request for <code>key</code> at <code>now</code> (time.mono nanoseconds).</p></div>
+<div class="api-item" id="ratelimit-sl-ratelimiter-check-at"><code>RateLimiter.check_at(key: str, now: int) -&gt; RateCheck</code><p>take_at, with what is left: what the RateLimit-* headers report.</p></div>
+<div class="api-item" id="ratelimit-sl-ratelimiter-take"><code>RateLimiter.take(key: str) -&gt; int</code><p>The same, now.</p></div>
+<div class="api-item" id="ratelimit-sl-ratelimiter-tracked"><code>RateLimiter.tracked() -&gt; int</code><p>How many client keys are being tracked.</p></div>
+<div class="api-item" id="ratelimit-sl-rate-limit-s"><code>rate_limit[S](c: Ctx[S], l: RateLimiter, key: str) -&gt; opt[http.Response]</code><p>The body of a rate-limiting <code>before</code>: <code>none</code> to continue, or the registered <code>rate_limited</code> failure (429 unless re-registered)...</p></div>
+<div class="api-item" id="ratelimit-sl-rate-limit-client-s"><code>rate_limit_client[S](c: Ctx[S], l: RateLimiter) -&gt; opt[http.Response]</code><p>rate_limit keyed on the client&#x27;s address: the socket&#x27;s peer, or, behind a proxy listed in TRUSTED_PROXIES, the address that...</p></div>
+</section>
+<section class="api-module"><h2 id="redirect-sl">redirect.sl<a class="anchor" href="#redirect-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Checked redirects for variable destinations; redirect remains the raw constructor.</p>
+<div class="api-item" id="redirect-sl-gc"><code>gc struct RedirectRules { max_location_bytes: int, allow_external: bool }</code></div>
+<div class="api-item" id="redirect-sl-redirect-rules"><code>redirect_rules() -&gt; RedirectRules</code><p>Relative references by default.</p></div>
+<div class="api-item" id="redirect-sl-redirect-checked"><code>redirect_checked(status: i32, location: str, rules: RedirectRules) -&gt; result[http.Response, str]</code><p>Validate status and destination together without including destination secrets in errors.</p></div>
+<div class="api-item" id="redirect-sl-redirect-to"><code>redirect_to(location: str) -&gt; result[http.Response, str]</code><p>A checked 303 for the usual POST/redirect/GET flow, using relative references.</p></div>
+</section>
+<section class="api-module"><h2 id="redis-sl">redis.sl<a class="anchor" href="#redis-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Redis, wired to zokor&#x27;s config system.</p>
+<div class="api-item" id="redis-sl-redis-from-config"><code>redis_from_config(cfg: Config) -&gt; result[redis.Pool, str]</code><p>REDIS_URL, read the same way every other optional dependency in this package is: config.optional_dsn, so a malformed value (a...</p></div>
+<div class="api-item" id="redis-sl-has-redis"><code>has_redis(cfg: Config) -&gt; bool</code><p>true iff REDIS_URL is set -- for a service that wants to know whether to wire Redis-backed features in at all before trying to...</p></div>
+<div class="api-item" id="redis-sl-redis-close"><code>redis_close(p: redis.Pool)</code><p>Closes every idle connection and marks the pool closed; an in-flight acquire finishes normally, and the next one fails with...</p></div>
+</section>
+<section class="api-module"><h2 id="respond-sl">respond.sl<a class="anchor" href="#respond-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Success responses.</p>
+<div class="api-item" id="respond-sl-json-response"><code>json_response(status: i32, body: str) -&gt; http.Response</code></div>
+<div class="api-item" id="respond-sl-json-response-bytes"><code>json_response_bytes(status: i32, body: bytes) -&gt; http.Response</code><p><code>json_response</code> with a BYTES body: same shape, no <code>to_bytes</code> copy.</p></div>
+<div class="api-item" id="respond-sl-ok-json"><code>ok_json(body: str) -&gt; http.Response</code><p><code>ok</code> is a slang builtin (the result constructor), so the 200 helper is named for what it sends.</p></div>
+<div class="api-item" id="respond-sl-ok-json-bytes"><code>ok_json_bytes(body: bytes) -&gt; http.Response</code><p><code>ok_json</code> with a BYTES body: the <code>render_bytes</code> path -- no str, no <code>to_bytes</code>, no copy between the renderer and the socket.</p></div>
+<div class="api-item" id="respond-sl-created"><code>created(body: str, location: str) -&gt; http.Response</code></div>
+<div class="api-item" id="respond-sl-created-bytes"><code>created_bytes(body: bytes, location: str) -&gt; http.Response</code></div>
+<div class="api-item" id="respond-sl-accepted"><code>accepted(body: str) -&gt; http.Response</code></div>
+<div class="api-item" id="respond-sl-accepted-bytes"><code>accepted_bytes(body: bytes) -&gt; http.Response</code><p><code>accepted</code> with a BYTES body: same shape, no <code>to_bytes</code> copy.</p></div>
+<div class="api-item" id="respond-sl-no-content"><code>no_content() -&gt; http.Response</code></div>
+<div class="api-item" id="respond-sl-text"><code>text(status: i32, body: str) -&gt; http.Response</code></div>
+<div class="api-item" id="respond-sl-text-bytes"><code>text_bytes(status: i32, body: bytes) -&gt; http.Response</code><p><code>text</code> with a BYTES body: same shape, no <code>to_bytes</code> copy.</p></div>
+<div class="api-item" id="respond-sl-html"><code>html(status: i32, body: str) -&gt; http.Response</code></div>
+<div class="api-item" id="respond-sl-html-bytes"><code>html_bytes(status: i32, body: bytes) -&gt; http.Response</code><p><code>html</code> with a BYTES body: same shape, no <code>to_bytes</code> copy.</p></div>
+<div class="api-item" id="respond-sl-bytes-of"><code>bytes_of(status: i32, content_type: str, body: bytes) -&gt; http.Response</code></div>
+<div class="api-item" id="respond-sl-redirect"><code>redirect(status: i32, location: str) -&gt; http.Response</code><p>303 after a POST, 307/308 to preserve the method, 301/302 for the older shapes.</p></div>
+<div class="api-item" id="respond-sl-with-header"><code>with_header(r: http.Response, name: str, value: str) -&gt; http.Response</code></div>
+<div class="api-item" id="respond-sl-no-store"><code>no_store(r: http.Response) -&gt; http.Response</code><p>Cache-Control in the two forms a service actually needs.</p></div>
+<div class="api-item" id="respond-sl-cache-for"><code>cache_for(r: http.Response, seconds: int) -&gt; http.Response</code></div>
+</section>
+<section class="api-module"><h2 id="router-sl">router.sl<a class="anchor" href="#router-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">The router: a request goes in, a response comes out, and the application&#x27;s own state comes with it.</p>
+<div class="api-item" id="router-sl-enum"><code>enum Method { GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, TRACE, CONNECT }</code><p>The HTTP methods, as a closed set.</p></div>
+<div class="api-item" id="router-sl-gc"><code>gc struct Ctx[S] { state: S, req: http.Request, params: opt[map[str]str], param1_name: str, param1_value: str, route: str, request_id: str, client_ip: str, out: opt[[str]], locals: opt[map[str]str], errors: Registry, upgrade: opt[Socket] }</code></div>
+<div class="api-item" id="router-sl-struct"><code>struct Served { resp: http.Response, route: str, upgrade: opt[Socket] }</code><p>A response and the route pattern that produced it, for the request log.</p></div>
+<div class="api-item" id="router-sl-gc-2"><code>gc struct Route[S] { method: Method, pattern: str, befores: [fn(Ctx[S]) -&gt; opt[http.Response]], afters: [fn(Ctx[S], http.Response) -&gt; http.Response], segs: [str], names: [str], wild: int, fkind: int, fpath: str, handler: fn(Ctx[S]) -&gt; http.Response, has_static: bool, static_status: i32, static_ctype: str, static_body: bytes, static_rendered: bytes, static_hit: opt[http.StaticBody], static_close_hit: opt[http.StaticBody], no_map: opt[map[str]str], ws: int }</code></div>
+<div class="api-item" id="router-sl-gc-3"><code>gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -&gt; opt[http.Response]], afters: [fn(Ctx[S], http.Response) -&gt; http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security, sanitize: SanitizeMode, auto_etag: bool, rindex: [RNode], static_paths: map[str]int, idem: opt[Idempotency], gzip: opt[Compression], mounts: [FileMount], no_lines: opt[[str]], observations: opt[Metrics], tracer: opt[Tracer], no_tracer: opt[Tracer], request_locals: opt[map[str]str], sockets: [WsRoute[S]], no_socket: opt[Socket] }</code><p>A <code>before</code> runs ahead of the handler and may end the request by returning a response; <code>none</code> carries on.</p></div>
+<div class="api-item" id="router-sl-new-router-s"><code>new_router[S](state: S) -&gt; Router[S]</code><p>An application builds its router from its state alone; everything else starts empty or at the default a correct server should...</p></div>
+<div class="api-item" id="router-sl-new-group-s"><code>new_group[S](r: Router[S], prefix: str) -&gt; Group[S]</code><p>The function-call equivalent of <code>r.group(prefix)</code>, for a service that wants its setup to read as a list of constructors rather...</p></div>
+<div class="api-item" id="router-sl-router-handle"><code>Router.handle(method: Method, pattern: str, h: fn(Ctx[S]) -&gt; http.Response) -&gt; int</code><p>Every method goes through here, including the ones with their own helper below, so a pattern is split exactly once and the...</p></div>
+<div class="api-item" id="router-sl-router-handle-with"><code>Router.handle_with(method: Method, pattern: str, h: fn(Ctx[S]) -&gt; http.Response, befores: [fn(Ctx[S]) -&gt; opt[http.Response]], afters: [fn(Ctx[S], http.Response) -&gt; http.Response]) -&gt; int</code><p>The one registration path: a pattern is split exactly once, and the rules about <code>:params</code> and <code>*rest</code> live here alone.</p></div>
+<div class="api-item" id="router-sl-router-static-bytes"><code>Router.static_bytes(p: str, status: i32, content_type: str, body: bytes, h: fn(Ctx[S]) -&gt; http.Response) -&gt; int</code><p>The full set of HTTP methods, so no service has to fall back to <code>handle</code> with a string for anything standard.</p></div>
+<div class="api-item" id="router-sl-router-websocket"><code>Router.websocket(p: str, open: fn(Ctx[S]) -&gt; http.Response, w: WsRoute[S]) -&gt; int</code><p>A WebSocket route (ws_serve.sl).</p></div>
+<div class="api-item" id="router-sl-router-socketio"><code>Router.socketio(p: str, open: fn(Ctx[S]) -&gt; http.Response, s: SioRoute[S]) -&gt; int</code><p>A Socket.IO route (sio_serve.sl), usually at &quot;/socket.io/&quot;.</p></div>
+<div class="api-item" id="router-sl-router-get"><code>Router.get(p: str, h: fn(Ctx[S]) -&gt; http.Response) -&gt; int</code></div>
+<div class="api-item" id="router-sl-router-head"><code>Router.head(p: str, h: fn(Ctx[S]) -&gt; http.Response) -&gt; int</code></div>
+<div class="api-item" id="router-sl-router-post"><code>Router.post(p: str, h: fn(Ctx[S]) -&gt; http.Response) -&gt; int</code></div>
+<div class="api-item" id="router-sl-router-put"><code>Router.put(p: str, h: fn(Ctx[S]) -&gt; http.Response) -&gt; int</code></div>
+<div class="api-item" id="router-sl-router-patch"><code>Router.patch(p: str, h: fn(Ctx[S]) -&gt; http.Response) -&gt; int</code></div>
+<div class="api-item" id="router-sl-router-delete"><code>Router.delete(p: str, h: fn(Ctx[S]) -&gt; http.Response) -&gt; int</code></div>
+<div class="api-item" id="router-sl-router-options"><code>Router.options(p: str, h: fn(Ctx[S]) -&gt; http.Response) -&gt; int</code></div>
+<div class="api-item" id="router-sl-router-trace"><code>Router.trace(p: str, h: fn(Ctx[S]) -&gt; http.Response) -&gt; int</code></div>
+<div class="api-item" id="router-sl-router-connect"><code>Router.connect(p: str, h: fn(Ctx[S]) -&gt; http.Response) -&gt; int</code></div>
+<div class="api-item" id="router-sl-router-any"><code>Router.any(methods: [Method], p: str, h: fn(Ctx[S]) -&gt; http.Response) -&gt; int</code><p>One handler for several methods on one pattern.</p></div>
+<div class="api-item" id="router-sl-router-group"><code>Router.group(prefix: str) -&gt; Group[S]</code><p>A prefix with its own middleware.</p></div>
+<div class="api-item" id="router-sl-router-guarded"><code>Router.guarded(method: Method, pattern: str, h: fn(Ctx[S]) -&gt; http.Response, befores: [fn(Ctx[S]) -&gt; opt[http.Response]]) -&gt; int</code><p>Middleware for one route, which is the other half of the same need: `r.guarded(Method.DELETE, &quot;/orgs/:id&quot;, drop,...</p></div>
+<div class="api-item" id="router-sl-router-before"><code>Router.before(f: fn(Ctx[S]) -&gt; opt[http.Response]) -&gt; int</code></div>
+<div class="api-item" id="router-sl-router-after"><code>Router.after(f: fn(Ctx[S], http.Response) -&gt; http.Response) -&gt; int</code></div>
+<div class="api-item" id="router-sl-router-etags"><code>Router.etags() -&gt; int</code><p>Tags every 200 answer to a GET or HEAD with a strong ETag -- a hash of the body it sends -- and answers a matching...</p></div>
+<div class="api-item" id="router-sl-router-idempotency"><code>Router.idempotency(store: Idempotency) -&gt; int</code><p>Answers a retried POST or PATCH that carries an Idempotency-Key with the first answer, from <code>store</code> (see idempotency.sl).</p></div>
+<div class="api-item" id="router-sl-router-compress"><code>Router.compress(z: Compression) -&gt; int</code><p>Gzips answers worth it for clients that accept it (see compression.sl).</p></div>
+<div class="api-item" id="router-sl-router-files"><code>Router.files(m: FileMount) -&gt; int</code><p>Serves the directory of <code>m</code> under its prefix (see files.sl): a GET or HEAD no route claims.</p></div>
+<div class="api-item" id="router-sl-router-security-headers"><code>Router.security_headers(h: SecurityHeaders) -&gt; int</code><p>Replaces the security headers (see security.sl); no_security_headers() turns them off.</p></div>
+<div class="api-item" id="router-sl-router-mongo-sanitize"><code>Router.mongo_sanitize(mode: SanitizeMode) -&gt; int</code><p>Turns the operator-injection guard on (REJECT, STRIP) or off; see sanitize.sl.</p></div>
+<div class="api-item" id="router-sl-router-cors"><code>Router.cors(p: CorsPolicy) -&gt; int</code><p>Turns CORS on with <code>p</code> (see cors.sl).</p></div>
+<div class="api-item" id="router-sl-router-health"><code>Router.health() -&gt; int</code><p>Answers GET /healthz (liveness) and GET /readyz (the checks below).</p></div>
+<div class="api-item" id="router-sl-router-health-at"><code>Router.health_at(live_path: str, ready_path: str) -&gt; int</code><p>The same at paths of the service&#x27;s choosing.</p></div>
+<div class="api-item" id="router-sl-router-ready-check"><code>Router.ready_check(name: str, f: fn(S) -&gt; result[int, str]) -&gt; int</code><p>Registers a dependency /readyz waits on.</p></div>
+<div class="api-item" id="router-sl-router-ready-timeout"><code>Router.ready_timeout(ns: int) -&gt; int</code><p>How long /readyz waits for its checks, in nanoseconds; below 1ms is raised to 1ms.</p></div>
+<div class="api-item" id="router-sl-router-routes-list"><code>Router.routes_list() -&gt; [str]</code><p>&quot;METHOD /pattern&quot; per route, in registration order: for a boot log, for <code>zokor check</code>, and for a test that pins down the...</p></div>
+<div class="api-item" id="router-sl-router-metrics"><code>Router.metrics(m: Metrics) -&gt; int</code><p>Opt-in Prometheus endpoint; a service&#x27;s explicit route still wins.</p></div>
+<div class="api-item" id="router-sl-router-tracing"><code>Router.tracing(driver: Tracer) -&gt; int</code></div>
+<div class="api-item" id="router-sl-router-allowed"><code>Router.allowed(p: str) -&gt; [Method]</code><p>The methods registered for a path, for <code>Allow</code> on a 405 and for an automatic OPTIONS.</p></div>
+<div class="api-item" id="router-sl-router-serve"><code>Router.serve(req: http.Request) -&gt; http.Response</code><p>Dispatch: befores, the handler, then afters -- and the afters run even when a before ended the request, so a logging or header...</p></div>
+<div class="api-item" id="router-sl-router-match-static"><code>Router.match_static(f: http.WireFrame) -&gt; opt[http.StaticBody]</code><p>Frame dispatch: route on the ALREADY-PARSED method/path strs, with no raw bytes, no offsets, no segs list, no params map...</p></div>
+<div class="api-item" id="router-sl-router-serve-static"><code>Router.serve_static(f: http.WireFrame) -&gt; result[http.StaticBody, http.Response]</code></div>
+<div class="api-item" id="router-sl-router-serve-frame"><code>Router.serve_frame(f: http.WireFrame, request_id: str) -&gt; http.Response</code><p>serve() stays for callers that already hold a Request (tests, middleware fixtures); serve_conn uses this via serve_static.</p></div>
+<div class="api-item" id="router-sl-router-serve-frame-for"><code>Router.serve_frame_for(f: http.WireFrame, request_id: str, client_ip: str) -&gt; http.Response</code><p>serve_frame, with the client&#x27;s address for Ctx.client_ip.</p></div>
+<div class="api-item" id="router-sl-router-serve-frame-routed"><code>Router.serve_frame_routed(f: http.WireFrame, request_id: str, client_ip: str) -&gt; Served</code><p>What the serve loop calls: the response, and the route pattern that answered it for the request log (&quot;&quot; when none did).</p></div>
+<div class="api-item" id="router-sl-router-serve-id"><code>Router.serve_id(req: http.Request, request_id: str) -&gt; http.Response</code></div>
+<div class="api-item" id="router-sl-router-serve-id-for"><code>Router.serve_id_for(req: http.Request, request_id: str, client_ip: str) -&gt; http.Response</code></div>
+<div class="api-item" id="router-sl-router-serve-id-routed"><code>Router.serve_id_routed(req: http.Request, request_id: str, client_ip: str) -&gt; Served</code></div>
+<div class="api-item" id="router-sl-router-fail"><code>Router.fail(c: Ctx[S], code: str) -&gt; http.Response</code><p>The registry&#x27;s codes, rendered with this request&#x27;s id.</p></div>
+<div class="api-item" id="router-sl-router-fail-with"><code>Router.fail_with(c: Ctx[S], code: str, detail: str) -&gt; http.Response</code></div>
+<div class="api-item" id="router-sl-router-fail-fields"><code>Router.fail_fields(c: Ctx[S], code: str, fields: [FieldError]) -&gt; http.Response</code></div>
+<div class="api-item" id="router-sl-join-methods"><code>join_methods(ms: [Method]) -&gt; str</code></div>
+<div class="api-item" id="router-sl-gc-4"><code>gc struct Group[S] { router: Router[S], prefix: str, befores: [fn(Ctx[S]) -&gt; opt[http.Response]], afters: [fn(Ctx[S], http.Response) -&gt; http.Response] }</code><p>A prefix and the middleware that goes with it.</p></div>
+<div class="api-item" id="router-sl-group-group"><code>Group.group(prefix: str) -&gt; Group[S]</code><p>A group inside this one: the prefixes join and the middleware accumulates.</p></div>
+<div class="api-item" id="router-sl-group-before"><code>Group.before(f: fn(Ctx[S]) -&gt; opt[http.Response]) -&gt; int</code></div>
+<div class="api-item" id="router-sl-group-after"><code>Group.after(f: fn(Ctx[S], http.Response) -&gt; http.Response) -&gt; int</code></div>
+<div class="api-item" id="router-sl-group-handle"><code>Group.handle(method: Method, pattern: str, h: fn(Ctx[S]) -&gt; http.Response) -&gt; int</code></div>
+<div class="api-item" id="router-sl-group-websocket"><code>Group.websocket(p: str, open: fn(Ctx[S]) -&gt; http.Response, w: WsRoute[S]) -&gt; int</code><p>r.websocket, under the group&#x27;s prefix and with its hooks.</p></div>
+<div class="api-item" id="router-sl-group-get"><code>Group.get(p: str, h: fn(Ctx[S]) -&gt; http.Response) -&gt; int</code></div>
+<div class="api-item" id="router-sl-group-head"><code>Group.head(p: str, h: fn(Ctx[S]) -&gt; http.Response) -&gt; int</code></div>
+<div class="api-item" id="router-sl-group-post"><code>Group.post(p: str, h: fn(Ctx[S]) -&gt; http.Response) -&gt; int</code></div>
+<div class="api-item" id="router-sl-group-put"><code>Group.put(p: str, h: fn(Ctx[S]) -&gt; http.Response) -&gt; int</code></div>
+<div class="api-item" id="router-sl-group-patch"><code>Group.patch(p: str, h: fn(Ctx[S]) -&gt; http.Response) -&gt; int</code></div>
+<div class="api-item" id="router-sl-group-delete"><code>Group.delete(p: str, h: fn(Ctx[S]) -&gt; http.Response) -&gt; int</code></div>
+<div class="api-item" id="router-sl-group-options"><code>Group.options(p: str, h: fn(Ctx[S]) -&gt; http.Response) -&gt; int</code></div>
+<div class="api-item" id="router-sl-ctx-trace"><code>Ctx.trace() -&gt; TraceContext</code><p>Empty identifiers when tracing is off.</p></div>
+<div class="api-item" id="router-sl-ctx-trace-request"><code>Ctx.trace_request(req: httpc.Request) -&gt; result[httpc.Request, str]</code></div>
+<div class="api-item" id="router-sl-ctx-logger"><code>Ctx.logger(log: Logger) -&gt; TraceLogger</code></div>
+<div class="api-item" id="router-sl-ctx-param"><code>Ctx.param(name: str) -&gt; str</code></div>
+<div class="api-item" id="router-sl-ctx-param-int"><code>Ctx.param_int(name: str, fallback: int) -&gt; int</code></div>
+<div class="api-item" id="router-sl-ctx-header"><code>Ctx.header(name: str) -&gt; str</code></div>
+<div class="api-item" id="router-sl-ctx-add-header"><code>Ctx.add_header(name: str, value: str) -&gt; int</code><p>Adds a header to whatever response this request ends with: the handler&#x27;s, or a <code>before</code>&#x27;s short-circuit, or an error.</p></div>
+<div class="api-item" id="router-sl-ctx-cookie"><code>Ctx.cookie(name: str) -&gt; str</code><p>The value of cookie <code>name</code>, &quot;&quot; when the request carried none.</p></div>
+<div class="api-item" id="router-sl-ctx-cookies"><code>Ctx.cookies() -&gt; map[str]str</code><p>Every cookie the request carried.</p></div>
+<div class="api-item" id="router-sl-ctx-set-local"><code>Ctx.set_local(key: str, v: str) -&gt; int</code><p>What a <code>before</code> resolved, read by the handler: the user a token belongs to, the tenant a subdomain names, the plan a customer...</p></div>
+<div class="api-item" id="router-sl-ctx-socket"><code>Ctx.socket() -&gt; Socket</code><p>The socket a WebSocket route&#x27;s handshake is opening: put it in a hub, set its locals.</p></div>
+<div class="api-item" id="router-sl-ctx-accept-ws"><code>Ctx.accept_ws() -&gt; http.Response</code><p>The 101 that accepts the upgrade.</p></div>
+<div class="api-item" id="router-sl-ctx-local"><code>Ctx.local(key: str) -&gt; str</code></div>
+<div class="api-item" id="router-sl-ctx-has-local"><code>Ctx.has_local(key: str) -&gt; bool</code></div>
+<div class="api-item" id="router-sl-ctx-body-str"><code>Ctx.body_str() -&gt; str</code></div>
+<div class="api-item" id="router-sl-ctx-body-bytes"><code>Ctx.body_bytes() -&gt; bytes</code></div>
+<div class="api-item" id="router-sl-ctx-method"><code>Ctx.method() -&gt; Method</code><p>The verb as a checked value.</p></div>
+<div class="api-item" id="router-sl-ctx-method-str"><code>Ctx.method_str() -&gt; str</code><p>The verb exactly as the client sent it, for logs.</p></div>
+<div class="api-item" id="router-sl-ctx-path"><code>Ctx.path() -&gt; str</code></div>
+<div class="api-item" id="router-sl-ctx-query"><code>Ctx.query(name: str) -&gt; str</code><p>One query parameter, percent-decoded, or &quot;&quot;.</p></div>
+<div class="api-item" id="router-sl-ctx-query-int"><code>Ctx.query_int(name: str, fallback: int) -&gt; int</code></div>
+<div class="api-item" id="router-sl-ctx-bearer"><code>Ctx.bearer() -&gt; str</code><p>The bearer token without its scheme, or &quot;&quot;.</p></div>
+<div class="api-item" id="router-sl-ctx-content-type"><code>Ctx.content_type() -&gt; str</code></div>
+<div class="api-item" id="router-sl-ctx-json-body"><code>Ctx.json_body() -&gt; result[Json, FormError]</code><p>The body as a JSON value, for a shape you have not declared.</p></div>
+<div class="api-item" id="router-sl-ctx-form"><code>Ctx.form(rules: UploadRules) -&gt; result[Form, FormError]</code><p>The multipart form this request carries, under the caller&#x27;s rules.</p></div>
+<div class="api-item" id="router-sl-ctx-upload"><code>Ctx.upload(rules: UploadRules) -&gt; result[Form, FormError]</code><p>The same, refused unless the request is a POST/PUT/PATCH: a body on a GET is a client doing something strange.</p></div>
+<div class="api-item" id="router-sl-ctx-wants-close"><code>Ctx.wants_close() -&gt; bool</code></div>
+<div class="api-item" id="router-sl-dto-s"><code>dto[S, T](c: Ctx[S]) -&gt; result[T, http.Response]</code><p>The body decoded into a declared shape, in one call: the wire&#x27;s camelCase keys become the struct&#x27;s snake_case fields (slang&#x27;s...</p></div>
+<div class="api-item" id="router-sl-query-as-s"><code>query_as[S, T](c: Ctx[S]) -&gt; result[T, http.Response]</code><p>The query string bound into a declared shape, in one call, with the same field-level errors a bad body gets --      let r:...</p></div>
+</section>
+<section class="api-module"><h2 id="sanitize-sl">sanitize.sl<a class="anchor" href="#sanitize-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Operator injection: the NoSQL half of input sanitisation.</p>
+<div class="api-item" id="sanitize-sl-enum"><code>enum SanitizeMode { OFF, REJECT, STRIP }</code></div>
+<div class="api-item" id="sanitize-sl-sanitize-from"><code>sanitize_from(cfg: Config) -&gt; SanitizeMode</code><p>MONGO_SANITIZE: off (default), reject or strip.</p></div>
+<div class="api-item" id="sanitize-sl-operator-key"><code>operator_key(k: str) -&gt; bool</code><p>A key MongoDB would read as an operator or a path.</p></div>
+<div class="api-item" id="sanitize-sl-find-operator-key"><code>find_operator_key(j: Json) -&gt; str</code><p>The first operator key in <code>j</code>, as a path (&quot;filter.$where&quot;, &quot;items[2].$gt&quot;), or &quot;&quot; when there is none.</p></div>
+<div class="api-item" id="sanitize-sl-strip-operator-keys"><code>strip_operator_keys(j: Json) -&gt; int</code><p>Removes every operator key in <code>j</code>, at any depth, in place; returns how many were removed.</p></div>
+<div class="api-item" id="sanitize-sl-sanitize-request"><code>sanitize_request(req: http.Request, mode: SanitizeMode) -&gt; str</code><p>What the guard says about <code>req</code> under <code>mode</code>: &quot;&quot; to carry on (after stripping in place, in STRIP mode), or the offending key&#x27;s...</p></div>
+</section>
+<section class="api-module"><h2 id="security-sl">security.sl<a class="anchor" href="#security-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Security headers.</p>
+<div class="api-item" id="security-sl-gc"><code>gc struct SecurityHeaders { csp: str, hsts_max_age: int, hsts_subdomains: bool, hsts_preload: bool, nosniff: bool, frame_options: str, referrer_policy: str, coop: str, corp: str }</code></div>
+<div class="api-item" id="security-sl-default-security-headers"><code>default_security_headers() -&gt; SecurityHeaders</code></div>
+<div class="api-item" id="security-sl-no-security-headers"><code>no_security_headers() -&gt; SecurityHeaders</code></div>
+<div class="api-item" id="security-sl-security-problem"><code>security_problem(h: SecurityHeaders) -&gt; str</code><p>What is wrong with <code>h</code>, or &quot;&quot;.</p></div>
+<div class="api-item" id="security-sl-security-lines"><code>security_lines(h: SecurityHeaders) -&gt; [str]</code><p>The header lines, &quot;name: value&quot;, in a fixed order.</p></div>
+<div class="api-item" id="security-sl-security-from"><code>security_from(cfg: Config) -&gt; SecurityHeaders</code><p>SECURITY_HEADERS (false turns all of them off), CONTENT_SECURITY_POLICY (&quot;off&quot; for none), HSTS_MAX_AGE (seconds, 0 = off),...</p></div>
+<div class="api-item" id="security-sl-gc-2"><code>gc struct Security { lines: [str], prefixes: [str] }</code><p>What the router keeps: the lines, and each line&#x27;s lowercase name for the &quot;a handler set its own&quot; check.</p></div>
+<div class="api-item" id="security-sl-security-compile"><code>security_compile(h: SecurityHeaders) -&gt; Security</code></div>
+<div class="api-item" id="security-sl-security-apply"><code>Security.apply(resp: http.Response) -&gt; http.Response</code><p><code>resp</code> with every line it does not already carry.</p></div>
+<div class="api-item" id="security-sl-static-render-with"><code>static_render_with(status: i32, content_type: str, lines: [str], body: bytes, keep_alive: bool) -&gt; bytes</code><p>A static route&#x27;s bytes: status line, content type, the security lines, length, connection, the date line, body.</p></div>
+</section>
+<section class="api-module"><h2 id="serve-sl">serve.sl<a class="anchor" href="#serve-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">The server edge: the accept loop that turns a Router into a running server.</p>
+<div class="api-item" id="serve-sl-gc"><code>gc struct ServerConfig { idle_timeout: int, header_timeout: int, body_timeout: int, write_timeout: int, max_request_bytes: int, max_requests_per_conn: int, shutdown_timeout: int, request_ids: bool, trusted_proxies: TrustedProxies, logger: Logger, max_connections: int, tls: TlsSettings }</code><p>Four deadlines, not one, because &quot;how long should this wait&quot; has different honest answers depending on what a connection is...</p></div>
+<div class="api-item" id="serve-sl-gc-2"><code>gc struct TlsSettings { on: bool, cert_file: str, key_file: str, client_ca_file: str, handshake_timeout: int }</code><p>A certificate chain and its private key, as PEM files, read once when the server starts: a missing or mismatched pair stops it...</p></div>
+<div class="api-item" id="serve-sl-no-tls"><code>no_tls() -&gt; TlsSettings</code></div>
+<div class="api-item" id="serve-sl-tls-files"><code>tls_files(cert_file: str, key_file: str) -&gt; TlsSettings</code><p>HTTPS from these two PEM files, with every other setting at its default.</p></div>
+<div class="api-item" id="serve-sl-default-server-config"><code>default_server_config() -&gt; ServerConfig</code><p>Safe rather than infinite, per the todo item this answers.</p></div>
+<div class="api-item" id="serve-sl-server-config-from"><code>server_config_from(cfg: Config) -&gt; ServerConfig</code><p>The same defaults, overridable per field from config: IDLE_TIMEOUT, READ_HEADER_TIMEOUT, READ_BODY_TIMEOUT, WRITE_TIMEOUT,...</p></div>
+<div class="api-item" id="serve-sl-serve-conn-s"><code>serve_conn[S](r: Router[S], c: link, sc: ServerConfig)</code><p>One connection, until the client goes away or asks to close.</p></div>
+<div class="api-item" id="serve-sl-gc-3"><code>gc struct ConnGate { lock: mutex, open: int, max: int, refused: int, reported_at: int }</code><p>The server-wide connection count, shared by every acceptor.</p></div>
+<div class="api-item" id="serve-sl-new-conn-gate"><code>new_conn_gate(max: int) -&gt; ConnGate</code></div>
+<div class="api-item" id="serve-sl-conngate-enter"><code>ConnGate.enter() -&gt; bool</code><p>Takes a slot for a new connection; false (and counted as refused) when every slot is taken.</p></div>
+<div class="api-item" id="serve-sl-conngate-leave"><code>ConnGate.leave()</code></div>
+<div class="api-item" id="serve-sl-conngate-open-now"><code>ConnGate.open_now() -&gt; int</code></div>
+<div class="api-item" id="serve-sl-conngate-refusals-to-report"><code>ConnGate.refusals_to_report(now: int) -&gt; int</code><p>The refusals to report, at most once per second of <code>now</code>: 0 when there are none or the last report was under a second ago.</p></div>
+<div class="api-item" id="serve-sl-serve-tls-conn-s"><code>serve_tls_conn[S](r: Router[S], c: link, sc: ServerConfig, ctx: rawptr)</code><p>serve_conn over TLS: the handshake first, under its own deadline, then the same loop.</p></div>
+<div class="api-item" id="serve-sl-accept-backoff"><code>accept_backoff(prev_ns: int) -&gt; int</code><p>The pause after a failed accept: 5ms, doubling to 1s while it keeps failing.</p></div>
+<div class="api-item" id="serve-sl-listen-and-serve-s"><code>listen_and_serve[S](r: Router[S], port: int) -&gt; result[int, str]</code><p>Bind, then accept until the process is asked to stop.</p></div>
+<div class="api-item" id="serve-sl-listen-and-serve-with-s"><code>listen_and_serve_with[S](r: Router[S], port: int, sc: ServerConfig) -&gt; result[int, str]</code><p>Same, with timeouts, limits, and the shutdown drain window under the caller&#x27;s control -- built from config with...</p></div>
+</section>
+<section class="api-module"><h2 id="sio-serve-sl">sio_serve.sl<a class="anchor" href="#sio-serve-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Socket.IO routes, served: Engine.IO v4 and Socket.IO v5 (what socket.io-client 3 and 4 speak), on both of its transports.</p>
+<div class="api-item" id="sio-serve-sl-gc"><code>gc struct SioRoute[S] { settings: SioSettings, event: fn(S, Socket, SioEvent), connect: opt[fn(S, Socket, str, str) -&gt; result[bool, str]], disconnect: opt[fn(S, Socket, str, str)], sessions: SioSessions }</code></div>
+<div class="api-item" id="sio-serve-sl-sio-route-s"><code>sio_route[S](event: fn(S, Socket, SioEvent)) -&gt; SioRoute[S]</code></div>
+<div class="api-item" id="sio-serve-sl-sioroute-on-connect"><code>SioRoute.on_connect(f: fn(S, Socket, str, str) -&gt; result[bool, str]) -&gt; SioRoute[S]</code></div>
+<div class="api-item" id="sio-serve-sl-sioroute-on-disconnect"><code>SioRoute.on_disconnect(f: fn(S, Socket, str, str)) -&gt; SioRoute[S]</code></div>
+</section>
+<section class="api-module"><h2 id="socket-sl">socket.sl<a class="anchor" href="#socket-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">A live connection the serve loop holds open after an upgrade, and the hub that lets one connection&#x27;s handler reach the others.</p>
+<div class="api-item" id="socket-sl-gc"><code>gc struct Socket { id: str, route: str, protocol: str, client_ip: str, locals: map[str]str, lock: mutex, out: chan[Out], open: bool, ended: str, close_code: int, close_reason: str, hubs: [Hub], namespaces: map[str]bool, handler: int, handshake: http.Response, sio: bool, accepted: bool }</code></div>
+<div class="api-item" id="socket-sl-socket-send-text"><code>Socket.send_text(s: str) -&gt; bool</code><p>Queues a text message.</p></div>
+<div class="api-item" id="socket-sl-socket-send-binary"><code>Socket.send_binary(b: bytes) -&gt; bool</code></div>
+<div class="api-item" id="socket-sl-socket-emit"><code>Socket.emit(namespace: str, name: str, args_json: str) -&gt; bool</code><p>Socket.IO: <code>emit(name, ...args)</code> on a namespace (&quot;/&quot; by default).</p></div>
+<div class="api-item" id="socket-sl-socket-emit-with-ack"><code>Socket.emit_with_ack(namespace: str, name: str, args_json: str, id: int) -&gt; bool</code><p>The same, asking the client to acknowledge: its answer arrives as an Ack event carrying <code>id</code>.</p></div>
+<div class="api-item" id="socket-sl-socket-ack"><code>Socket.ack(namespace: str, id: int, args_json: str) -&gt; bool</code><p>The answer to a client event that asked for one (SioEvent.ack &gt;= 0).</p></div>
+<div class="api-item" id="socket-sl-socket-emit-binary"><code>Socket.emit_binary(namespace: str, name: str, args_json: str, data: [bytes]) -&gt; bool</code><p>emit with binary attachments: <code>args_json</code> is the other arguments, as for emit, and each of <code>data</code> follows them as a binary...</p></div>
+<div class="api-item" id="socket-sl-socket-disconnect-ns"><code>Socket.disconnect_ns(namespace: str) -&gt; bool</code><p>Disconnects the client from one namespace; the session stays.</p></div>
+<div class="api-item" id="socket-sl-socket-close"><code>Socket.close(code: int, reason: str) -&gt; bool</code><p>Starts the closing handshake with <code>code</code> (1000 normal, 1001 going away, 1008 policy, 4000-4999 the application&#x27;s own) and...</p></div>
+<div class="api-item" id="socket-sl-socket-is-open"><code>Socket.is_open() -&gt; bool</code></div>
+<div class="api-item" id="socket-sl-socket-local"><code>Socket.local(key: str) -&gt; str</code><p>A value the handshake&#x27;s hooks set on the request, &quot;&quot; when none did.</p></div>
+<div class="api-item" id="socket-sl-socket-set-local"><code>Socket.set_local(key: str, v: str) -&gt; int</code></div>
+<div class="api-item" id="socket-sl-gc-2"><code>gc struct Hub { id: str, lock: mutex, sockets: map[str]Socket, rooms: map[str]map[str]bool }</code><p>Sockets by id, and rooms of them: what a chat, a live dashboard or a notification fan-out needs to reach more than the one...</p></div>
+<div class="api-item" id="socket-sl-new-hub"><code>new_hub() -&gt; Hub</code></div>
+<div class="api-item" id="socket-sl-hub-add"><code>Hub.add(s: Socket) -&gt; int</code></div>
+<div class="api-item" id="socket-sl-hub-remove"><code>Hub.remove(s: Socket) -&gt; int</code><p>Takes the socket out of the hub and every room in it.</p></div>
+<div class="api-item" id="socket-sl-hub-join-room"><code>Hub.join_room(s: Socket, room: str) -&gt; int</code><p>Puts the socket in a room (adding it to the hub first if needed).</p></div>
+<div class="api-item" id="socket-sl-hub-leave-room"><code>Hub.leave_room(s: Socket, room: str) -&gt; int</code></div>
+<div class="api-item" id="socket-sl-hub-count"><code>Hub.count() -&gt; int</code></div>
+<div class="api-item" id="socket-sl-hub-room-size"><code>Hub.room_size(room: str) -&gt; int</code></div>
+<div class="api-item" id="socket-sl-hub-get"><code>Hub.get(id: str) -&gt; opt[Socket]</code><p>The socket with this id, if it is in the hub.</p></div>
+<div class="api-item" id="socket-sl-hub-broadcast"><code>Hub.broadcast(text: str, except: str) -&gt; int</code><p>Text to every WebSocket in the hub but <code>except</code> (an id, or &quot;&quot;).</p></div>
+<div class="api-item" id="socket-sl-hub-broadcast-binary"><code>Hub.broadcast_binary(b: bytes, except: str) -&gt; int</code></div>
+<div class="api-item" id="socket-sl-hub-to-room"><code>Hub.to_room(room: str, text: str, except: str) -&gt; int</code></div>
+<div class="api-item" id="socket-sl-hub-to-room-binary"><code>Hub.to_room_binary(room: str, b: bytes, except: str) -&gt; int</code></div>
+<div class="api-item" id="socket-sl-hub-emit-all"><code>Hub.emit_all(namespace: str, name: str, args_json: str, except: str) -&gt; int</code><p>Socket.IO: one event to every Socket.IO session in the hub, encoded once.</p></div>
+<div class="api-item" id="socket-sl-hub-emit-to-room"><code>Hub.emit_to_room(room: str, namespace: str, name: str, args_json: str, except: str) -&gt; int</code></div>
+<div class="api-item" id="socket-sl-hub-emit-binary-to-room"><code>Hub.emit_binary_to_room(room: str, namespace: str, name: str, args_json: str, data: [bytes], except: str) -&gt; int</code><p>emit_binary to every Socket.IO session in a room (&quot;&quot; for the hub).</p></div>
+</section>
+<section class="api-module"><h2 id="testkit-sl">testkit.sl<a class="anchor" href="#testkit-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Building a request, and reading a response.</p>
+<div class="api-item" id="testkit-sl-gc"><code>gc struct TestRequest { method: Method, path: str, headers: map[str]str, body: bytes }</code></div>
+<div class="api-item" id="testkit-sl-request"><code>request(method: Method, path: str) -&gt; TestRequest</code></div>
+<div class="api-item" id="testkit-sl-get-request"><code>get_request(path: str) -&gt; TestRequest</code></div>
+<div class="api-item" id="testkit-sl-testrequest-header"><code>TestRequest.header(name: str, value: str) -&gt; TestRequest</code></div>
+<div class="api-item" id="testkit-sl-testrequest-bearer"><code>TestRequest.bearer(token: str) -&gt; TestRequest</code></div>
+<div class="api-item" id="testkit-sl-testrequest-basic"><code>TestRequest.basic(credentials: str) -&gt; TestRequest</code></div>
+<div class="api-item" id="testkit-sl-testrequest-content-type"><code>TestRequest.content_type(ct: str) -&gt; TestRequest</code></div>
+<div class="api-item" id="testkit-sl-testrequest-body-str"><code>TestRequest.body_str(body: str) -&gt; TestRequest</code></div>
+<div class="api-item" id="testkit-sl-testrequest-body-bytes"><code>TestRequest.body_bytes(body: bytes) -&gt; TestRequest</code></div>
+<div class="api-item" id="testkit-sl-testrequest-json-body"><code>TestRequest.json_body(body: str) -&gt; TestRequest</code><p>Sets the content type too, because a body without one is a body a real client would not send.</p></div>
+<div class="api-item" id="testkit-sl-testrequest-json"><code>TestRequest.json(body: Json) -&gt; TestRequest</code></div>
+<div class="api-item" id="testkit-sl-testrequest-multipart"><code>TestRequest.multipart(boundary: str, fields: map[str]str, files: [Upload]) -&gt; TestRequest</code><p>A multipart body, built from the parts given: each file is <code>name:filename:content-type:content</code>, each field <code>name:value</code>.</p></div>
+<div class="api-item" id="testkit-sl-testrequest-build"><code>TestRequest.build() -&gt; http.Request</code><p>Not fallible: a header that fails http.request()&#x27;s validation (CR or LF in a name or value, a colon in a name) here is a bug...</p></div>
+<div class="api-item" id="testkit-sl-upload-part"><code>upload_part(field: str, filename: str, content_type: str, content: str) -&gt; Upload</code><p>One part for <code>multipart</code>, without going near a real encoder.</p></div>
+<div class="api-item" id="testkit-sl-resp-status"><code>resp_status(r: http.Response) -&gt; int</code><p><code>status_of</code> is taken by the registry, so responses read as <code>resp_status</code>, <code>resp_text</code>, <code>resp_header</code>, <code>resp_json</code>.</p></div>
+<div class="api-item" id="testkit-sl-resp-text"><code>resp_text(r: http.Response) -&gt; str</code></div>
+<div class="api-item" id="testkit-sl-resp-header"><code>resp_header(r: http.Response, name: str) -&gt; str</code></div>
+<div class="api-item" id="testkit-sl-resp-json"><code>resp_json(r: http.Response) -&gt; Json</code><p>The body as JSON, or Null when it is not JSON at all -- so an assertion reads <code>json_of(resp).get(&quot;id&quot;)</code> without a guard.</p></div>
+<div class="api-item" id="testkit-sl-resp-error-code"><code>resp_error_code(r: http.Response) -&gt; str</code><p>The error code in zokor&#x27;s envelope: &quot;not_found&quot;, &quot;validation_failed&quot;.</p></div>
+<div class="api-item" id="testkit-sl-resp-error-fields"><code>resp_error_fields(r: http.Response) -&gt; [str]</code><p>The field names an error envelope complains about, in order, so a test asserts on the shape rather than on an exact string.</p></div>
+</section>
+<section class="api-module"><h2 id="tokens-sl">tokens.sl<a class="anchor" href="#tokens-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Opaque bearer tokens.</p>
+<div class="api-item" id="tokens-sl-gc"><code>gc struct TokenStore { subjects: map[str]str, expires: map[str]int, ttl: int, lock: mutex, since_sweep: int }</code></div>
+<div class="api-item" id="tokens-sl-new-token-store"><code>new_token_store(ttl_ns: int) -&gt; TokenStore</code><p><code>ttl_ns</code> is how long a token stays valid after it is issued, in nanoseconds; 0 means until it is revoked.</p></div>
+<div class="api-item" id="tokens-sl-new-token"><code>new_token() -&gt; result[str, str]</code><p>32 random bytes as 64 lowercase hex characters.</p></div>
+<div class="api-item" id="tokens-sl-tokenstore-issue"><code>TokenStore.issue(subject: str) -&gt; result[str, str]</code><p>A new token for <code>subject</code>.</p></div>
+<div class="api-item" id="tokens-sl-tokenstore-issue-at"><code>TokenStore.issue_at(subject: str, now: int) -&gt; result[str, str]</code></div>
+<div class="api-item" id="tokens-sl-tokenstore-lookup"><code>TokenStore.lookup(token: str) -&gt; opt[str]</code><p>The subject a live token was issued to; none for an unknown, revoked or expired token (an expired one is dropped on the way).</p></div>
+<div class="api-item" id="tokens-sl-tokenstore-lookup-at"><code>TokenStore.lookup_at(token: str, now: int) -&gt; opt[str]</code></div>
+<div class="api-item" id="tokens-sl-tokenstore-revoke"><code>TokenStore.revoke(token: str) -&gt; bool</code><p>Ends one token (logout).</p></div>
+<div class="api-item" id="tokens-sl-tokenstore-revoke-subject"><code>TokenStore.revoke_subject(subject: str) -&gt; int</code><p>Ends every token issued to <code>subject</code> (&quot;log out everywhere&quot;, a password change).</p></div>
+<div class="api-item" id="tokens-sl-tokenstore-count"><code>TokenStore.count() -&gt; int</code><p>How many tokens are held (expired ones count until swept).</p></div>
+<div class="api-item" id="tokens-sl-bearer-subject-s"><code>bearer_subject[S](c: Ctx[S], store: TokenStore) -&gt; opt[str]</code><p>The subject behind the request&#x27;s <code>Authorization: Bearer &lt;token&gt;</code>, or none when the header is missing or the token is not live.</p></div>
+</section>
+<section class="api-module"><h2 id="tracing-sl">tracing.sl<a class="anchor" href="#tracing-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Request-scoped W3C context, carried explicitly across tasks and calls.</p>
+<div class="api-item" id="tracing-sl-gc"><code>gc struct TraceConfig { max_parent_bytes: int, max_state_bytes: int, max_state_members: int }</code><p>Startup limits for incoming W3C headers.</p></div>
+<div class="api-item" id="tracing-sl-gc-2"><code>gc struct Tracer { max_parent_bytes: int, max_state_bytes: int, max_state_members: int }</code><p>Validated, immutable startup tracing settings.</p></div>
+<div class="api-item" id="tracing-sl-struct"><code>struct TraceContext { trace_id: str, parent_id: str, span_id: str, sampled: bool, state: str }</code><p>Explicit request context; pass this value when spawning background work.</p></div>
+<div class="api-item" id="tracing-sl-trace-config"><code>trace_config() -&gt; TraceConfig</code><p>Default limits: 256 parent bytes, 512 state bytes, 32 state members.</p></div>
+<div class="api-item" id="tracing-sl-new-tracer"><code>new_tracer(cfg: TraceConfig) -&gt; result[Tracer, str]</code><p>Validate all startup limits together and copy them.</p></div>
+<div class="api-item" id="tracing-sl-trace-context"><code>trace_context(t: Tracer, headers: bytes) -&gt; result[TraceContext, str]</code><p>Invalid, absent or duplicate parents start a new trace.</p></div>
+<div class="api-item" id="tracing-sl-trace-header"><code>trace_header(ctx: TraceContext) -&gt; result[str, str]</code><p>A validated version-00 header; reserved flags are always zero.</p></div>
+<div class="api-item" id="tracing-sl-trace-request"><code>trace_request(ctx: TraceContext, req: httpc.Request) -&gt; result[httpc.Request, str]</code><p>Copy the request and its headers; never mutate a shared caller request.</p></div>
+<div class="api-item" id="tracing-sl-trace-registry"><code>trace_registry(reg: Registry, ctx: TraceContext) -&gt; Registry</code><p>Bind a registry by copying its startup references, never changing the shared registry as concurrent requests arrive with...</p></div>
+<div class="api-item" id="tracing-sl-struct-2"><code>struct TraceLogger { logger: Logger, trace_id: str, request_id: str }</code><p>A request binding over a shared Logger, without changing its configuration.</p></div>
+<div class="api-item" id="tracing-sl-traced-logger"><code>traced_logger(log: Logger, ctx: TraceContext) -&gt; TraceLogger</code><p>Bind application records to a validated trace id.</p></div>
+</section>
+<section class="api-module"><h2 id="upload-sl">upload.sl<a class="anchor" href="#upload-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">File uploads.</p>
+<div class="api-item" id="upload-sl-gc"><code>gc struct UploadRules { limits: multipart.Limits, allowed_types: [str], allowed_extensions: [str], require_content_type: bool }</code></div>
+<div class="api-item" id="upload-sl-gc-2"><code>gc struct Upload { field: str, filename: str, raw_filename: str, content_type: str, data: bytes }</code></div>
+<div class="api-item" id="upload-sl-gc-3"><code>gc struct Form { values: map[str]str, files: [Upload] }</code></div>
+<div class="api-item" id="upload-sl-gc-4"><code>gc struct FormError { code: str, detail: str }</code><p>The reason a form was refused: a registered error code, and a sentence naming what was wrong.</p></div>
+<div class="api-item" id="upload-sl-default-uploads"><code>default_uploads() -&gt; UploadRules</code></div>
+<div class="api-item" id="upload-sl-uploads-allowing"><code>uploads_allowing(types: [str]) -&gt; UploadRules</code></div>
+<div class="api-item" id="upload-sl-with-max-file-bytes"><code>with_max_file_bytes(r: UploadRules, n: int) -&gt; UploadRules</code></div>
+<div class="api-item" id="upload-sl-with-max-total-bytes"><code>with_max_total_bytes(r: UploadRules, n: int) -&gt; UploadRules</code></div>
+<div class="api-item" id="upload-sl-with-max-files"><code>with_max_files(r: UploadRules, n: int) -&gt; UploadRules</code></div>
+<div class="api-item" id="upload-sl-with-extensions"><code>with_extensions(r: UploadRules, exts: [str]) -&gt; UploadRules</code></div>
+<div class="api-item" id="upload-sl-parse-form"><code>parse_form(content_type: str, body: bytes, rules: UploadRules) -&gt; result[Form, FormError]</code></div>
+<div class="api-item" id="upload-sl-value"><code>value(f: Form, name: str) -&gt; str</code></div>
+<div class="api-item" id="upload-sl-has-value"><code>has_value(f: Form, name: str) -&gt; bool</code></div>
+<div class="api-item" id="upload-sl-file"><code>file(f: Form, field: str) -&gt; opt[Upload]</code><p>The first file posted under a field name, which is the usual case.</p></div>
+<div class="api-item" id="upload-sl-files-for"><code>files_for(f: Form, field: str) -&gt; [Upload]</code><p>Every file under one field name: <code>&lt;input multiple&gt;</code> posts repeats.</p></div>
+<div class="api-item" id="upload-sl-total-bytes"><code>total_bytes(f: Form) -&gt; int</code></div>
+<div class="api-item" id="upload-sl-safe-filename"><code>safe_filename(raw: str) -&gt; str</code><p>A client&#x27;s filename, made safe to use as ONE path segment.</p></div>
+<div class="api-item" id="upload-sl-extension-of"><code>extension_of(filename: str) -&gt; str</code><p>&quot;.png&quot; for &quot;a.png&quot;, lowercased; &quot;&quot; when there is no extension.</p></div>
+<div class="api-item" id="upload-sl-media-type-of"><code>media_type_of(header: str) -&gt; str</code><p>The media type without its parameters: &quot;image/png&quot; from &quot;image/png; charset=binary&quot;.</p></div>
+</section>
+<section class="api-module"><h2 id="ws-sl">ws.sl<a class="anchor" href="#ws-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">WebSocket, and Socket.IO on top of it.</p>
+<div class="api-item" id="ws-sl-gc"><code>gc struct WsRules { max_frame_bytes: int, max_message_bytes: int, protocols: [str], ping_interval: int, pong_timeout: int, max_queue: int, close_timeout: int }</code></div>
+<div class="api-item" id="ws-sl-default-ws"><code>default_ws() -&gt; WsRules</code></div>
+<div class="api-item" id="ws-sl-ws-allowing"><code>ws_allowing(protocols: [str]) -&gt; WsRules</code></div>
+<div class="api-item" id="ws-sl-enum"><code>enum Incoming { Text, Binary, Ping, Pong, Close }</code></div>
+<div class="api-item" id="ws-sl-gc-2"><code>gc struct Message { kind: Incoming, text: str, data: bytes, code: int, reason: str }</code></div>
+<div class="api-item" id="ws-sl-gc-3"><code>gc struct Conn { rules: WsRules, inbox: builder.Bytes, have: int, need: int, partial: builder.Bytes, partial_op: ws.Op, fragmenting: bool, outbox: bytes, closed: bool, sid: str }</code></div>
+<div class="api-item" id="ws-sl-new-conn"><code>new_conn(rules: WsRules) -&gt; Conn</code></div>
+<div class="api-item" id="ws-sl-is-upgrade"><code>is_upgrade(req: http.Request) -&gt; bool</code><p>Is this request asking to become a WebSocket? Cheap enough to call on every request, so a route can serve both.</p></div>
+<div class="api-item" id="ws-sl-upgrade"><code>upgrade(req: http.Request, rules: WsRules) -&gt; result[http.Response, str]</code><p>The 101 to send back, or the failure to report.</p></div>
+<div class="api-item" id="ws-sl-receive"><code>receive(c: Conn, chunk: bytes) -&gt; result[[Message], str]</code><p>Feeds bytes in and takes whole messages out.</p></div>
+<div class="api-item" id="ws-sl-pending"><code>pending(c: Conn) -&gt; bytes</code><p>Bytes the connection owes the peer (pongs, the close echo), taken out: call it after <code>receive</code> and write whatever it returns.</p></div>
+<div class="api-item" id="ws-sl-is-closed"><code>is_closed(c: Conn) -&gt; bool</code></div>
+<div class="api-item" id="ws-sl-text-frame"><code>text_frame(s: str) -&gt; bytes</code></div>
+<div class="api-item" id="ws-sl-binary-frame"><code>binary_frame(b: bytes) -&gt; bytes</code></div>
+<div class="api-item" id="ws-sl-ping-frame"><code>ping_frame(payload: bytes) -&gt; bytes</code></div>
+<div class="api-item" id="ws-sl-pong-frame"><code>pong_frame(payload: bytes) -&gt; bytes</code></div>
+<div class="api-item" id="ws-sl-close-frame"><code>close_frame(code: int, reason: str) -&gt; bytes</code></div>
+<div class="api-item" id="ws-sl-close-because"><code>close_because(c: Conn, why: str) -&gt; bytes</code><p>The close a protocol error calls for: 1002, with the reason, and the connection marked shut so nothing else is sent.</p></div>
+<div class="api-item" id="ws-sl-gc-4"><code>gc struct SioSettings { ping_interval_ms: int, ping_timeout_ms: int, max_payload: int, max_polling_sessions: int, max_attachments: int }</code></div>
+<div class="api-item" id="ws-sl-default-sio"><code>default_sio() -&gt; SioSettings</code></div>
+<div class="api-item" id="ws-sl-enum-2"><code>enum SioKind { Open, Connect, Event, Ack, Ping, Disconnect, Other }</code></div>
+<div class="api-item" id="ws-sl-gc-5"><code>gc struct SioEvent { kind: SioKind, namespace: str, name: str, args_json: str, ack: int, attachments: [bytes], expecting: int }</code></div>
+<div class="api-item" id="ws-sl-sio-open"><code>sio_open(c: Conn, sid: str, s: SioSettings) -&gt; bytes</code><p>The first thing a socket.io connection needs: its session id and the keepalive timings, as a text frame.</p></div>
+<div class="api-item" id="ws-sl-sio-receive"><code>sio_receive(c: Conn, m: Message) -&gt; result[SioEvent, str]</code><p>Turns one WebSocket text message into a socket.io event.</p></div>
+<div class="api-item" id="ws-sl-sio-connect-ok"><code>sio_connect_ok(c: Conn, namespace: str) -&gt; bytes</code><p>The answer to a CONNECT.</p></div>
+<div class="api-item" id="ws-sl-sio-connect-error"><code>sio_connect_error(namespace: str, why: str) -&gt; bytes</code></div>
+<div class="api-item" id="ws-sl-sio-emit"><code>sio_emit(namespace: str, name: str, args_json: str) -&gt; bytes</code><p><code>emit(name, args)</code>.</p></div>
+<div class="api-item" id="ws-sl-sio-emit-with-ack"><code>sio_emit_with_ack(namespace: str, name: str, args_json: str, id: int) -&gt; bytes</code></div>
+<div class="api-item" id="ws-sl-sio-ack"><code>sio_ack(namespace: str, id: int, args_json: str) -&gt; bytes</code><p>The reply to an event that carried an ack id.</p></div>
+<div class="api-item" id="ws-sl-sio-disconnect"><code>sio_disconnect(namespace: str) -&gt; bytes</code></div>
+</section>
+<section class="api-module"><h2 id="ws-serve-sl">ws_serve.sl<a class="anchor" href="#ws-serve-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">WebSocket routes, served: the handshake goes through the router like any request -- its <code>before</code>s run, so authentication and...</p>
+<div class="api-item" id="ws-serve-sl-gc"><code>gc struct WsRoute[S] { rules: WsRules, message: opt[fn(S, Socket, Message)], closed: opt[fn(S, Socket, int, str)], sio: opt[SioRoute[S]] }</code></div>
+<div class="api-item" id="ws-serve-sl-ws-route-s"><code>ws_route[S](rules: WsRules, message: fn(S, Socket, Message)) -&gt; WsRoute[S]</code><p>The message handler is the one a route cannot do without; on_close is optional.</p></div>
+<div class="api-item" id="ws-serve-sl-wsroute-on-close"><code>WsRoute.on_close(f: fn(S, Socket, int, str)) -&gt; WsRoute[S]</code><p>Called once when the connection ends, however it ended, with the code and reason: the peer&#x27;s, the ones this side closed with,...</p></div>
+</section>
+<section class="api-module"><h2 id="internal-multipart-reached-as-uploadrules-limits">internal/multipart (reached as UploadRules.limits)<a class="anchor" href="#internal-multipart-reached-as-uploadrules-limits" aria-label="Link to this section">#</a></h2>
+<div class="api-item" id="internal-multipart-reached-as-uploadrules-limits-gc"><code>gc struct Limits { max_parts: int, max_files: int, max_file_bytes: int, max_field_bytes: int, max_total_bytes: int, max_headers_bytes: int, max_filename_bytes: int }</code></div>
+</section>
+  </article>
+  <aside class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <nav id="toc"></nav>
+  </aside>
+</div>
+</main>
+<footer class="foot">
+  <div class="foot-brand"><img src="../assets/zokor-icon-64.png" width="32" height="32" alt="">
+    <span>zokor</span></div>
+  <p>Generated from <code>README.md</code>, <code>zokor/</code> and <code>examples/</code>.
+     Built and maintained by <a href="https://dolphlabs.com" rel="noopener">Dolphlabs</a>.</p>
+  <p class="foot-links"><a href="../api/index.html">API</a> ·
+     <a href="../llms.txt">llms.txt</a> ·
+     <a href="https://github.com/dolphlabs/zokor" rel="noopener">GitHub</a></p>
+</footer>
+<script src="../app.js" defer></script>
+</body>
+</html>

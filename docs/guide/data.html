@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Data and storage · Zokor</title>
+<meta name="description" content="slang&#x27;s pg package is the driver.">
+<meta name="author" content="Dolphlabs">
+<meta property="og:site_name" content="Zokor">
+<meta property="og:title" content="Data and storage · Zokor">
+<meta property="og:description" content="slang&#x27;s pg package is the driver.">
+<meta property="og:type" content="website">
+<link rel="canonical" href="https://dolphlabs.github.io/zokor/guide/data.html">
+<link rel="alternate" type="text/markdown" href="../guide/data.md" title="Markdown">
+<link rel="alternate" type="text/plain" href="../llms.txt" title="llms.txt">
+<link rel="stylesheet" href="../style.css">
+<link rel="icon" type="image/png" sizes="64x64" href="../assets/zokor-icon-64.png">
+<meta property="og:image" content="https://dolphlabs.github.io/zokor/assets/zokor-card-1200x630.jpg"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <a class="brand" href="../index.html">
+    <img src="../assets/zokor-header-256.png" width="40" height="40" alt="">
+    <span>zokor</span>
+  </a>
+  <button id="navtoggle" class="navtoggle" type="button" aria-label="Toggle navigation"
+          aria-expanded="false" aria-controls="mainnav">
+    <span></span><span></span><span></span>
+  </button>
+  <nav class="mainnav" id="mainnav" aria-label="Main navigation"><a href="../index.html">Home</a><a href="../guide/start.html" class="active" aria-current="page">Start</a><a href="../api/index.html">API</a><a href="../examples/index.html">Examples</a></nav>
+  <div class="tools">
+    <label class="search-label" for="search">Search</label>
+    <input id="search" type="search" placeholder="Search docs…" autocomplete="off"
+           aria-label="Search documentation" aria-controls="results">
+    <button id="theme" type="button" aria-label="Toggle color theme">◐</button>
+  </div>
+</header>
+<div id="navscrim" class="navscrim" hidden></div>
+<div id="results" class="results" role="listbox" aria-label="Search results" hidden></div>
+<nav class="subnav" aria-label="Guide pages"><a href="../guide/start.html">Start</a><a href="../guide/http.html">HTTP</a><a href="../guide/data.html" aria-current="page">Data</a><a href="../guide/operations.html">Operations</a><a href="../guide/realtime.html">Realtime</a><a href="../guide/architecture.html">Architecture</a></nav>
+<main id="main">
+
+<div class="page">
+  <article class="content">
+<header class="page-head"><p class="page-kicker">Zokor documentation</p><h1>Data and storage</h1><p class="tagline">slang&#x27;s pg package is the driver.</p><p class="agentline"><a href="../guide/data.md">Markdown</a> · <a href="../llms.txt">llms.txt</a> · <a href="../api.json">api.json</a></p></header>
+<section class="readme-section"><h2 id="postgres">Postgres<a class="anchor" href="#postgres" aria-label="Link to this section">#</a></h2><p>slang&#x27;s <code>pg</code> package is the driver. zokor adds what every service writes on top of it, and nothing that bypasses it:</p>
+<div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-slang"><span class="tok-keyword">let</span> pr = zokor.<span class="tok-function">pg_from_config</span>(cfg);          <span class="tok-comment">// DATABASE_URL, DB_POOL_SIZE (10)</span>
+<span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> db = pr <span class="tok-keyword">else</span> <span class="tok-keyword">let</span> e = <span class="tok-builtin">err_of</span>(pr) { log.<span class="tok-function">error</span>(e); <span class="tok-builtin">exit</span>(<span class="tok-number">1</span>); }
+
+<span class="tok-keyword">struct</span> User { id: <span class="tok-type">int</span>, email: <span class="tok-type">str</span>, name: <span class="tok-type">opt</span>[<span class="tok-type">str</span>] }
+
+<span class="tok-keyword">fn</span> <span class="tok-function">list_users</span>(c: zokor.Ctx[App]) -&gt; http.Response {
+    <span class="tok-keyword">let</span> r: <span class="tok-type">result</span>[[User], <span class="tok-type">str</span>] = zokor.<span class="tok-function">query_all</span>(c.state.db,
+        <span class="tok-string">&quot;select id, email, name from users where org = $1&quot;</span>,
+        [pg.<span class="tok-function">arg_int</span>(c.<span class="tok-function">param_int</span>(<span class="tok-string">&quot;org&quot;</span>, <span class="tok-number">0</span>))], <span class="tok-builtin">until_of</span>(time.<span class="tok-function">mono</span>() + <span class="tok-number">2000000000</span>));
+    <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> users = r <span class="tok-keyword">else</span> <span class="tok-keyword">let</span> e = <span class="tok-builtin">err_of</span>(r) {
+        <span class="tok-keyword">return</span> zokor.<span class="tok-function">db_failure</span>(c.errors, e, c.request_id);
+    }
+    <span class="tok-keyword">return</span> zokor.<span class="tok-function">ok_json</span>(json.<span class="tok-function">encode</span>(users));
+}</code></pre></div>
+<ul><li><strong>Rows into structs, by column name.</strong> <code>query_all</code>, <code>query_one</code> (none<p>when there&#x27;s no row), <code>conn_query_all</code> inside a transaction, and <code>rows_as</code> use slang&#x27;s compiler-backed <code>pg.rows_as</code>, binding column names once without rendering intermediate JSON text:</p>
+<ul><li>integers, floats and numerics become numbers (NaN and infinity become<p>strings)</p></li><li>booleans stay booleans</li><li><code>json</code>/<code>jsonb</code> decode into nested structs</li><li>NULL becomes <code>none</code>, so use an <code>opt</code> field</li><li><code>bytea</code> reads into <code>bytes</code> or a base64 string</li><li><code>timestamptz</code> and <code>timestamp</code> become RFC 3339 strings, so a<p><code>timez.Time</code> field reads them (a <code>timestamp</code> without a zone as UTC), and a <code>str</code> field gets the text an API would send</p></li><li>text and uuid become strings</li></ul>
+<p>A column your struct doesn&#x27;t name is ignored. A field the query doesn&#x27;t return must be an <code>opt</code>, or the result names the missing field. Invalid cell storage and type mismatches return errors with row and field context.</p></li><li><strong>Transactions.</strong> <code>transaction(db, arg, body, deadline)</code> runs<p><code>body(conn, arg)</code> between <code>BEGIN</code> and <code>COMMIT</code>. An <code>err</code>, a failed <code>COMMIT</code> or a panic in the body rolls back, and the connection goes back to the pool every way out. There are no closures, so what the body needs comes in as <code>arg</code>.</p></li><li><strong>Failures in your envelope.</strong> <code>db_failure(reg, e, rid)</code> picks the<p>status from the SQLSTATE:</p>
+<ul><li>unique violation: <code>409 already_exists</code></li><li>foreign key: <code>409 conflict</code></li><li>not null, check, or a bad value: <code>422</code></li><li>serialization, deadlock or timeout: <code>503</code></li><li>anything else: <code>500</code></li></ul>
+<p>The server&#x27;s message, which names tables, columns and values, never reaches the client. <code>is_unique_violation(e)</code> is there for the common branch.</p></li><li><strong>Parameterised queries only.</strong> Every helper takes <code>$1</code>-style SQL and<p><code>pg.Arg</code> values, and nothing builds SQL from strings. That&#x27;s the SQL injection defence.</p></li></ul></section>
+<section class="readme-section"><h2 id="redis">Redis<a class="anchor" href="#redis" aria-label="Link to this section">#</a></h2><p>Optional the same way any dependency should be: a service with no <code>REDIS_URL</code> builds no pool and opens no connection.</p>
+<div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-slang"><span class="tok-keyword">let</span> cfg = zokor.<span class="tok-function">load_config</span>();
+<span class="tok-keyword">let</span> pr = zokor.<span class="tok-function">redis_from_config</span>(cfg);   <span class="tok-comment">// reads REDIS_URL, REDIS_POOL_SIZE</span>
+<span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> pool = pr <span class="tok-keyword">else</span> <span class="tok-keyword">let</span> e = <span class="tok-builtin">err_of</span>(pr) {
+    <span class="tok-builtin">println</span>(e);       <span class="tok-comment">// &quot;REDIS_URL is not set&quot; -- your call whether that&#x27;s fatal</span>
+    <span class="tok-builtin">exit</span>(<span class="tok-number">1</span>);
+}</code></pre></div>
+<p>That is the whole of it: a pool from config, nothing more. Everything past that point is slang&#x27;s own <code>redis</code> package — <code>redis.acquire</code>, <code>redis.get</code>/<code>set</code>/<code>hset</code>/<code>zadd</code>/…, transactions, pub/sub, streams, cluster routing — called directly, the same way any other zokor service reaches its dependencies. Wrapping the other ~150 functions here would only be a second place for that API to drift from the one slang ships.</p>
+<div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-slang"><span class="tok-keyword">let</span> cr = redis.<span class="tok-function">acquire</span>(pool, deadline);
+<span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> conn = cr <span class="tok-keyword">else</span> <span class="tok-keyword">let</span> e = <span class="tok-builtin">err_of</span>(cr) {
+    <span class="tok-keyword">return</span> zokor.<span class="tok-function">respond</span>(c.state.errors, <span class="tok-string">&quot;unavailable&quot;</span>, c.request_id);
+}
+<span class="tok-keyword">let</span> r = redis.<span class="tok-function">get</span>(conn, <span class="tok-string">&quot;session:&quot;</span> + token, deadline);
+redis.<span class="tok-function">release</span>(pool, conn);</code></pre></div></section>
+<section class="readme-section"><h2 id="migrations">Migrations<a class="anchor" href="#migrations" aria-label="Link to this section">#</a></h2><p><code>make cli</code> builds <code>bin/zokor</code>. Run <code>bin/zokor migrate [directory]</code> with <code>DATABASE_URL</code> configured; the default directory is <code>migrations</code>. Files are numbered forward-only SQL, for example <code>001_create_users.sql</code>. Versions must be positive and unique; descriptions use ASCII letters, digits, underscores or hyphens. Files are ordered numerically.</p>
+<p>The runner checks every applied filename and SHA-256 checksum, takes a Postgres transaction advisory lock, and applies the whole pending batch in one transaction. A failure rolls back SQL and history together. Keep applied files unchanged and present; add a new file for every change. SQL can contain multiple statements, comments and dollar-quoted function bodies. Explicit transaction/session commands and COPY are refused; nontransactional operations such as CREATE INDEX CONCURRENTLY belong in a separate operational procedure.</p>
+<p>Services can call <code>load_migrations(dir, migration_limits())</code> and <code>migrate(pool, migrations, deadline)</code> at startup. File limits are caller configurable; the CLI reads <code>MIGRATION_MAX_FILES</code> (1000), <code>MIGRATION_MAX_FILE_BYTES</code> (1 MiB), <code>MIGRATION_MAX_TOTAL_BYTES</code> (16 MiB), and <code>MIGRATION_TIMEOUT_SECONDS</code> (60, maximum 86400). Errors exit nonzero; success prints the applied count, including zero for an unchanged schema.</p></section>
+  </article>
+  <aside class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <nav id="toc"></nav>
+  </aside>
+</div>
+</main>
+<footer class="foot">
+  <div class="foot-brand"><img src="../assets/zokor-icon-64.png" width="32" height="32" alt="">
+    <span>zokor</span></div>
+  <p>Generated from <code>README.md</code>, <code>zokor/</code> and <code>examples/</code>.
+     Built and maintained by <a href="https://dolphlabs.com" rel="noopener">Dolphlabs</a>.</p>
+  <p class="foot-links"><a href="../api/index.html">API</a> ·
+     <a href="../llms.txt">llms.txt</a> ·
+     <a href="https://github.com/dolphlabs/zokor" rel="noopener">GitHub</a></p>
+</footer>
+<script src="../app.js" defer></script>
+</body>
+</html>
