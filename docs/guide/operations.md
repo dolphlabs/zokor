@@ -1,6 +1,6 @@
 # Operations
 
-> Read once, at startup, into a value you hold.
+> Configure and operate Zokor services with timeouts, graceful shutdown, HTTPS, logging, background jobs, metrics, tracing, and OpenAPI.
 
 ## Configuration
 

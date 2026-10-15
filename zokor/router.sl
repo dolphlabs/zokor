@@ -1375,8 +1375,12 @@ impl Router[S] {
     fn finish(self: Router[S], c: Ctx[S],
               resp: http.Response) -> http.Response {
         let out = resp;
-        if len(c.request_id) > 0 && !http.has_resp_header(out, "x-request-id") {
-            out = http.with_header(out, "x-request-id", c.request_id);
+        // A response with no extra lines cannot already carry the id, and
+        // the line is written lowercase as with_header would: the check
+        // and with_header's own lowercasing each cost an allocation.
+        if len(c.request_id) > 0 &&
+           (len(out.extra) == 0 || !http.has_resp_header(out, "x-request-id")) {
+            push(out.extra, "x-request-id: " + c.request_id);
         }
         if let lines = c.out {
             out = http.with_headers(out, lines);
