@@ -126,13 +126,16 @@ library, made and merged there first.
   409/422/503/500, message withheld). Live tests run on Linux CI against
   postgres:16. Not done: retrying serialization failures, and streaming
   large results into structs (use `pg.stream` directly).
-- [ ] **Map rows into structs without JSON text.** `rows_as` renders each
-  row as JSON and decodes it: 2.2 us a row over reading cells by hand
-  (bench/postgres: 1,000 rows 5.3 ms vs 3.0 ms). The rendering, not the
-  decode (0.33 us a row), is the cost: reading every cell as text and
-  writing it out again. A direct path needs either slang codegen for
-  "decode a struct from (name, value) pairs" or a json.decode that takes
-  a token stream; worth it only if row-heavy endpoints show it.
+- [x] **Map rows into structs without JSON text.** `rows_as` delegates to
+  slang's compiler-backed `pg.rows_as` (slang #427), binding column names
+  once and preserving NULL, nested JSON, exact numerics, binary scalars,
+  timestamps and bytea. The existing error prefix is retained; invalid
+  metadata and cell widths return row/field errors instead of panicking
+  or accepting an empty result. `row_json` remains available explicitly.
+  Hermetic mapping-only benchmark in slang's `bench/pg_rows_as`, Intel
+  macOS ABBA x4, 1,000 rows: legacy JSON adapter 3.792 ms, direct 0.263 ms;
+  23,040 -> 3,671 allocations and 1,864,778 -> 255,780 allocated bytes.
+  This excludes query/request latency. Requires slang dev until release.
 - [ ] **MongoDB helpers**: a pool from `MONGODB_URI` through
   `dolphlabs/mongo` (optional, like `redis_from_config`), and the error
   shape for a duplicate key, so a service on Mongo gets what a service on
