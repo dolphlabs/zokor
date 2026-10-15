@@ -17,8 +17,8 @@ Conduct](CODE_OF_CONDUCT.md). To report a security problem, read
 
 ## Build and test
 
-zokor is a slang package, so you need `slangc`. zokor tracks slang's `dev`
-branch (see *Requirements* in the README for what a release must contain):
+zokor is a slang package, so you need `slangc`. Releases need slang 0.2.3
+or later; development tracks slang's `dev` branch, which CI builds:
 
 ```sh
 git clone https://github.com/dolphlabs/slang && cd slang

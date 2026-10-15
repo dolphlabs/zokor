@@ -4,16 +4,25 @@
 
 ## Starting a service
 
-`zokor new` writes a service that compiles and passes its tests as it
-stands, laid out so a person or an agent changing one feature reads one
+The `zokor` command lives in its own repository,
+[zokor_cli](https://github.com/dolphlabs/zokor_cli). Install it once,
+with slang installed:
+
+```
+curl -fsSL https://raw.githubusercontent.com/dolphlabs/zokor_cli/main/install.sh | sh
+```
+
+`zokor new` writes a small service (startup, config, a health check) that
+compiles and passes its tests as it stands. `zokor newcomp` writes the
+full layout, so a person or an agent changing one feature reads one
 directory:
 
 ```
-make cli                      # builds bin/zokor
-bin/zokor new billing         # or: --db pg for Postgres
+zokor new billing             # small: startup, config, /healthz
 cd billing && slangc get && make test && make run
-bin/zokor add feature orders  # a new slice, wired in (--entity to name its type)
-bin/zokor add route orders POST /:id/cancel cancel_order
+zokor newcomp ledger          # full layout; --db pg for Postgres
+zokor add feature orders      # a new slice, wired in (--entity to name its type)
+zokor add route orders POST /:id/cancel cancel_order
 ```
 
 `add route` registers the route under the feature's prefix (here
@@ -54,11 +63,10 @@ markers in `src/platform/app/app.sl` and `src/main.sl`; it refuses a name
 that exists or that the generated code uses, and writes nothing then. The
 project's own `AGENTS.md` gives an agent these rules in a few lines.
 
-A new project pins `zokor` at `v0.2.0`, which is not tagged yet: until it
-is, pass `--zokor-git` and `--zokor-tag` for the commit you build against.
-The templates are real files under `cmd/zokor/templates/`, embedded by
-`make templates`; `tests/scaffold.sh` (part of `make check`) generates
-both kinds of project against this checkout and runs their tests.
+A new project pins the zokor release the CLI was built against (`zokor
+version` prints it). `--zokor-git` and `--zokor-tag` pin another. The
+templates, and the tests that build and run every kind of project,
+are in zokor_cli.
 
 ## Install
 
@@ -72,9 +80,6 @@ version 0.1.0
 pkg zokor git https://github.com/dolphlabs/zokor tag v0.2.0 dir zokor
 ```
 
-`v0.2.0` is the next release and is not tagged yet. Until it is, pin
-`tag v0.1.0 dir src`: the package lived in `src/` before the rename.
-
 Then fetch it, and import it as `import "zokor";`:
 
 ```
@@ -87,8 +92,8 @@ into your build.
 
 ## Requirements
 
-slang's `dev` branch until its next release: typed Postgres mapping needs
-the compiler-backed `pg.rows_as`. zokor also needs generic structs and methods
-and the `dir` sub-directory pin. HTTPS (`TLS_CERT_FILE`) needs `link.tls_accept`
-and served WebSocket and Socket.IO routes need `link.split`, both on
-slang's `dev` branch until its next release.
+slang 0.2.3 or later
+([releases](https://github.com/dolphlabs/slang/releases)). It has what
+zokor needs: generic structs and methods, the `dir` sub-directory pin,
+`exclude`, the compiler-backed `pg.rows_as`, `link.tls_accept` for HTTPS
+and `link.split` for WebSocket and Socket.IO routes.
