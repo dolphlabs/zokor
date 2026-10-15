@@ -1517,6 +1517,15 @@ bin/zokor add route orders POST /:id/cancel cancel_order
 handler that answers 501 until it is written and a test that the route is
 mounted and authenticated.
 
+`zokor check` (run by the project's `make check`) holds a service to that
+layout: imports go `server -> service -> domain`, only `store/` and
+`platform/db` import `pg`, `domain` and `service` do no I/O, SQL is never
+built by concatenating a value, configuration is read only in
+`platform/config`, every public use case takes a `tenant_id`, every
+`server.sl` is behind `require_tenant` (or says `// zokor:public`), and every
+package has tests. It prints `file:line: rule: message`, or one JSON
+object per line with `--json`, and exits 1 on any problem.
+
 ```
 src/main.sl            startup only: config, state, mount, serve
 src/platform/config/   every setting, read once
@@ -1653,8 +1662,7 @@ The full list, ordered and checkable, is [todo.md](todo.md). In short:
 - **Middleware**, none of it blocked:
   compression, static files. (A rate limiter and a
   bearer-token store exist; `RateLimit-*` headers and sharding do not.)
-- **Enterprise**: migrations, metrics, tracing, pagination, OpenAPI, and
-  `zokor check`, the layout checker.
+- **Enterprise**: migrations, metrics, tracing, pagination, OpenAPI.
 - **Socket.IO over HTTP long-polling**, so a client needs
   `transports: ["websocket"]`; and binary attachment frames.
 - **Speed, measured.** Several parsers here build output by repeated

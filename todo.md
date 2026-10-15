@@ -93,8 +93,9 @@ library, made and merged there first.
     SQL, and `zokor check` flags SQL assembled by concatenation.
   Done: `r.mongo_sanitize(mode)` / `MONGO_SANITIZE`, applied by the router
   ahead of every hook. Form bodies are not checked: zokor reads them as
-  flat strings, never as objects a `$` key could reach. The SQL side
-  lands with the Postgres helpers and `zokor check`.
+  flat strings, never as objects a `$` key could reach. The SQL side:
+  the Postgres helpers take `$n` parameters and `zokor check` flags SQL
+  built by concatenation.
 - [x] **Auth helpers**: Bearer extraction (exists), opaque bearer
   tokens (`TokenStore`, exists, in memory), Basic, API keys with
   constant-time comparison, and JWT through the `dolphlabs/jwt` package
@@ -239,10 +240,13 @@ library, made and merged there first.
   destinations; no secret destination echoed in failures. The existing raw
   redirect constructor is retained. Fixed Vary substring matching (Accept
   was incorrectly treated as present in Accept-Encoding).
-- [ ] **`zokor check`**: the layout checker. Import direction, only the
+- [x] **`zokor check`**: the layout checker. Import direction, only the
   database adapter imports `pg`, no SQL built by concatenation, every
   package has tests, routes private by default, tenant id an explicit
   parameter. `tyto`'s `AGENTS.md` is the seed and the reason this exists.
+  Done: `zokor check [--json]` with rules imports, pure, pg, sql, config,
+  tenant, auth, layout and tests; run by a generated project's
+  `make check`; tests/scaffold.sh injects a violation of each.
 - [x] **Ports and fakes**, documented as *the* dependency pattern: a struct of
   `fn` values wired at startup, and a fake for tests. slang has no reflection
   or closures, so this is the answer to what Spring and Nest do with a
@@ -307,7 +311,7 @@ to its generic response helper. No compiler change is included here.
   both kinds of project in `make check` (live Postgres on Linux CI).
   `zokor add route <feature> <METHOD> <path> <handler>` registers a route
   at the server's marker with a 501 handler and an auth-and-mounted test.
-  Not done: `zokor check` (next).
+  `zokor check` enforces the layout (section 3).
 - [ ] Tag `v0.2.0`, the release the README and the guide pin (`v0.1.0`
   was tagged 2026-09-30, before the `src/` -> `zokor/` rename), once a
   slang release includes what zokor needs (generics, `dir` pins,

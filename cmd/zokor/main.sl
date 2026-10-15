@@ -1,6 +1,7 @@
 import "../../zokor" as zokor;
 import "proc";
 import "io";
+import "os";
 import "time";
 
 fn usage() -> str {
@@ -8,6 +9,7 @@ fn usage() -> str {
            "  zokor new <name> [--db pg] [--zokor-git URL] [--zokor-tag TAG]\n" +
            "  zokor add feature <name> [--entity <singular>]\n" +
            "  zokor add route <feature> <METHOD> <path> <handler>\n" +
+           "  zokor check [--json]        the layout rules, from the service's root\n" +
            "  zokor migrate [directory]   (default: migrations; DATABASE_URL required)";
 }
 
@@ -197,6 +199,24 @@ fn add_cmd(args: [str]) {
     println("added " + feature + " (wired into src/platform/app/app.sl and src/main.sl)");
 }
 
+fn check_cmd(args: [str]) {
+    let json_out = false;
+    let i = 2;
+    while i < len(args) {
+        if args[i] == "--json" {
+            json_out = true;
+        } else {
+            fail_usage("check takes only --json");
+        }
+        i = i + 1;
+    }
+    let r = check_project(os.is_file("slang.project"));
+    print_report(r, json_out);
+    if len(r.problems) > 0 {
+        exit(1);
+    }
+}
+
 fn main() {
     let args = proc.args();
     if len(args) < 2 {
@@ -209,6 +229,8 @@ fn main() {
         new_cmd(args);
     } else if cmd == "add" {
         add_cmd(args);
+    } else if cmd == "check" {
+        check_cmd(args);
     } else {
         fail_usage("unknown command '" + cmd + "'");
     }
