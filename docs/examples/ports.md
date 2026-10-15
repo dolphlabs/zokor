@@ -1,6 +1,6 @@
 # Ports and fakes
 
-> Ports and fakes
+> A runnable Slang example showing how to isolate dependencies behind ports and test Zokor services with fakes.
 
 # Ports and fakes
 

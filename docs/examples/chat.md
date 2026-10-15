@@ -1,6 +1,6 @@
 # Chat service
 
-> A chat service: the same room for WebSocket clients and socket.io clients, on one server.
+> A Slang chat service using Zokor, with WebSocket and Socket.IO clients connected to the same room.
 
 # Chat service
 

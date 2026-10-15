@@ -3,24 +3,29 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Data and storage · Zokor</title>
-<meta name="description" content="slang&#x27;s pg package is the driver.">
+<title>Zokor Data | PostgreSQL, Redis &amp; Migrations</title>
+<meta name="description" content="Use PostgreSQL, Redis, and SQL migrations in Zokor, with typed row decoding, transactions, connection pools, and configuration guidance.">
 <meta name="author" content="Dolphlabs">
 <meta property="og:site_name" content="Zokor">
-<meta property="og:title" content="Data and storage · Zokor">
-<meta property="og:description" content="slang&#x27;s pg package is the driver.">
+<meta property="og:title" content="Zokor Data | PostgreSQL, Redis &amp; Migrations">
+<meta property="og:description" content="Use PostgreSQL, Redis, and SQL migrations in Zokor, with typed row decoding, transactions, connection pools, and configuration guidance.">
 <meta property="og:type" content="website">
-<link rel="canonical" href="https://dolphlabs.github.io/zokor/guide/data.html">
+<meta property="og:url" content="https://zokor.dolphlabs.com/guide/data">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Zokor Data | PostgreSQL, Redis &amp; Migrations">
+<meta name="twitter:description" content="Use PostgreSQL, Redis, and SQL migrations in Zokor, with typed row decoding, transactions, connection pools, and configuration guidance.">
+<link rel="canonical" href="https://zokor.dolphlabs.com/guide/data">
 <link rel="alternate" type="text/markdown" href="../guide/data.md" title="Markdown">
 <link rel="alternate" type="text/plain" href="../llms.txt" title="llms.txt">
 <link rel="stylesheet" href="../style.css">
 <link rel="icon" type="image/png" sizes="64x64" href="../assets/zokor-icon-64.png">
-<meta property="og:image" content="https://dolphlabs.github.io/zokor/assets/zokor-card-1200x630.jpg"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta name="twitter:card" content="summary_large_image">
+<meta property="og:image" content="https://zokor.dolphlabs.com/assets/zokor-card-1200x630.jpg"><meta property="og:image:alt" content="Zokor, a backend framework for Slang"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta name="twitter:image" content="https://zokor.dolphlabs.com/assets/zokor-card-1200x630.jpg"><meta name="twitter:image:alt" content="Zokor, a backend framework for Slang">
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
 <header class="topbar">
-  <a class="brand" href="../index.html">
+  <a class="brand" href="../">
     <img src="../assets/zokor-header-256.png" width="40" height="40" alt="">
     <span>zokor</span>
   </a>
@@ -28,7 +33,7 @@
           aria-expanded="false" aria-controls="mainnav">
     <span></span><span></span><span></span>
   </button>
-  <nav class="mainnav" id="mainnav" aria-label="Main navigation"><a href="../index.html">Home</a><a href="../guide/start.html" class="active" aria-current="page">Start</a><a href="../api/index.html">API</a><a href="../examples/index.html">Examples</a></nav>
+  <nav class="mainnav" id="mainnav" aria-label="Main navigation"><a href="../">Home</a><a href="../guide/start" class="active" aria-current="page">Start</a><a href="../api/">API</a><a href="../examples/">Examples</a></nav>
   <div class="tools">
     <label class="search-label" for="search">Search</label>
     <input id="search" type="search" placeholder="Search docs…" autocomplete="off"
@@ -38,12 +43,12 @@
 </header>
 <div id="navscrim" class="navscrim" hidden></div>
 <div id="results" class="results" role="listbox" aria-label="Search results" hidden></div>
-<nav class="subnav" aria-label="Guide pages"><a href="../guide/start.html">Start</a><a href="../guide/http.html">HTTP</a><a href="../guide/data.html" aria-current="page">Data</a><a href="../guide/operations.html">Operations</a><a href="../guide/realtime.html">Realtime</a><a href="../guide/architecture.html">Architecture</a></nav>
+<nav class="subnav" aria-label="Guide pages"><a href="../guide/start">Start</a><a href="../guide/http">HTTP</a><a href="../guide/data" aria-current="page">Data</a><a href="../guide/operations">Operations</a><a href="../guide/realtime">Realtime</a><a href="../guide/architecture">Architecture</a></nav>
 <main id="main">
 
 <div class="page">
   <article class="content">
-<header class="page-head"><p class="page-kicker">Zokor documentation</p><h1>Data and storage</h1><p class="tagline">slang&#x27;s pg package is the driver.</p><p class="agentline"><a href="../guide/data.md">Markdown</a> · <a href="../llms.txt">llms.txt</a> · <a href="../api.json">api.json</a></p></header>
+<header class="page-head"><p class="page-kicker">Zokor documentation</p><h1>Data and storage</h1><p class="tagline">Use PostgreSQL, Redis, and SQL migrations in Zokor, with typed row decoding, transactions, connection pools, and configuration guidance.</p><p class="agentline"><a href="../guide/data.md">Markdown</a> · <a href="../llms.txt">llms.txt</a> · <a href="../api.json">api.json</a></p></header>
 <section class="readme-section"><h2 id="postgres">Postgres<a class="anchor" href="#postgres" aria-label="Link to this section">#</a></h2><p>slang&#x27;s <code>pg</code> package is the driver. zokor adds what every service writes on top of it, and nothing that bypasses it:</p>
 <div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-slang"><span class="tok-keyword">let</span> pr = zokor.<span class="tok-function">pg_from_config</span>(cfg);          <span class="tok-comment">// DATABASE_URL, DB_POOL_SIZE (10)</span>
 <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> db = pr <span class="tok-keyword">else</span> <span class="tok-keyword">let</span> e = <span class="tok-builtin">err_of</span>(pr) { log.<span class="tok-function">error</span>(e); <span class="tok-builtin">exit</span>(<span class="tok-number">1</span>); }
@@ -93,7 +98,7 @@ redis.<span class="tok-function">release</span>(pool, conn);</code></pre></div><
     <span>zokor</span></div>
   <p>Generated from <code>README.md</code>, <code>zokor/</code> and <code>examples/</code>.
      Built and maintained by <a href="https://dolphlabs.com" rel="noopener">Dolphlabs</a>.</p>
-  <p class="foot-links"><a href="../api/index.html">API</a> ·
+  <p class="foot-links"><a href="../api/">API</a> ·
      <a href="../llms.txt">llms.txt</a> ·
      <a href="https://github.com/dolphlabs/zokor" rel="noopener">GitHub</a></p>
 </footer>

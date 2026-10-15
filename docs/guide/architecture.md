@@ -1,6 +1,6 @@
 # Project structure
 
-> A request builder and response readers, so a test says what it means instead of assembling an http.Request by hand: request, get request, .header, .bearer, .basic, .content type, .json, .json body, .body str, .multipart (with upload part), and on the way back resp status, resp text, resp header, resp json, resp error code, resp error fields.
+> Explore Zokor's project structure, testing approach, dependency ports and fakes, agent guide, and framework design.
 
 ## Testing
 
