@@ -28,7 +28,9 @@ fn g_router() -> Router[GState] {
         observations: none,
         tracer: none,
         no_tracer: none,
-        request_locals: none
+        request_locals: none,
+        sockets: [],
+        no_socket: none
     };
 }
 

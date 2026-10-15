@@ -38,6 +38,19 @@ pub gc struct WsRules {
     // Subprotocols this server speaks, best first. Empty accepts any
     // client and selects none.
     protocols: [str],
+    // Served connections only (r.websocket). A connection that has sent
+    // nothing for ping_interval is pinged, and closed when pong_timeout
+    // passes after that with still nothing: a peer that vanished without
+    // a FIN (a phone leaving coverage) is otherwise held open forever.
+    // 0 turns pinging off.
+    ping_interval: int,
+    pong_timeout: int,
+    // Messages queued for a socket that has not yet written them. A
+    // client that stops reading fills it, and is then closed rather than
+    // left holding memory.
+    max_queue: int,
+    // How long a close this side started waits for the peer's echo.
+    close_timeout: int,
 }
 
 pub fn default_ws() -> WsRules {
@@ -45,7 +58,11 @@ pub fn default_ws() -> WsRules {
     return WsRules {
         max_frame_bytes: 1048576,
         max_message_bytes: 8388608,
-        protocols: any
+        protocols: any,
+        ping_interval: 25000000000,
+        pong_timeout: 20000000000,
+        max_queue: 256,
+        close_timeout: 5000000000
     };
 }
 

@@ -546,6 +546,29 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
                 }
                 return;
             }
+            if let sock = routed.upgrade {
+                if routed.resp.status == 101 && wf.method == "GET" {
+                    // A WebSocket route accepted: the 101, then the
+                    // connection is the socket's until it ends.
+                    let uw = http.write(&mut c, routed.resp, &mut sa, write_deadline(sc));
+                    if logging {
+                        log_request(lg, wf.method, routed.route, wf.path, 101, t0, 0,
+                                    rid, client, context.trace_id);
+                    }
+                    if let m = r.observations {
+                        if measured {
+                            m.leave(wf.method, routed.route, 101, (time.mono() - t0) as int);
+                        }
+                    }
+                    guard let _u = uw else {
+                        sock.finish("handshake write failed");
+                        leave_hubs(sock);
+                        return;
+                    }
+                    ws_session(r, &mut c, buf, wf.filled, sc, sock);
+                    return;
+                }
+            }
             let dyn_resp = routed.resp;
             let out = dyn_resp;
             if must_close {
