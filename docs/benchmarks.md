@@ -2,9 +2,393 @@
 
 The todo item this answers: "the goal is to edge Go for backends, so it has
 to be measured... numbers go in docs, honestly, including where zokor
-loses." This is that measurement, today, and zokor still loses it -- but
-by half what it used to. Read past the headline number for why, and what
-closes the rest of the gap.
+loses." The first section is the current measurement. Everything after
+it is earlier runs, kept for the record; where they disagree, the first
+section wins.
+
+## Five servers on a quiet Linux host (2026-10-15)
+
+### The short version
+
+- **Plain slang sits between Go's two servers.** It uses 13-36% less CPU
+  per request than Go `net/http` on every route and at every concurrency.
+  It serves more requests per second than `net/http` everywhere except
+  `GET /` and `/users/:id` at c=50, where `net/http` is 3-4% ahead. Fiber
+  is the fastest server measured: 14-30% less CPU per request than plain
+  slang, and 9-41% more requests per second.
+- **zokor costs next to nothing on a static route.** On `GET /` it is
+  within 7% of plain slang on CPU and rps, and level on latency, at every
+  concurrency.
+- **On dynamic routes, zokor's defaults are most of its cost.** With the
+  request id and the security headers on, as it ships, `GET /users/:id`
+  and `POST /echo` take 1.7-2.4x plain slang's CPU per request. Turn
+  those two off (`zokor-min`, whose responses are byte-identical to plain
+  slang's) and it is 1.2-1.6x. That is below `net/http` at c=50 and
+  c=256, and level with it at c=2000.
+- **The biggest single cost was in slang, and its fix is in review.** `crypto.rand`,
+  which makes the request id, ran OpenSSL under one process-wide mutex.
+  It was 17% of zokor's server CPU at c=50, and the lock is where zokor's
+  c=2000 tail came from (p99.9 174-186 ms). slang PR #430 reads the
+  kernel's generator instead. With it, the same routes use 13-21% less
+  CPU, the c=2000 p99.9 is 53-62 ms, and peak RSS at c=2000 drops from 89
+  to 32 MiB.
+- **slang uses the least memory.** Plain slang peaked at 5-8 MiB up to 256
+  connections and about 30 MiB at 2000. zokor (with #430) peaked at 7-10
+  and 32 MiB. Go `net/http` peaked at 13-17 and 68-69 MiB, and Fiber at
+  8-19 and 41-75 MiB.
+- **No collapse.** 216 samples (12 at c=2000 for each server), zero
+  timeouts, errors or bad statuses. The one-off c=2000 collapse to 356 rps
+  did not come back. The worst single request in the whole run took
+  860 ms, in a zokor `GET /` sample at c=50.
+
+### Setup
+
+- **Host:** a 4 vCPU Intel Xeon @ 2.10 GHz VM, Linux 6.18, 16 GB RAM,
+  otherwise idle (load average under 1 before the run).
+- **Cores:** the server is pinned to CPUs 0-1 and the load generator to
+  CPUs 2-3 (`taskset`), so they never compete. Each runtime is sized to
+  its two cores: `SLANG_WORKERS=2`, `GOMAXPROCS=2`.
+- **Versions:** slang `dev` at `cfdfdc6`, zokor `dev` at `f8a9a21` with this
+  harness (`bench/four-way`),
+  Go 1.24.7, Fiber v2.52.15.
+- **Load generator:** slang's `bench/latgen`, keep-alive, which times every
+  request, so the percentiles are exact rather than estimated.
+- **Rounds:** 2 s warm-up, then 10 s measured. Every sample starts a fresh
+  server. 3 routes x 3 concurrencies (50, 256, 2000) x 6 servers x 4
+  rounds. The order rotates each round and reverses every other round.
+  Tables are medians of 4.
+- **Servers:**
+  - `plain slang` is `bench/vs-slang/plain`: stdlib `http` + `json`, routing
+    by hand.
+  - `zokor` is `bench/vs-go/zokor-server` as it ships, with the logger off.
+    Every response also carries an `x-request-id` and five security headers.
+  - `zokor-min` is the same binary with `BENCH_MINIMAL=1`, which turns both
+    off, so its bytes match plain slang's.
+  - `zokor + slang#430` is `zokor` built against slang PR #430.
+  - `Go net/http` and `Go Fiber` are `bench/vs-go/go-net-http` and
+    `go-fiber`.
+- **What each server sends:** a `GET /users/:id` response is 136 bytes for
+  Fiber, 137 for net/http (which adds a trailing newline to the JSON), 175
+  for plain slang and zokor-min (which add `; charset=utf-8` and
+  `Connection: keep-alive`), and 446 for zokor with its defaults.
+- **Metrics:**
+  - **rps:** completed requests per second.
+  - **Latency:** the client-observed p50, p99, p99.9 and max.
+  - **Peak RSS:** the server's resident memory, sampled every 0.2 s.
+  - **Server CPU per request:** user + sys from `/proc/<pid>/stat` over the
+    measured window, divided by requests.
+  - **req/s per core:** 1,000,000 / CPU per request. It is the throughput
+    one core of this machine would give if the server kept it busy, and is
+    the throughput figure to compare servers by.
+
+The same matrix runs with
+`LATGEN=... ROUNDS=4 CONNS="50 256 2000" bench/vs-go/run.sh`.
+
+### Why rps and throughput are reported apart
+
+At c=50, the fastest servers kept their two cores only 67-73% busy, and
+the load generator was at 56-65% of its own. Neither side was saturated:
+with 50 connections each waiting for its answer, rps there measures
+round-trip time through two schedulers and the loopback, not what the
+server could do. CPU per request does not depend on that, and it held to
+within 10% between rounds in nearly every cell. That is why the analysis
+below leans on it, and on req/s per core derived from it.
+
+At c=2000, every server's cores were 92-97% busy, so rps there is close
+to the server's real capacity on two cores.
+
+### Throughput: requests per second per server core
+
+`1,000,000 / server CPU µs per request`, so higher is better. This is the
+capacity number: what each server would do per core if the load kept it
+busy.
+
+| server | `/` 50 | `/` 256 | `/` 2000 | `/users/:id` 50 | 256 | 2000 | `/echo` 50 | 256 | 2000 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| plain slang | 76k | 79k | 74k | 74k | 76k | 66k | 72k | 75k | 66k |
+| zokor (defaults) | 74k | 78k | 69k | 43k | 41k | 30k | 37k | 38k | 28k |
+| zokor-min | 77k | 80k | 70k | 63k | 61k | 46k | 58k | 58k | 42k |
+| zokor + slang#430 | 75k | 77k | 69k | 49k | 48k | 35k | 47k | 45k | 32k |
+| Go net/http | 66k | 63k | 51k | 62k | 57k | 49k | 52k | 49k | 42k |
+| Go Fiber | 106k | 109k | 103k | 100k | 100k | 87k | 84k | 87k | 79k |
+
+- **Static route:** plain slang and every zokor build sit at 69-80k per
+  core. Fiber is at 103-109k and `net/http` at 51-66k. zokor's static
+  path answers from bytes built at registration, so no framework code runs.
+- **Dynamic routes:** plain slang is at 66-76k per core, ahead of
+  `net/http` (42-62k) by 19-57% at every point. zokor-min holds 58-63k at
+  c=50 and c=256, level with or above `net/http`, and falls to 42-46k at
+  c=2000 (see "Why zokor's cost grows with connections"). zokor as it
+  ships is at 28-43k, and 32-49k with #430.
+- **`net/http` degrades with connections**, losing 19-23% per core between
+  c=50 and c=2000. Plain slang loses 3-11% and Fiber 3-13%.
+
+### Requests per second, as measured
+
+| server | `/` 50 | `/` 256 | `/` 2000 | `/users/:id` 50 | 256 | 2000 | `/echo` 50 | 256 | 2000 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| plain slang | 102k | 134k | 137k | 102k | 130k | 121k | 101k | 129k | 121k |
+| zokor (defaults) | 99k | 129k | 129k | 77k | 75k | 54k | 66k | 70k | 51k |
+| zokor-min | 105k | 134k | 130k | 105k | 113k | 87k | 99k | 107k | 79k |
+| zokor + slang#430 | 100k | 125k | 128k | 86k | 90k | 64k | 83k | 83k | 60k |
+| Go net/http | 106k | 114k | 99k | 105k | 104k | 94k | 91k | 90k | 81k |
+| Go Fiber | 144k | 166k | 191k | 141k | 152k | 163k | 123k | 141k | 151k |
+
+Read the c=50 column with the caveat above: no server was saturated there.
+At c=2000 everything was CPU-bound, and the order is:
+- `GET /`: Fiber, then plain slang and zokor, then `net/http`.
+- dynamic routes: Fiber, then plain slang, then `net/http` and zokor-min
+  together (within 10%), then zokor with #430 and zokor as it ships.
+
+### Latency
+
+p99, ms (the 1-in-100 request):
+
+| server | `/` 50 | `/` 256 | `/` 2000 | `/users/:id` 50 | 256 | 2000 | `/echo` 50 | 256 | 2000 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| plain slang | 3.2 | 7.0 | 24.5 | 2.7 | 7.1 | 27.3 | 2.7 | 7.0 | 26.3 |
+| zokor (defaults) | 3.0 | 7.1 | 25.3 | 2.0 | 7.4 | 58.0 | 2.4 | 8.2 | 58.5 |
+| zokor-min | 2.1 | 6.9 | 24.9 | 1.7 | 6.7 | 31.9 | 1.6 | 6.4 | 37.4 |
+| zokor + slang#430 | 2.9 | 7.4 | 25.2 | 2.1 | 7.0 | 42.0 | 2.0 | 7.9 | 47.9 |
+| Go net/http | 3.0 | 7.8 | 35.3 | 2.4 | 8.5 | 35.7 | 2.6 | 9.6 | 43.5 |
+| Go Fiber | 4.2 | 6.6 | 19.7 | 4.1 | 7.0 | 23.4 | 4.3 | 7.5 | 24.7 |
+
+p99.9, ms (the 1-in-1000):
+
+| server | `/` 50 | `/` 256 | `/` 2000 | `/users/:id` 50 | 256 | 2000 | `/echo` 50 | 256 | 2000 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| plain slang | 5.2 | 9.6 | 30.7 | 5.1 | 10.5 | 34.1 | 5.1 | 10.5 | 31.2 |
+| zokor (defaults) | 5.2 | 10.6 | 34.1 | 4.5 | 13.4 | 186.0 | 4.9 | 13.1 | 173.5 |
+| zokor-min | 5.1 | 10.1 | 32.2 | 4.7 | 9.7 | 40.7 | 4.4 | 10.1 | 48.7 |
+| zokor + slang#430 | 5.2 | 10.7 | 32.3 | 4.5 | 11.0 | 52.8 | 4.4 | 13.6 | 62.2 |
+| Go net/http | 5.8 | 11.8 | 48.8 | 5.8 | 13.2 | 46.5 | 6.0 | 14.7 | 61.5 |
+| Go Fiber | 5.1 | 10.1 | 25.1 | 5.1 | 10.5 | 32.7 | 5.9 | 11.3 | 31.9 |
+
+- **p50 tracks rps.** With a fixed number of connections each waiting
+  for its answer, median latency is roughly connections / rps (Little's
+  law), so it ranks the servers exactly as the rps table does. The
+  per-route tables below list it.
+- **At c=50 the slang servers have the tighter tail.** zokor-min's p99 is
+  1.6-2.1 ms and plain slang's 2.7-3.2 ms. Fiber's is 4.1-4.3 ms, the
+  worst here, although its median is the best (0.25 ms).
+- **At c=2000, zokor as it ships had the worst tail**: p99.9 174-186 ms on
+  the dynamic routes, against 31-62 ms for every other server. The
+  extra time was spent waiting on `crypto.rand`'s mutex. With #430 it is
+  53-62 ms, and zokor-min, which never calls it, is at 41-49 ms, close to
+  `net/http`'s 47-62 ms.
+- **The worst single request in 216 samples** took 860 ms: one zokor
+  `GET /` sample at c=50, a stall in one round that the other three
+  rounds (12-13 ms max) do not show.
+
+### Memory: peak RSS, MiB
+
+| server | `/` 50 | `/` 256 | `/` 2000 | `/users/:id` 50 | 256 | 2000 | `/echo` 50 | 256 | 2000 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| plain slang | 5 | 7 | 29 | 5 | 8 | 30 | 5 | 8 | 29 |
+| zokor (defaults) | 7 | 9 | 32 | 11 | 19 | 89 | 11 | 20 | 89 |
+| zokor-min | 7 | 9 | 32 | 8 | 10 | 32 | 8 | 10 | 32 |
+| zokor + slang#430 | 7 | 9 | 32 | 8 | 10 | 32 | 8 | 10 | 32 |
+| Go net/http | 13 | 17 | 69 | 13 | 17 | 68 | 14 | 17 | 68 |
+| Go Fiber | 8 | 12 | 41 | 14 | 17 | 66 | 14 | 19 | 75 |
+
+- **slang is the lightest.** Plain slang peaks at 5-8 MiB up to 256
+  connections and about 30 MiB at 2000. zokor-min, and zokor with #430,
+  add 2-3 MiB on top: 32 MiB at 2000 connections. `net/http` peaks at
+  13-17 and 68-69 MiB, and Fiber at 8-19 and 41-75 MiB.
+- **The old `crypto.rand` path nearly tripled zokor's peak at c=2000**
+  (89 MiB, against 32 MiB with #430 on the same code). It called `malloc`
+  and `free` for every draw, from whichever OS thread the task was on, and
+  the growth goes away when those calls do. glibc's per-thread malloc
+  arenas are the likely mechanism, but this was not measured further.
+
+### Every cell
+
+Medians of 4. Server CPU and req/s per core are the throughput figures.
+
+#### `GET /` (static)
+
+| c | server | rps | p50 ms | p99 ms | p99.9 ms | max ms | peak RSS MiB | server CPU µs/req | req/s per core |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 50 | plain slang | 102.4k | 0.38 | 3.2 | 5.2 | 14 | 5 | 13.2 | 76k |
+| 50 | zokor (defaults) | 98.5k | 0.39 | 3.0 | 5.2 | 13 | 7 | 13.5 | 74k |
+| 50 | zokor-min | 104.8k | 0.38 | 2.1 | 5.1 | 12 | 7 | 12.9 | 77k |
+| 50 | zokor + slang#430 | 100.3k | 0.38 | 2.9 | 5.2 | 12 | 7 | 13.3 | 75k |
+| 50 | Go net/http | 106.4k | 0.34 | 3.0 | 5.8 | 11 | 13 | 15.1 | 66k |
+| 50 | Go Fiber | 144.0k | 0.25 | 4.2 | 5.1 | 22 | 8 | 9.4 | 106k |
+| 256 | plain slang | 133.8k | 1.62 | 7.0 | 9.6 | 33 | 7 | 12.6 | 79k |
+| 256 | zokor (defaults) | 129.0k | 1.66 | 7.1 | 10.6 | 32 | 9 | 12.8 | 78k |
+| 256 | zokor-min | 133.7k | 1.63 | 6.9 | 10.1 | 29 | 9 | 12.6 | 80k |
+| 256 | zokor + slang#430 | 125.3k | 1.70 | 7.4 | 10.7 | 25 | 9 | 13.0 | 77k |
+| 256 | Go net/http | 114.1k | 1.93 | 7.8 | 11.8 | 26 | 17 | 16.0 | 63k |
+| 256 | Go Fiber | 165.7k | 1.27 | 6.6 | 10.1 | 30 | 12 | 9.2 | 109k |
+| 2000 | plain slang | 137.3k | 13.90 | 24.5 | 30.7 | 126 | 29 | 13.5 | 74k |
+| 2000 | zokor (defaults) | 128.7k | 14.92 | 25.3 | 34.1 | 118 | 32 | 14.4 | 69k |
+| 2000 | zokor-min | 130.4k | 14.83 | 24.9 | 32.2 | 112 | 32 | 14.2 | 70k |
+| 2000 | zokor + slang#430 | 128.4k | 14.97 | 25.2 | 32.3 | 125 | 32 | 14.5 | 69k |
+| 2000 | Go net/http | 98.7k | 18.71 | 35.3 | 48.8 | 127 | 69 | 19.5 | 51k |
+| 2000 | Go Fiber | 191.4k | 9.46 | 19.7 | 25.1 | 121 | 41 | 9.7 | 103k |
+
+#### `GET /users/:id`
+
+| c | server | rps | p50 ms | p99 ms | p99.9 ms | max ms | peak RSS MiB | server CPU µs/req | req/s per core |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 50 | plain slang | 101.7k | 0.39 | 2.7 | 5.1 | 22 | 5 | 13.5 | 74k |
+| 50 | zokor (defaults) | 77.1k | 0.56 | 2.0 | 4.5 | 12 | 11 | 23.2 | 43k |
+| 50 | zokor-min | 104.7k | 0.40 | 1.7 | 4.7 | 14 | 8 | 15.9 | 63k |
+| 50 | zokor + slang#430 | 86.0k | 0.49 | 2.1 | 4.5 | 14 | 8 | 20.2 | 49k |
+| 50 | Go net/http | 105.0k | 0.35 | 2.4 | 5.8 | 14 | 13 | 16.1 | 62k |
+| 50 | Go Fiber | 141.0k | 0.26 | 4.1 | 5.1 | 13 | 14 | 10.0 | 100k |
+| 256 | plain slang | 129.8k | 1.68 | 7.1 | 10.5 | 33 | 8 | 13.2 | 76k |
+| 256 | zokor (defaults) | 74.7k | 3.31 | 7.4 | 13.4 | 32 | 19 | 24.3 | 41k |
+| 256 | zokor-min | 113.2k | 2.08 | 6.7 | 9.7 | 30 | 10 | 16.3 | 61k |
+| 256 | zokor + slang#430 | 89.7k | 2.67 | 7.0 | 11.0 | 34 | 10 | 20.8 | 48k |
+| 256 | Go net/http | 104.4k | 2.11 | 8.5 | 13.2 | 21 | 17 | 17.4 | 57k |
+| 256 | Go Fiber | 151.6k | 1.37 | 7.0 | 10.5 | 24 | 17 | 10.0 | 100k |
+| 2000 | plain slang | 121.4k | 15.99 | 27.3 | 34.1 | 116 | 30 | 15.2 | 66k |
+| 2000 | zokor (defaults) | 54.0k | 35.80 | 58.0 | 186.0 | 256 | 89 | 33.9 | 30k |
+| 2000 | zokor-min | 87.0k | 22.43 | 31.9 | 40.7 | 89 | 32 | 21.6 | 46k |
+| 2000 | zokor + slang#430 | 64.4k | 30.16 | 42.0 | 52.8 | 123 | 32 | 29.0 | 35k |
+| 2000 | Go net/http | 94.1k | 19.81 | 35.7 | 46.5 | 113 | 68 | 20.6 | 49k |
+| 2000 | Go Fiber | 163.1k | 11.31 | 23.4 | 32.7 | 109 | 66 | 11.5 | 87k |
+
+#### `POST /echo`
+
+| c | server | rps | p50 ms | p99 ms | p99.9 ms | max ms | peak RSS MiB | server CPU µs/req | req/s per core |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 50 | plain slang | 100.9k | 0.39 | 2.7 | 5.1 | 11 | 5 | 13.9 | 72k |
+| 50 | zokor (defaults) | 66.5k | 0.66 | 2.4 | 4.9 | 15 | 11 | 26.7 | 37k |
+| 50 | zokor-min | 98.5k | 0.45 | 1.6 | 4.4 | 17 | 8 | 17.3 | 58k |
+| 50 | zokor + slang#430 | 82.9k | 0.52 | 2.0 | 4.4 | 13 | 8 | 21.2 | 47k |
+| 50 | Go net/http | 91.4k | 0.41 | 2.6 | 6.0 | 14 | 14 | 19.1 | 52k |
+| 50 | Go Fiber | 122.9k | 0.29 | 4.3 | 5.9 | 32 | 14 | 11.9 | 84k |
+| 256 | plain slang | 128.9k | 1.71 | 7.0 | 10.5 | 30 | 8 | 13.4 | 75k |
+| 256 | zokor (defaults) | 69.5k | 3.32 | 8.2 | 13.1 | 38 | 20 | 26.1 | 38k |
+| 256 | zokor-min | 107.1k | 2.25 | 6.4 | 10.1 | 20 | 10 | 17.4 | 58k |
+| 256 | zokor + slang#430 | 83.3k | 2.85 | 7.9 | 13.6 | 36 | 10 | 22.3 | 45k |
+| 256 | Go net/http | 89.6k | 2.49 | 9.6 | 14.7 | 33 | 17 | 20.4 | 49k |
+| 256 | Go Fiber | 140.8k | 1.48 | 7.5 | 11.3 | 24 | 19 | 11.5 | 87k |
+| 2000 | plain slang | 121.0k | 15.98 | 26.3 | 31.2 | 98 | 29 | 15.1 | 66k |
+| 2000 | zokor (defaults) | 51.3k | 37.69 | 58.5 | 173.5 | 261 | 89 | 35.6 | 28k |
+| 2000 | zokor-min | 79.1k | 24.61 | 37.4 | 48.7 | 123 | 32 | 23.5 | 42k |
+| 2000 | zokor + slang#430 | 59.8k | 32.71 | 47.9 | 62.2 | 111 | 32 | 31.1 | 32k |
+| 2000 | Go net/http | 81.2k | 22.74 | 43.5 | 61.5 | 138 | 68 | 23.6 | 42k |
+| 2000 | Go Fiber | 151.4k | 12.49 | 24.7 | 31.9 | 111 | 75 | 12.6 | 79k |
+
+### Where zokor's cost goes
+
+`GET /users/:id`, server CPU µs per request, matrix medians:
+
+| step | c=50 | c=2000 |
+|---|---:|---:|
+| plain slang | 13.5 | 15.2 |
+| + zokor's path (`zokor-min`) | 15.9 (+2.4) | 21.6 (+6.4) |
+| + request id and security headers, with #430 | 20.2 (+4.3) | 29.0 (+7.4) |
+| + `crypto.rand` as it is on slang `dev` (= zokor as it ships) | 23.2 (+3.0) | 33.9 (+4.9) |
+
+Separate ablation runs at c=50 split the first two steps. Each was the
+same harness, 4 rounds, with one thing removed from the build:
+- **Panic isolation, ~2.0 µs.** It is the `spawn` + `join_wait` that runs
+  each dynamic handler in its own task, so that a panic answers 500
+  instead of leaking the connection. Without it, `zokor` went from 23.2
+  to 21.1 µs, and `/echo` from 24.6 to 22.8 µs. It also explains zokor's
+  extra 0.14 `sched_yield` and 0.15 context switches per request.
+- **Read deadlines, ~0.5 µs**, within the noise. slang #386 took the
+  reactor nudge out of deadline waits, and this is what is left of it.
+- **`Ctx`, routing and response helpers: under half a microsecond.**
+  That is what is left of zokor-min's +2.4 after the two above, and it is
+  inside the noise.
+- **Security headers, ~1.6 µs, and the request id, ~2.3 µs beyond its
+  `crypto.rand` draw.** Each was turned off on its own, against the #430
+  build. They add 271 bytes to every response. Each extra header line is
+  checked for CR/LF and measured, then written twice, once to size the
+  buffer and once to fill it. The id is hex-encoded into a `str` and
+  joined to its prefix.
+
+So at c=50, zokor's own routing and context cost under half a
+microsecond. The rest is features: isolation (2 µs) and the two default
+headers (4 µs). Both headers are on by default for good reasons, so the
+fix is to make them cheaper, not to turn them off:
+- **Security headers:** precompute their bytes at registration, as the
+  static path already does.
+- **Request id:** keep a per-connection buffer of random bytes, and
+  render the id straight into the response.
+
+### Why zokor's cost grows with connections
+
+From c=50 to c=2000, plain slang's CPU per request rises 1.7 µs and
+zokor-min's 5.7 µs. `SLANG_GC_STAT` over 8 s of `/users/:id` shows where
+much of the difference is:
+
+| per request | plain c=50 | plain c=2000 | zokor-min c=50 | zokor-min c=2000 |
+|---|---:|---:|---:|---:|
+| minor GC pause (wall) | 0.17 µs | 0.75 µs | 0.30 µs | 1.96 µs |
+| of which marking | 0.01 µs | 0.14 µs | 0.06 µs | 1.22 µs |
+
+Both servers walk the same ~2000 parked connection tasks on every minor
+collection. Marking takes about 6x as long for zokor-min, so each idle
+zokor connection holds far more for the collector to scan. Its parked
+frames are deeper: `serve_counted` -> `serve_conn` -> `read_frame`, with
+the router, the config, the logger and two arenas in scope.
+
+A pause stops both workers, so this is roughly 2.4 µs of CPU per
+request. That is about 60% of the extra growth. The rest was not
+attributed in this run.
+
+Making a parked connection cheaper to scan matters more than any per-request
+saving once connection counts are high. There are two ways to do it:
+- **Smaller root set:** hoist what `serve_conn` keeps live while parked.
+- **slang:** skip unchanged parked stacks on a minor collection.
+
+### What is left between slang and Go
+
+Kernel-side counts per request (`perf stat`, `/users/:id`, c=50):
+
+| per request | plain slang | zokor | Go net/http | Go Fiber |
+|---|---:|---:|---:|---:|
+| `epoll_ctl` | 1.98 | 1.95 | 0 | 0 |
+| `epoll_wait` | 0.31 | 0.27 | 0 | 0 |
+| `futex` | 0.57 | 0.70 | 0.014 | 0.030 |
+| context switches | 0.39 | 0.54 | 0.016 | 0.065 |
+| socket reads / writes | 1.99 / 1.00 | 1.97 / 1.00 | 1.99 / 1.00 | 1.99 / 1.00 |
+
+All four servers make the same two reads and one write per request: the
+request, then an `EAGAIN`, then the answer. The difference is waking up.
+- **Go** polls the network from inside its own scheduler, with each
+  socket registered once, edge-triggered. It costs no `epoll_ctl` per
+  request and almost no thread handoffs.
+- **slang:** a parked task re-arms its socket, which comes to two
+  `epoll_ctl` calls per request. A separate reactor thread then wakes a
+  worker through a futex, about 0.4 context switches per request.
+
+In the profile, context switches and wakeups (`finish_task_switch` plus
+`_raw_spin_unlock_irqrestore` on the futex wake path) are a quarter of
+plain slang's samples, about 3.5 µs of its
+13.5. That is the same size as the gap to Fiber. Closing it is a slang
+reactor change: register once, edge-triggered, and let an idle worker
+poll for itself. zokor can do nothing about it.
+
+### What to do next, by size
+
+1. **Merge slang #430** (`crypto.rand`). It is measured above: -13-21%
+   CPU on dynamic routes, the c=2000 tail from 186 to 53 ms, and RSS at
+   c=2000 from 89 to 32 MiB.
+2. **The parked-connection GC root set**, at high connection counts:
+   about 2.4 µs a request at c=2000.
+3. **The request id and security headers**, at about 4 µs a request
+   together: precompute the header bytes, buffer the randomness, and
+   render straight to bytes.
+4. **Panic isolation**, about 2 µs. It cannot simply go, because slang
+   does not unwind a panicked task. A cheaper `spawn` + `join_wait`, or
+   unwinding in slang, would remove it.
+5. **slang's reactor**, the gap to Fiber: about 3.5 µs a request in
+   context switches and `epoll_ctl`, paid by every slang server.
+
+## Earlier measurements
+
+Everything from here down was measured before 2026-10-15, on a busy
+macOS laptop or with `ab`/`wrk`. It is kept for the reasoning it
+records. Where its numbers disagree with the section above, the section
+above is current.
 
 ## zokor against plain slang (2026-10-12)
 
@@ -54,7 +438,7 @@ keeps container kinds in a bitmask and every open object's keys in one
 list instead of three. The `/users/:id` allocations saved did not move
 its CPU measurably; the `/echo` saving did (7%).
 
-## Latest: four servers, and the dynamic-route fix (wrk, 2026-09-29)
+## Four servers, and the dynamic-route fix (wrk, 2026-09-29)
 
 Same machine (i5-8279U, 8 logical cores), `wrk -t4 --latency`, 10 s runs
 after a 2 s warm-up, keep-alive, 3 rounds with the order rotated, medians.
@@ -453,10 +837,15 @@ zokor:
 ## Reproducing this
 
 ```
-cd bench/vs-go
-./run.sh              # builds all three, runs the full matrix, ~5-6 minutes
+cd slang/bench/latgen && go build -o /tmp/latgen main.go
+LATGEN=/tmp/latgen bench/vs-go/run.sh                          # 2 rounds of c=50, 256
+LATGEN=/tmp/latgen ROUNDS=4 CONNS="50 256 2000" bench/vs-go/run.sh   # the matrix above, ~50 min
 ```
 
-Requires `ab` (ships with macOS; `apache2-utils` on Debian/Ubuntu) and a Go
-toolchain with network access (Fiber is fetched via `go get`). Raw output
-lands in `bench/vs-go/results_raw.txt`.
+Run it from the zokor checkout. It needs `slangc`, Go (Fiber is fetched
+with `go build`), `curl`, `python3` and, for core pinning, `taskset`.
+Without `taskset`, client and server share every core and the script
+says so. `SERVER_CPUS`, `CLIENT_CPUS`, `SERVERS`, `ROUTES` and `DUR`
+override the defaults. The samples land in `$BIN/samples.tsv`, and the
+medians print at the end. `bench/vs-slang/run.sh` is the two-server ABBA
+form of the same measurement.
