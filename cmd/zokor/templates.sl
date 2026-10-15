@@ -301,6 +301,152 @@ fn project_templates() -> [Template] {
     return out;
 }
 
+fn light_project_templates() -> [Template] {
+    let out: [Template] = [];
+    push(out, Template { path: ".env.example", lines: [
+        "# Copy to .env for local runs. The process environment takes precedence.",
+        "PORT=8080"
+    ] });
+    push(out, Template { path: ".gitignore", lines: [
+        "# built binaries and generated C",
+        "/bin/",
+        "main",
+        "*.gen.c",
+        "# local configuration: copy .env.example to .env",
+        ".env",
+        ".env.*",
+        "!.env.example"
+    ] });
+    push(out, Template { path: "AGENTS.md", lines: [
+        "# AGENTS.md -- __service__",
+        "",
+        "A small zokor service in slang. Read this before changing anything.",
+        "",
+        "## Commands",
+        "",
+        "- `make test`: run every package's tests; `make check`: check, test and build.",
+        "- `make run`: build and serve using configuration from `.env`.",
+        "- `zokor check [--json]`: check the service layout and configuration rules.",
+        "- `zokor newcomp <name>`: generate the component-based service with an example",
+        "  feature; use `zokor add feature <name>` there to add another feature.",
+        "- `slangc doc zokor <name>`: read one item of zokor's API documentation.",
+        "",
+        "## Layout",
+        "",
+        "```",
+        "src/main.sl                    startup: configuration, router and server",
+        "src/platform/config/settings.sl settings read once at startup",
+        "```",
+        "",
+        "## Rules",
+        "",
+        "- Configuration is read once in `platform/config`; pass settings to the router.",
+        "- Keep startup wiring in `src/main.sl` and reusable setup in `src/platform/`.",
+        "- Keep request handling in a package, with tests beside each package's code.",
+        "- Comments say why, not what."
+    ] });
+    push(out, Template { path: "Makefile", lines: [
+        "SLANGC ?= slangc",
+        "ZOKOR ?= zokor",
+        "",
+        ".PHONY: test build run check",
+        "",
+        "test:",
+        "\t@set -e; for d in $$(find src -name '*_test.sl' | xargs -n1 dirname | sort -u); do \\",
+        "\t\t$(SLANGC) test $$d; \\",
+        "\tdone",
+        "",
+        "build:",
+        "\tmkdir -p bin",
+        "\t$(SLANGC) src/main.sl -o bin/__service__",
+        "",
+        "run: build",
+        "\t./bin/__service__",
+        "",
+        "check:",
+        "\t$(ZOKOR) check",
+        "\t$(MAKE) test build"
+    ] });
+    push(out, Template { path: "slang.project", lines: [
+        "name __service__",
+        "version 0.1.0",
+        "",
+        "__zokor_pin__"
+    ] });
+    push(out, Template { path: "src/main.sl", lines: [
+        "// Read configuration once, use it as router state, and serve until SIGTERM.",
+        "import \"zokor\";",
+        "import \"platform/config\" as config;",
+        "",
+        "let cfg = zokor.load_config();",
+        "let settings = config.settings_from(cfg);",
+        "let checked = zokor.check(cfg);",
+        "guard let _ok = checked else let e = err_of(checked) {",
+        "    println(e);",
+        "    exit(2);",
+        "}",
+        "let r = zokor.new_router(settings);",
+        "r.health();",
+        "let served = zokor.listen_and_serve_with(r, settings.port, settings.server);",
+        "guard let _done = served else {",
+        "    exit(1);",
+        "}"
+    ] });
+    push(out, Template { path: "src/platform/config/settings.sl", lines: [
+        "import \"zokor\";",
+        "",
+        "// The settings used by the service, captured once before it starts serving.",
+        "pub gc struct Settings {",
+        "    port: int,",
+        "    server: zokor.ServerConfig,",
+        "}",
+        "",
+        "pub fn settings_from(cfg: zokor.Config) -> Settings {",
+        "    return Settings {",
+        "        port: zokor.require_port(cfg, \"PORT\"),",
+        "        server: zokor.server_config_from(cfg)",
+        "    };",
+        "}"
+    ] });
+    push(out, Template { path: "src/platform/config/settings_test.sl", lines: [
+        "import \"zokor\";",
+        "",
+        "fn test_settings_keep_the_configured_port() {",
+        "    let values: map[str]str = {};",
+        "    values[\"PORT\"] = \"9090\";",
+        "    let cfg = zokor.config_from_values(values);",
+        "    let settings = settings_from(cfg);",
+        "    assert(settings.port == 9090);",
+        "    let checked = zokor.check(cfg);",
+        "    guard let _ok = checked else let e = err_of(checked) { panic(e); }",
+        "}",
+        "",
+        "fn test_missing_port_is_reported_by_config_check() {",
+        "    let values: map[str]str = {};",
+        "    let cfg = zokor.config_from_values(values);",
+        "    let _settings = settings_from(cfg);",
+        "    let checked = zokor.check(cfg);",
+        "    guard let _ok = checked else let e = err_of(checked) {",
+        "        assert(strings_has(e, \"PORT\"), e);",
+        "        return;",
+        "    }",
+        "    panic(\"a missing PORT passed configuration validation\");",
+        "}",
+        "",
+        "fn strings_has(s: str, part: str) -> bool {",
+        "    let b = to_bytes(s);",
+        "    let p = to_bytes(part);",
+        "    let i = 0;",
+        "    while i + len(p) <= len(b) {",
+        "        if b[i..i + len(p)] == p { return true; }",
+        "        i = i + 1;",
+        "    }",
+        "    return false;",
+        "}"
+    ] });
+    return out;
+}
+
 fn feature_templates() -> [Template] {
     let out: [Template] = [];
     push(out, Template { path: "src/__feature__/domain/__entity__.sl", lines: [

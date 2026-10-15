@@ -1920,6 +1920,12 @@ new_session_id() -> str
     A longer one, for a session or a socket.io sid, where a collision matters more than the length does.
 request_id_for(headers: bytes) -> str
     The id a request is answered and logged under: the client's own X-Request-Id when it is 1-64 characters of [A-Za-z0-9._-], so...
+request_id_with(headers: bytes, ids: RequestIds) -> str
+    request_id_for, drawing a new id from `ids`: what the serve loop calls, once per dynamic request on a connection.
+gc struct RequestIds { pool: bytes, at: int, out: bytes }
+    One connection's source of request ids: the same 128 random bits and `req_` + hex as new_request_id, but drawn 32 ids at a time.
+request_ids() -> RequestIds
+RequestIds.next() -> str
 
 ## jobs.sl -- Background jobs: work on a schedule, and work queued to run later.
 gc struct JobCtx[S] { state: S, name: str, payload: str, attempt: int, due: timez.Time, deadline: until }
