@@ -774,14 +774,14 @@ listen_and_serve[S](r: Router[S], port: int) -> result[int, str]
 listen_and_serve_with[S](r: Router[S], port: int, sc: ServerConfig) -> result[int, str]
     Same, with timeouts, limits, and the shutdown drain window under the caller's control -- built from config with...
 
-## sio_serve.sl -- Socket.IO routes, served: Engine.IO v4 and Socket.IO v5 (what socket.io-client 3 and 4 speak) over the served WebSocket.
-gc struct SioRoute[S] { settings: SioSettings, event: fn(S, Socket, SioEvent), connect: opt[fn(S, Socket, str, str) -> result[bool, str]], disconnect: opt[fn(S, Socket, str, str)] }
+## sio_serve.sl -- Socket.IO routes, served: Engine.IO v4 and Socket.IO v5 (what socket.io-client 3 and 4 speak), on both of its transports.
+gc struct SioRoute[S] { settings: SioSettings, event: fn(S, Socket, SioEvent), connect: opt[fn(S, Socket, str, str) -> result[bool, str]], disconnect: opt[fn(S, Socket, str, str)], sessions: SioSessions }
 sio_route[S](event: fn(S, Socket, SioEvent)) -> SioRoute[S]
 SioRoute.on_connect(f: fn(S, Socket, str, str) -> result[bool, str]) -> SioRoute[S]
 SioRoute.on_disconnect(f: fn(S, Socket, str, str)) -> SioRoute[S]
 
 ## socket.sl -- A live connection the serve loop holds open after an upgrade, and the hub that lets one connection's handler reach the others.
-gc struct Socket { id: str, route: str, protocol: str, client_ip: str, locals: map[str]str, lock: mutex, out: chan[Out], open: bool, ended: str, close_code: int, close_reason: str, hubs: [Hub], namespaces: map[str]bool, handler: int, handshake: http.Response, sio: bool }
+gc struct Socket { id: str, route: str, protocol: str, client_ip: str, locals: map[str]str, lock: mutex, out: chan[Out], open: bool, ended: str, close_code: int, close_reason: str, hubs: [Hub], namespaces: map[str]bool, handler: int, handshake: http.Response, sio: bool, accepted: bool }
 Socket.send_text(s: str) -> bool
     Queues a text message.
 Socket.send_binary(b: bytes) -> bool
@@ -791,6 +791,8 @@ Socket.emit_with_ack(namespace: str, name: str, args_json: str, id: int) -> bool
     The same, asking the client to acknowledge: its answer arrives as an Ack event carrying `id`.
 Socket.ack(namespace: str, id: int, args_json: str) -> bool
     The answer to a client event that asked for one (SioEvent.ack >= 0).
+Socket.emit_binary(namespace: str, name: str, args_json: str, data: [bytes]) -> bool
+    emit with binary attachments: `args_json` is the other arguments, as for emit, and each of `data` follows them as a binary...
 Socket.disconnect_ns(namespace: str) -> bool
     Disconnects the client from one namespace; the session stays.
 Socket.close(code: int, reason: str) -> bool
@@ -820,6 +822,8 @@ Hub.to_room_binary(room: str, b: bytes, except: str) -> int
 Hub.emit_all(namespace: str, name: str, args_json: str, except: str) -> int
     Socket.IO: one event to every Socket.IO session in the hub, encoded once.
 Hub.emit_to_room(room: str, namespace: str, name: str, args_json: str, except: str) -> int
+Hub.emit_binary_to_room(room: str, namespace: str, name: str, args_json: str, data: [bytes], except: str) -> int
+    emit_binary to every Socket.IO session in a room ("" for the hub).
 
 ## testkit.sl -- Building a request, and reading a response.
 gc struct TestRequest { method: Method, path: str, headers: map[str]str, body: bytes }
@@ -947,10 +951,10 @@ pong_frame(payload: bytes) -> bytes
 close_frame(code: int, reason: str) -> bytes
 close_because(c: Conn, why: str) -> bytes
     The close a protocol error calls for: 1002, with the reason, and the connection marked shut so nothing else is sent.
-gc struct SioSettings { ping_interval_ms: int, ping_timeout_ms: int, max_payload: int }
+gc struct SioSettings { ping_interval_ms: int, ping_timeout_ms: int, max_payload: int, max_polling_sessions: int, max_attachments: int }
 default_sio() -> SioSettings
 enum SioKind { Open, Connect, Event, Ack, Ping, Disconnect, Other }
-gc struct SioEvent { kind: SioKind, namespace: str, name: str, args_json: str, ack: int }
+gc struct SioEvent { kind: SioKind, namespace: str, name: str, args_json: str, ack: int, attachments: [bytes], expecting: int }
 sio_open(c: Conn, sid: str, s: SioSettings) -> bytes
     The first thing a socket.io connection needs: its session id and the keepalive timings, as a text frame.
 sio_receive(c: Conn, m: Message) -> result[SioEvent, str]

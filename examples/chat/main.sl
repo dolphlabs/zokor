@@ -10,8 +10,7 @@
 //     ws.onmessage = (m) => console.log(m.data);
 //     ws.send("hello");
 //
-//     const socket = io("http://localhost:8080", {
-//         transports: ["websocket"], query: { name: "leo" } });
+//     const socket = io("http://localhost:8080", { query: { name: "leo" } });
 //     socket.on("chat message", (m) => console.log(m));
 //     socket.emit("chat message", "hi", (reply) => console.log(reply));
 //

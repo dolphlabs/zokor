@@ -1435,15 +1435,24 @@ namespace with socket.io's reasons (`client namespace disconnect`,
 for a panicking handler). The Engine.IO heartbeat is run for you on
 `route.settings` (`ping_interval_ms`, `ping_timeout_ms`, `max_payload`).
 
-The client must be pointed straight at the WebSocket transport for now:
+Both of socket.io's transports are served, so a client needs no options:
+it starts on **HTTP long-polling** (a GET that waits for packets, a POST
+that carries its own) and moves to WebSocket once a probe over it succeeds,
+or stays on polling where WebSockets do not get through. The session -- its
+id, hubs, namespaces and locals -- is the same `Socket` throughout, and
+handlers cannot tell which transport a packet came by. Polling sessions
+live between requests: they are capped by `max_polling_sessions` (10,000;
+past it the handshake is answered 503), and one heartbeat task per route
+pings them and ends those that stop answering. Two GETs or two POSTs at
+once for one session end it, as Engine.IO requires. A polling POST is one
+HTTP request, so it is bounded by `MAX_REQUEST_BYTES` (16KB by default):
+raise it towards `max_payload` if clients send large events over polling.
 
-```js
-const socket = io("https://api.example.com", { transports: ["websocket"] });
-```
-
-because by default it opens an HTTP long-polling session first, and
-polling is not served yet (the handshake says so). Binary attachments are
-not reassembled yet.
+**Binary attachments** work both ways. An event's attachments arrive in
+`e.attachments` (in order; `args_json` holds a placeholder where each
+was), and `s.emit_binary(namespace, name, args_json, [data])` /
+`hub.emit_binary_to_room(..)` send them: binary frames over WebSocket,
+base64 over polling. An event may carry up to `max_attachments` (16).
 
 `examples/chat` is one room for both kinds of client, served for real:
 `make example-chat` runs it against stand-in clients, and

@@ -136,3 +136,28 @@ fn test_names_are_escaped() {
     assert(out == "42[\"with \\\"quote\\\"\"]");
     assert(event_name(dec(out).payload) == "with \"quote\"");
 }
+
+// The count a binary packet announces is kept: the server has to know
+// how many attachments to wait for.
+fn test_binary_packets_keep_their_attachment_count() {
+    let p = dec("452-[\"upload\",{\"_placeholder\":true,\"num\":0},{\"_placeholder\":true,\"num\":1}]");
+    assert(p.sio == Sio.BinaryEvent);
+    assert(p.attachments == 2, "attachments " + to_str(p.attachments));
+    let a = dec("461-/files,9[{\"_placeholder\":true,\"num\":0}]");
+    assert(a.sio == Sio.BinaryAck && a.attachments == 1 && a.ack == 9 && a.namespace == "/files");
+    assert(dec("42[\"x\"]").attachments == 0);
+    assert(len(bad("45999999999-[\"x\"]")) > 0, "an absurd attachment count was accepted");
+}
+
+// What socket.io-client's decoder reconstructs ArrayBuffers from.
+fn test_binary_event_encoding() {
+    assert(binary_event("/", "file", "\"a.png\"", 1, -1) ==
+           "451-[\"file\",\"a.png\",{\"_placeholder\":true,\"num\":0}]");
+    assert(binary_event("/up", "two", "", 2, 4) ==
+           "452-/up,4[\"two\",{\"_placeholder\":true,\"num\":0},{\"_placeholder\":true,\"num\":1}]");
+}
+
+fn test_open_packet_offers_websocket_to_polling_sessions() {
+    assert(open_packet_with("s1", "[\"websocket\"]", 25000, 20000, 1000000) ==
+           "0{\"sid\":\"s1\",\"upgrades\":[\"websocket\"],\"pingInterval\":25000,\"pingTimeout\":20000,\"maxPayload\":1000000}");
+}

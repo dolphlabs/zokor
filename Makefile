@@ -8,6 +8,10 @@ TESTFLAGS ?=
 # TESTFLAGS: CI passes `-v --keep`, so a crash names the last test that
 # passed and leaves the runner binary to resolve its pc against.
 test:
+	-$(SLANGC) test zokor --run test_ws_ $(TESTFLAGS)
+	-$(SLANGC) test zokor --run test_sio_ $(TESTFLAGS)
+	-$(SLANGC) test zokor --run tls $(TESTFLAGS)
+	-SLANG_GC_VERIFY_MINOR=1 SLANG_GC_NURSERY_KB=16 $(SLANGC) test zokor --run test_ws_ $(TESTFLAGS)
 	$(SLANGC) test zokor $(TESTFLAGS)
 	$(SLANGC) test zokor/internal/path $(TESTFLAGS)
 	$(SLANGC) test zokor/internal/envfile $(TESTFLAGS)
