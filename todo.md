@@ -258,8 +258,14 @@ to its generic response helper. No compiler change is included here.
 
 ## 4. Realtime and transport
 
-- [ ] TLS termination through slang's `net.tls_*`, or a documented decision to
-  leave it to a proxy.
+- [x] TLS termination through slang's `net.tls_*`, or a documented decision to
+  leave it to a proxy. Done: terminated here. `TLS_CERT_FILE`/`TLS_KEY_FILE`
+  (`sc.tls`, `tls_files`), loaded once before binding so a bad pair stops
+  the server starting; each handshake in its connection's own task under
+  `TLS_HANDSHAKE_TIMEOUT`; mutual TLS with `TLS_CLIENT_CA_FILE`; failed
+  handshakes closed and logged at debug; no plaintext 503 past
+  MAX_CONNECTIONS. Needs slang's `link.tls_accept` ([slang]). Not done:
+  reloading a renewed certificate without a restart, SNI, ALPN/HTTP2.
 - [ ] Wire WebSocket and Socket.IO into the loop: upgrade a connection in
   place, hand it to `receive`, and run the Engine.IO ping timer. Also
   replaces `examples/chat`'s stand-in requests.
