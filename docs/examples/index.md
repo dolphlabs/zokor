@@ -1,6 +1,6 @@
 # Examples
 
-> Runnable Slang services from the examples/ tree.
+> Explore runnable Slang examples built with Zokor, from a minimal HTTP service to WebSocket chat and testable ports and fakes.
 
 - [Hello service](hello.html) — make example
 

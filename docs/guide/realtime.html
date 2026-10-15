@@ -3,24 +3,29 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Realtime connections · Zokor</title>
-<meta name="description" content="A WebSocket route is a handshake handler plus the handlers for what happens after it.">
+<title>Zokor WebSockets &amp; Socket.IO | Realtime Guide</title>
+<meta name="description" content="Build WebSocket and Socket.IO services in Slang with Zokor&#x27;s route integration and sans-I/O protocol handlers.">
 <meta name="author" content="Dolphlabs">
 <meta property="og:site_name" content="Zokor">
-<meta property="og:title" content="Realtime connections · Zokor">
-<meta property="og:description" content="A WebSocket route is a handshake handler plus the handlers for what happens after it.">
+<meta property="og:title" content="Zokor WebSockets &amp; Socket.IO | Realtime Guide">
+<meta property="og:description" content="Build WebSocket and Socket.IO services in Slang with Zokor&#x27;s route integration and sans-I/O protocol handlers.">
 <meta property="og:type" content="website">
-<link rel="canonical" href="https://dolphlabs.github.io/zokor/guide/realtime.html">
+<meta property="og:url" content="https://zokor.dolphlabs.com/guide/realtime">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Zokor WebSockets &amp; Socket.IO | Realtime Guide">
+<meta name="twitter:description" content="Build WebSocket and Socket.IO services in Slang with Zokor&#x27;s route integration and sans-I/O protocol handlers.">
+<link rel="canonical" href="https://zokor.dolphlabs.com/guide/realtime">
 <link rel="alternate" type="text/markdown" href="../guide/realtime.md" title="Markdown">
 <link rel="alternate" type="text/plain" href="../llms.txt" title="llms.txt">
 <link rel="stylesheet" href="../style.css">
 <link rel="icon" type="image/png" sizes="64x64" href="../assets/zokor-icon-64.png">
-<meta property="og:image" content="https://dolphlabs.github.io/zokor/assets/zokor-card-1200x630.jpg"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta name="twitter:card" content="summary_large_image">
+<meta property="og:image" content="https://zokor.dolphlabs.com/assets/zokor-card-1200x630.jpg"><meta property="og:image:alt" content="Zokor, a backend framework for Slang"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta name="twitter:image" content="https://zokor.dolphlabs.com/assets/zokor-card-1200x630.jpg"><meta name="twitter:image:alt" content="Zokor, a backend framework for Slang">
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
 <header class="topbar">
-  <a class="brand" href="../index.html">
+  <a class="brand" href="../">
     <img src="../assets/zokor-header-256.png" width="40" height="40" alt="">
     <span>zokor</span>
   </a>
@@ -28,7 +33,7 @@
           aria-expanded="false" aria-controls="mainnav">
     <span></span><span></span><span></span>
   </button>
-  <nav class="mainnav" id="mainnav" aria-label="Main navigation"><a href="../index.html">Home</a><a href="../guide/start.html" class="active" aria-current="page">Start</a><a href="../api/index.html">API</a><a href="../examples/index.html">Examples</a></nav>
+  <nav class="mainnav" id="mainnav" aria-label="Main navigation"><a href="../">Home</a><a href="../guide/start" class="active" aria-current="page">Start</a><a href="../api/">API</a><a href="../examples/">Examples</a></nav>
   <div class="tools">
     <label class="search-label" for="search">Search</label>
     <input id="search" type="search" placeholder="Search docs…" autocomplete="off"
@@ -38,12 +43,12 @@
 </header>
 <div id="navscrim" class="navscrim" hidden></div>
 <div id="results" class="results" role="listbox" aria-label="Search results" hidden></div>
-<nav class="subnav" aria-label="Guide pages"><a href="../guide/start.html">Start</a><a href="../guide/http.html">HTTP</a><a href="../guide/data.html">Data</a><a href="../guide/operations.html">Operations</a><a href="../guide/realtime.html" aria-current="page">Realtime</a><a href="../guide/architecture.html">Architecture</a></nav>
+<nav class="subnav" aria-label="Guide pages"><a href="../guide/start">Start</a><a href="../guide/http">HTTP</a><a href="../guide/data">Data</a><a href="../guide/operations">Operations</a><a href="../guide/realtime" aria-current="page">Realtime</a><a href="../guide/architecture">Architecture</a></nav>
 <main id="main">
 
 <div class="page">
   <article class="content">
-<header class="page-head"><p class="page-kicker">Zokor documentation</p><h1>Realtime connections</h1><p class="tagline">A WebSocket route is a handshake handler plus the handlers for what happens after it.</p><p class="agentline"><a href="../guide/realtime.md">Markdown</a> · <a href="../llms.txt">llms.txt</a> · <a href="../api.json">api.json</a></p></header>
+<header class="page-head"><p class="page-kicker">Zokor documentation</p><h1>Realtime connections</h1><p class="tagline">Build WebSocket and Socket.IO services in Slang with Zokor&#x27;s route integration and sans-I/O protocol handlers.</p><p class="agentline"><a href="../guide/realtime.md">Markdown</a> · <a href="../llms.txt">llms.txt</a> · <a href="../api.json">api.json</a></p></header>
 <section class="readme-section"><h2 id="websocket">WebSocket<a class="anchor" href="#websocket" aria-label="Link to this section">#</a></h2><p>A WebSocket route is a handshake handler plus the handlers for what happens after it. The handshake goes through the router like any request -- its <code>before</code>s run, so authentication, rate limits and CORS apply -- and once the <code>101</code> is written the connection belongs to the socket:</p>
 <div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-slang"><span class="tok-keyword">fn</span> <span class="tok-function">chat_open</span>(c: zokor.Ctx[App]) -&gt; http.Response {
     <span class="tok-keyword">if</span> c.<span class="tok-function">local</span>(<span class="tok-string">&quot;user&quot;</span>) == <span class="tok-string">&quot;&quot;</span> {                      <span class="tok-comment">// set by an auth before</span>
@@ -97,7 +102,7 @@ r.<span class="tok-function">socketio</span>(<span class="tok-string">&quot;/soc
     <span>zokor</span></div>
   <p>Generated from <code>README.md</code>, <code>zokor/</code> and <code>examples/</code>.
      Built and maintained by <a href="https://dolphlabs.com" rel="noopener">Dolphlabs</a>.</p>
-  <p class="foot-links"><a href="../api/index.html">API</a> ·
+  <p class="foot-links"><a href="../api/">API</a> ·
      <a href="../llms.txt">llms.txt</a> ·
      <a href="https://github.com/dolphlabs/zokor" rel="noopener">GitHub</a></p>
 </footer>

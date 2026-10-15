@@ -1,6 +1,6 @@
 # Realtime connections
 
-> A WebSocket route is a handshake handler plus the handlers for what happens after it.
+> Build WebSocket and Socket.IO services in Slang with Zokor's route integration and sans-I/O protocol handlers.
 
 ## WebSocket
 

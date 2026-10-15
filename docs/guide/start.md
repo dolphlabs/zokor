@@ -1,6 +1,6 @@
 # Start here
 
-> zokor new writes a service that compiles and passes its tests as it stands, laid out so a person or an agent changing one feature reads one directory: add route registers the route under the feature's prefix (here POST /orders/:id/cancel), behind the feature's authentication, with a handler that answers 501 until it is written and a test that the route is mounted and authenticated.
+> Create a Slang backend service with Zokor. Follow the setup guide for installation, project structure, requirements, and your first routes.
 
 ## Starting a service
 

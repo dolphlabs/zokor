@@ -108,7 +108,7 @@ Every public symbol, one line each: [docs/api.txt](docs/api.txt).
 
 # Start here
 
-> zokor new writes a service that compiles and passes its tests as it stands, laid out so a person or an agent changing one feature reads one directory: add route registers the route under the feature's prefix (here POST /orders/:id/cancel), behind the feature's authentication, with a handler that answers 501 until it is written and a test that the route is mounted and authenticated.
+> Create a Slang backend service with Zokor. Follow the setup guide for installation, project structure, requirements, and your first routes.
 
 ## Starting a service
 
@@ -204,7 +204,7 @@ slang's `dev` branch until its next release.
 
 # HTTP APIs
 
-> Three helpers.
+> Build HTTP APIs with Zokor routing, middleware, authentication, validation, uploads, rate limits, caching, pagination, and content negotiation.
 
 ## Authentication
 
@@ -848,7 +848,7 @@ not survive a restart and are not shared between instances.
 
 # Data and storage
 
-> slang's pg package is the driver.
+> Use PostgreSQL, Redis, and SQL migrations in Zokor, with typed row decoding, transactions, connection pools, and configuration guidance.
 
 ## Postgres
 
@@ -968,7 +968,7 @@ success prints the applied count, including zero for an unchanged schema.
 
 # Operations
 
-> Read once, at startup, into a value you hold.
+> Configure and operate Zokor services with timeouts, graceful shutdown, HTTPS, logging, background jobs, metrics, tracing, and OpenAPI.
 
 ## Configuration
 
@@ -1417,7 +1417,7 @@ schema/error names, so map insertion order does not change it.
 
 # Realtime connections
 
-> A WebSocket route is a handshake handler plus the handlers for what happens after it.
+> Build WebSocket and Socket.IO services in Slang with Zokor's route integration and sans-I/O protocol handlers.
 
 ## WebSocket
 
@@ -1545,7 +1545,7 @@ browser. Checked against socket.io-client 4.7.5 and the `ws` package.
 
 # Project structure
 
-> A request builder and response readers, so a test says what it means instead of assembling an http.Request by hand: request, get request, .header, .bearer, .basic, .content type, .json, .json body, .body str, .multipart (with upload part), and on the way back resp status, resp text, resp header, resp json, resp error code, resp error fields.
+> Explore Zokor's project structure, testing approach, dependency ports and fakes, agent guide, and framework design.
 
 ## Testing
 
@@ -2686,7 +2686,7 @@ gc struct Limits { max_parts: int, max_files: int, max_file_bytes: int, max_fiel
 
 # Examples
 
-> Runnable Slang services from the examples/ tree.
+> Explore runnable Slang examples built with Zokor, from a minimal HTTP service to WebSocket chat and testable ports and fakes.
 
 - [Hello service](hello.html) — make example
 
@@ -2697,7 +2697,7 @@ gc struct Limits { max_parts: int, max_files: int, max_file_bytes: int, max_fiel
 
 # Hello service
 
-> A zokor service.
+> A minimal Slang HTTP service built with Zokor. See how to configure the server, register a route, and return a JSON response.
 
 # Hello service
 
@@ -3043,7 +3043,7 @@ println("requests served: " + to_str(app.requests));
 
 # Chat service
 
-> A chat service: the same room for WebSocket clients and socket.io clients, on one server.
+> A Slang chat service using Zokor, with WebSocket and Socket.IO clients connected to the same room.
 
 # Chat service
 
@@ -3438,7 +3438,7 @@ if len(args) > 1 && args[len(args) - 1] == "serve" {
 
 # Ports and fakes
 
-> Ports and fakes
+> A runnable Slang example showing how to isolate dependencies behind ports and test Zokor services with fakes.
 
 # Ports and fakes
 

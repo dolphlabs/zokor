@@ -1,6 +1,6 @@
 # HTTP APIs
 
-> Three helpers.
+> Build HTTP APIs with Zokor routing, middleware, authentication, validation, uploads, rate limits, caching, pagination, and content negotiation.
 
 ## Authentication
 

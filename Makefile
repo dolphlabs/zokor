@@ -73,6 +73,7 @@ docs: api
 	python3 www/build.py
 
 docs-check: api-check
+	python3 -B -m unittest www.test_build
 	python3 www/build.py --check
 
 # Everything CI runs.
