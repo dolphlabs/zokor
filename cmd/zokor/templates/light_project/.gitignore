@@ -1,0 +1,8 @@
+# built binaries and generated C
+/bin/
+main
+*.gen.c
+# local configuration: copy .env.example to .env
+.env
+.env.*
+!.env.example
