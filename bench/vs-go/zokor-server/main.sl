@@ -66,6 +66,15 @@ println("zokor bench listening on :" + to_str(port));
 // on its own (README, "Logging").
 let sc = zokor.default_server_config();
 sc.logger = zokor.no_logger();
+// BENCH_MINIMAL=1 also drops the request id and the security headers,
+// which zokor sends by default and the other servers do not: its
+// responses are then byte-identical to bench/vs-slang/plain's, so the
+// difference is the framework's path alone. bench/vs-go/run.sh measures
+// it as `zokor-min`, beside the defaults as `zokor`.
+if (proc.getenv("BENCH_MINIMAL") ?? "") == "1" {
+    sc.request_ids = false;
+    rt.security_headers(zokor.no_security_headers());
+}
 let sr = zokor.listen_and_serve_with(rt, port, sc);
 guard let _n = sr else let e = err_of(sr) {
     println(e);
