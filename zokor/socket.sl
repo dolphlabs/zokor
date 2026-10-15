@@ -52,6 +52,8 @@ pub gc struct Socket {
     handshake: http.Response,
     // A Socket.IO session: it takes events (emit), not raw messages.
     sio: bool,
+    // c.accept_ws() was what the handshake answered with.
+    accepted: bool,
 }
 
 fn new_socket(id: str, route: str, protocol: str, client_ip: str,
@@ -80,7 +82,8 @@ fn new_socket(id: str, route: str, protocol: str, client_ip: str,
         namespaces: no_ns,
         handler: handler,
         handshake: handshake,
-        sio: false
+        sio: false,
+        accepted: false
     };
 }
 
@@ -124,6 +127,15 @@ impl Socket {
     // The answer to a client event that asked for one (SioEvent.ack >= 0).
     pub fn ack(self: Socket, namespace: str, id: int, args_json: str) -> bool {
         return self.send_packet(sio.ack(namespace, id, args_json));
+    }
+
+    // emit with binary attachments: `args_json` is the other arguments, as
+    // for emit, and each of `data` follows them as a binary argument (an
+    // ArrayBuffer, or a Buffer in Node). Over long-polling they travel
+    // base64-encoded, as Engine.IO requires.
+    pub fn emit_binary(self: Socket, namespace: str, name: str, args_json: str,
+                       data: [bytes]) -> bool {
+        return self.enqueue_all(binary_outs(namespace, name, args_json, data));
     }
 
     // Disconnects the client from one namespace; the session stays.
@@ -202,6 +214,37 @@ impl Socket {
         select {
             case chan_send(self.out, o) { sent = true; }
             default { }
+        }
+        if !sent {
+            self.open = false;
+            self.ended = "overflow";
+            self.close_code = 1008;
+            self.close_reason = "too slow: send queue full";
+            chan_close(self.out);
+        }
+        mutex_unlock(self.lock);
+        return sent;
+    }
+
+    // Several messages that must arrive together (a binary event and its
+    // attachments): all queued, in order, with nothing between them, or
+    // the socket is closed as for one that does not fit.
+    fn enqueue_all(self: Socket, os: [Out]) -> bool {
+        mutex_lock(self.lock);
+        if !self.open {
+            mutex_unlock(self.lock);
+            return false;
+        }
+        let sent = true;
+        for o in os {
+            if sent {
+                let one = false;
+                select {
+                    case chan_send(self.out, o) { one = true; }
+                    default { }
+                }
+                sent = one;
+            }
         }
         if !sent {
             self.open = false;
@@ -417,6 +460,19 @@ impl Hub {
         return deliver(self.members(room), p, except, true);
     }
 
+    // emit_binary to every Socket.IO session in a room ("" for the hub).
+    pub fn emit_binary_to_room(self: Hub, room: str, namespace: str, name: str,
+                               args_json: str, data: [bytes], except: str) -> int {
+        let os = binary_outs(namespace, name, args_json, data);
+        let n = 0;
+        for s in self.members(room) {
+            if s.sio && s.id != except && s.enqueue_all(os) {
+                n = n + 1;
+            }
+        }
+        return n;
+    }
+
     // A snapshot, taken under the lock and sent to outside it: a send
     // takes each socket's own lock, and holding both would order them.
     fn members(self: Hub, room: str) -> [Socket] {
@@ -453,4 +509,14 @@ fn leave_hubs(s: Socket) {
     for h in s.hubs_now() {
         h.remove(s);
     }
+}
+
+fn binary_outs(namespace: str, name: str, args_json: str, data: [bytes]) -> [Out] {
+    let os: [Out] = [];
+    push(os, Out { kind: 0, text: sio.binary_event(namespace, name, args_json, len(data), -1),
+                   data: b"" });
+    for d in data {
+        push(os, Out { kind: 1, text: "", data: d });
+    }
+    return os;
 }
