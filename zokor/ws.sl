@@ -374,13 +374,21 @@ pub gc struct SioSettings {
     ping_interval_ms: int,
     ping_timeout_ms: int,
     max_payload: int,
+    // Served routes (r.socketio) only. Long-polling sessions open at once:
+    // each is a session id and a queue held between requests, so a flood
+    // of handshakes is refused (503) past this instead of held.
+    max_polling_sessions: int,
+    // Binary attachments one event may carry.
+    max_attachments: int,
 }
 
 pub fn default_sio() -> SioSettings {
     return SioSettings {
         ping_interval_ms: 25000,
         ping_timeout_ms: 20000,
-        max_payload: 1000000
+        max_payload: 1000000,
+        max_polling_sessions: 10000,
+        max_attachments: 16
     };
 }
 
@@ -400,6 +408,13 @@ pub gc struct SioEvent {
     name: str,
     args_json: str,
     ack: int,
+    // A binary event's attachments, in order: in args_json each is a
+    // {"_placeholder":true,"num":N} object, N its index here. Empty for
+    // every other event.
+    attachments: [bytes],
+    // How many attachments the event announced (sio_receive only; the
+    // served route collects them before the handler sees the event).
+    expecting: int,
 }
 
 // The first thing a socket.io connection needs: its session id and the
@@ -437,24 +452,31 @@ pub fn sio_receive(c: Conn, m: Message) -> result[SioEvent, str] {
     if p.sio == sio.Sio.Disconnect {
         return ok(one(SioKind.Disconnect, p.namespace, "", "[]", -1));
     }
-    if p.sio == sio.Sio.Ack {
-        return ok(one(SioKind.Ack, p.namespace, "", p.payload, p.ack));
+    if p.sio == sio.Sio.Ack || p.sio == sio.Sio.BinaryAck {
+        let a = one(SioKind.Ack, p.namespace, "", p.payload, p.ack);
+        a.expecting = p.attachments;
+        return ok(a);
     }
     if p.sio == sio.Sio.Event || p.sio == sio.Sio.BinaryEvent {
-        return ok(one(SioKind.Event, p.namespace,
-                      sio.event_name(p.payload),
-                      sio.event_args(p.payload), p.ack));
+        let e = one(SioKind.Event, p.namespace,
+                    sio.event_name(p.payload),
+                    sio.event_args(p.payload), p.ack);
+        e.expecting = p.attachments;
+        return ok(e);
     }
     return ok(one(SioKind.Other, p.namespace, "", "[]", -1));
 }
 
 fn one(k: SioKind, ns: str, name: str, args: str, ack: int) -> SioEvent {
+    let none_yet: [bytes] = [];
     return SioEvent {
         kind: k,
         namespace: ns,
         name: name,
         args_json: args,
-        ack: ack
+        ack: ack,
+        attachments: none_yet,
+        expecting: 0
     };
 }
 

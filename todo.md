@@ -285,8 +285,17 @@ to its generic response helper. No compiler change is included here.
   TLS. examples/chat serves both kinds of client on one room; checked
   against socket.io-client 4.7.5 and `ws` 8. Needs slang's `link.split`
   ([slang]).
-- [ ] Socket.IO over HTTP long-polling, so a client works without
-  `transports: ["websocket"]`; and binary attachment frames.
+- [x] Socket.IO over HTTP long-polling, so a client works without
+  `transports: ["websocket"]`; and binary attachment frames. Done: the
+  polling transport (GET waits for packets, POST carries the client's,
+  record-separated, binary as base64), the probe-and-upgrade to WebSocket
+  with the session kept, one heartbeat task per route, a session cap
+  (`max_polling_sessions`, 503 past it), overlapping GETs/POSTs ending the
+  session; attachments assembled both ways (`e.attachments`,
+  `s.emit_binary`), even when an event straddles the upgrade. Checked
+  against socket.io-client 4.7.5 on polling, websocket and the default
+  polling-then-upgrade. Not done: a POST is bounded by MAX_REQUEST_BYTES,
+  not by maxPayload.
 
 ## 5. Shipping it
 
