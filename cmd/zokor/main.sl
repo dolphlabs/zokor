@@ -1,12 +1,15 @@
 import "../../zokor" as zokor;
 import "proc";
 import "io";
+import "os";
 import "time";
 
 fn usage() -> str {
     return "usage:\n" +
            "  zokor new <name> [--db pg] [--zokor-git URL] [--zokor-tag TAG]\n" +
            "  zokor add feature <name> [--entity <singular>]\n" +
+           "  zokor add route <feature> <METHOD> <path> <handler>\n" +
+           "  zokor check [--json]        the layout rules, from the service's root\n" +
            "  zokor migrate [directory]   (default: migrations; DATABASE_URL required)";
 }
 
@@ -119,9 +122,47 @@ fn new_cmd(args: [str]) {
     println("created " + name + ": cd " + name + " && slangc get && make test");
 }
 
+fn add_route_cmd(args: [str]) {
+    if len(args) != 7 {
+        fail_usage("add route takes: <feature> <METHOD> <path> <handler>");
+    }
+    let feature = args[3];
+    let method = route_method(args[4]);
+    if len(method) == 0 {
+        fail_usage("the method is GET, POST, PUT, PATCH or DELETE");
+    }
+    let path = args[5];
+    if path == "/" {
+        path = "";
+    }
+    for why in [feature_name_problem(feature), route_path_problem(path), handler_name_problem(args[6])] {
+        if len(why) > 0 {
+            io.eprintln("zokor: " + why);
+            exit(2);
+        }
+    }
+    let sr = service_of(".");
+    guard let _service = sr else let e = err_of(sr) {
+        io.eprintln("zokor: " + e);
+        exit(1);
+    }
+    let r = add_route_at(".", feature, method, path, args[6]);
+    guard let written = r else let e = err_of(r) {
+        io.eprintln("zokor: " + e);
+        exit(1);
+    }
+    report(written, "");
+    println("added " + method + " /" + feature + path + " -> " + args[6] +
+            " (answers 501 until written)");
+}
+
 fn add_cmd(args: [str]) {
+    if len(args) >= 3 && args[2] == "route" {
+        add_route_cmd(args);
+        return;
+    }
     if len(args) < 3 || args[2] != "feature" {
-        fail_usage("add takes: feature <name>");
+        fail_usage("add takes: feature <name>, or route <feature> <METHOD> <path> <handler>");
     }
     let f = parse_flags(args, 3, ["--entity"]);
     if len(f.rest) != 1 {
@@ -158,6 +199,24 @@ fn add_cmd(args: [str]) {
     println("added " + feature + " (wired into src/platform/app/app.sl and src/main.sl)");
 }
 
+fn check_cmd(args: [str]) {
+    let json_out = false;
+    let i = 2;
+    while i < len(args) {
+        if args[i] == "--json" {
+            json_out = true;
+        } else {
+            fail_usage("check takes only --json");
+        }
+        i = i + 1;
+    }
+    let r = check_project(os.is_file("slang.project"));
+    print_report(r, json_out);
+    if len(r.problems) > 0 {
+        exit(1);
+    }
+}
+
 fn main() {
     let args = proc.args();
     if len(args) < 2 {
@@ -170,6 +229,8 @@ fn main() {
         new_cmd(args);
     } else if cmd == "add" {
         add_cmd(args);
+    } else if cmd == "check" {
+        check_cmd(args);
     } else {
         fail_usage("unknown command '" + cmd + "'");
     }

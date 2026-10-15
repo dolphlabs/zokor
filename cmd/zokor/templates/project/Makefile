@@ -17,4 +17,7 @@ build:
 run: build
 	./bin/__service__
 
-check: test build
+# The layering, tenant, SQL and config rules in AGENTS.md, then tests.
+check:
+	$(ZOKOR) check
+	$(MAKE) test build
