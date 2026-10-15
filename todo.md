@@ -190,7 +190,7 @@ library, made and merged there first.
 - [x] **Migrations**: `load_migrations` reads bounded `N_description.sql`
   files in numeric order; `migrate` validates immutable SHA-256 history
   and applies the pending batch in one transaction under a Postgres
-  advisory lock. `make cli` builds `bin/zokor migrate [directory]`.
+  advisory lock. `zokor migrate [directory]` (zokor_cli) runs them.
   Tests cover replay, changed/missing history, rollback across files,
   concurrent runners, SQL boundaries, file limits and embedded NULs.
 - [x] **Metrics**: `new_metrics` (check its result) and `r.metrics`
@@ -325,11 +325,13 @@ to its generic response helper. No compiler change is included here.
   `zokor add route <feature> <METHOD> <path> <handler>` registers a route
   at the server's marker with a 501 handler and an auth-and-mounted test.
   `zokor check` enforces the layout (section 3).
-- [ ] Tag `v0.2.0`, the release the README and the guide pin (`v0.1.0`
+- [x] Tag `v0.2.0`, the release the README and the guide pin (`v0.1.0`
   was tagged 2026-09-30, before the `src/` -> `zokor/` rename), once a
   slang release includes what zokor needs (generics, `dir` pins,
-  `exclude`, and this year's fixes). Until then the README's
-  Requirements section is the truth.
+  `exclude`, and this year's fixes). Done: slang v0.2.3 has them; zokor
+  v0.2.0 requires it. The CLI moved to
+  [zokor_cli](https://github.com/dolphlabs/zokor_cli), which pins the
+  release, so `zokor new` works from a fresh install.
 
 ## Performance
 
