@@ -56,8 +56,19 @@ make build SLANGC="$SLANGC" >/dev/null 2>&1 || fail "a new project does not buil
 grep -q 'orders.mount(r);' src/main.sl || fail "add feature did not mount the routes"
 grep -q 'orders: orders.Orders\[orders_store.Store\],' src/platform/app/app.sl ||
     fail "add feature did not add the state field"
-"$SLANGC" test src/orders/server >"$WORK/test.log" 2>&1 || { cat "$WORK/test.log"; fail "an added feature's tests fail"; }
 make build SLANGC="$SLANGC" >/dev/null 2>&1 || fail "the project does not build after add feature"
+
+"$ZOKOR" add route orders POST /:id/cancel cancel_order >/dev/null
+grep -q 'g.post("/:id/cancel", cancel_order);' src/orders/server/server.sl ||
+    fail "add route did not register the route"
+"$SLANGC" test src/orders/server >"$WORK/test.log" 2>&1 || { cat "$WORK/test.log"; fail "an added route's test fails"; }
+grep -q 'test_cancel_order_is_mounted_behind_auth' src/orders/server/server_test.sl ||
+    fail "add route wrote no test"
+expect_refusal "already registers POST /orders/:id/cancel" "$ZOKOR" add route orders POST /:id/cancel cancel_again
+expect_refusal "already has a function cancel_order" "$ZOKOR" add route orders PUT /:id cancel_order
+expect_refusal "the method is" "$ZOKOR" add route orders FETCH /x fetch_x
+expect_refusal "starts with /" "$ZOKOR" add route orders GET x get_x
+expect_refusal "add the feature first" "$ZOKOR" add route nope GET /x get_x
 
 expect_refusal "already exists" "$ZOKOR" add feature orders
 expect_refusal "used by the generated code" "$ZOKOR" add feature config
@@ -88,4 +99,4 @@ if [ -n "${SCAFFOLD_TEST_DATABASE_URL:-}" ]; then
 else
     msg="(live Postgres skipped: SCAFFOLD_TEST_DATABASE_URL is not set)"
 fi
-echo "PASS zokor new and add feature: memory and --db pg projects build and pass $msg"
+echo "PASS zokor new, add feature and add route: memory and --db pg projects build and pass $msg"
