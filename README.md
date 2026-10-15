@@ -286,8 +286,8 @@ let sc = zokor.server_config_from(cfg);
 // IDLE_TIMEOUT, READ_HEADER_TIMEOUT, READ_BODY_TIMEOUT, WRITE_TIMEOUT,
 // MAX_REQUEST_BYTES, MAX_REQUESTS_PER_CONN, SHUTDOWN_TIMEOUT, REQUEST_IDS,
 // TRUSTED_PROXIES, PROXY_HEADER, LOG_FORMAT, LOG_LEVEL, LOG_REQUESTS,
-// MAX_CONNECTIONS,
-// TRUSTED_PROXIES, PROXY_HEADER
+// MAX_CONNECTIONS, TLS_CERT_FILE, TLS_KEY_FILE, TLS_CLIENT_CA_FILE,
+// TLS_HANDSHAKE_TIMEOUT
 spawn zokor.listen_and_serve_with(r, port, sc);
 ```
 
@@ -348,6 +348,41 @@ own task, and the connection closes right after answering rather than
 serving more requests on whatever state the panic left behind. The
 static fast path (`GET /`, no handler call) never pays for this
 isolation, since nothing there can panic in the first place.
+
+## HTTPS
+
+zokor terminates TLS itself when it is given a certificate, so a service
+can serve HTTPS without a proxy in front of it:
+
+```
+TLS_CERT_FILE=/etc/certs/api.pem      # the chain, leaf first, PEM
+TLS_KEY_FILE=/etc/certs/api-key.pem
+TLS_CLIENT_CA_FILE=/etc/certs/ca.pem  # optional: mutual TLS
+TLS_HANDSHAKE_TIMEOUT=10s             # optional, the default
+```
+
+`server_config_from(cfg)` reads them into `sc.tls` (or set
+`sc.tls = zokor.tls_files(cert, key)` by hand), and `listen_and_serve_with`
+loads the pair once, before it binds: a missing file or a key that does not
+match its certificate stops the server starting, with the setting named,
+rather than leaving it listening on a port where every handshake fails.
+One file without the other is reported by `check(cfg)`.
+
+Each connection's handshake runs in that connection's own task, under
+`TLS_HANDSHAKE_TIMEOUT`, so a client that connects and never speaks holds
+one connection slot until then and holds up nobody else. A failed
+handshake -- a port scanner, a plaintext request, a browser dropping a
+preconnect -- has no request to answer, so it is closed and logged at
+`debug`. Past `MAX_CONNECTIONS` a TLS connection is closed without the
+plaintext 503, which a TLS client could not read. With
+`TLS_CLIENT_CA_FILE`, a client must present a certificate signed by one
+of those CAs.
+
+Everything else -- routing, timeouts, keep-alive, WebSockets, logging --
+is the same over HTTPS: the serve loop reads and writes the connection
+as it does plain TCP. A new certificate takes effect on restart. Behind a
+proxy or load balancer that terminates TLS for you, leave these unset and
+list it in `TRUSTED_PROXIES`.
 
 ## Logging
 
@@ -1419,7 +1454,8 @@ honest.
 ## Requirements
 
 slang v0.2.1 or later: zokor needs generic structs and methods, and the
-`dir` sub-directory pin.
+`dir` sub-directory pin. HTTPS (`TLS_CERT_FILE`) needs `link.tls_accept`,
+which is on slang's `dev` branch until its next release.
 
 ## Install
 
@@ -1523,8 +1559,8 @@ The full list, ordered and checkable, is [todo.md](todo.md). In short:
 
 - **The serve loop.** `listen_and_serve` turns the WebSocket state
   machine into a running server; timeouts, body limits, graceful
-  shutdown, panic recovery and a connection cap are done (see above).
-  Still owed: TLS.
+  shutdown, panic recovery, a connection cap and TLS are done (see
+  above).
 - **Middleware**, none of it blocked:
   compression, static files. (A rate limiter and a
   bearer-token store exist; `RateLimit-*` headers and sharding do not.)
