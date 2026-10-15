@@ -8,6 +8,8 @@ A zokor service, in slang. Read this before changing anything.
 - `make run`: build and serve (configuration from `.env`, see `.env.example`).
 - `zokor add feature <name>`: a new feature slice, wired in. Use it rather
   than writing the files by hand.
+- `zokor add route <feature> <METHOD> <path> <handler>`: a route under the
+  feature's prefix, a handler answering 501 until written, and its test.
 - `slangc doc zokor <name>`: zokor's API, one item at a time.
 
 ## Layout

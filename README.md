@@ -1509,7 +1509,13 @@ make cli                      # builds bin/zokor
 bin/zokor new billing         # or: --db pg for Postgres
 cd billing && slangc get && make test && make run
 bin/zokor add feature orders  # a new slice, wired in (--entity to name its type)
+bin/zokor add route orders POST /:id/cancel cancel_order
 ```
+
+`add route` registers the route under the feature's prefix (here
+`POST /orders/:id/cancel`), behind the feature's authentication, with a
+handler that answers 501 until it is written and a test that the route is
+mounted and authenticated.
 
 ```
 src/main.sl            startup only: config, state, mount, serve

@@ -304,8 +304,10 @@ to its generic response helper. No compiler change is included here.
   pool, a Postgres adapter behind `store.sl` and numbered migrations;
   `zokor add feature <name>` writes and wires a new slice. AGENTS.md,
   .env.example and a Makefile in every project. tests/scaffold.sh runs
-  both kinds of project in `make check` (live Postgres on Linux CI). Not
-  done: `zokor add route`, `zokor check` (next).
+  both kinds of project in `make check` (live Postgres on Linux CI).
+  `zokor add route <feature> <METHOD> <path> <handler>` registers a route
+  at the server's marker with a 501 handler and an auth-and-mounted test.
+  Not done: `zokor check` (next).
 - [ ] Tag `v0.2.0`, the release the README and the guide pin (`v0.1.0`
   was tagged 2026-09-30, before the `src/` -> `zokor/` rename), once a
   slang release includes what zokor needs (generics, `dir` pins,
