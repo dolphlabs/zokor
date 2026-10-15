@@ -733,8 +733,13 @@ static_render_with(status: i32, content_type: str, lines: [str], body: bytes, ke
     A static route's bytes: status line, content type, the security lines, length, connection, the date line, body.
 
 ## serve.sl -- The server edge: the accept loop that turns a Router into a running server.
-gc struct ServerConfig { idle_timeout: int, header_timeout: int, body_timeout: int, write_timeout: int, max_request_bytes: int, max_requests_per_conn: int, shutdown_timeout: int, request_ids: bool, trusted_proxies: TrustedProxies, logger: Logger, max_connections: int }
+gc struct ServerConfig { idle_timeout: int, header_timeout: int, body_timeout: int, write_timeout: int, max_request_bytes: int, max_requests_per_conn: int, shutdown_timeout: int, request_ids: bool, trusted_proxies: TrustedProxies, logger: Logger, max_connections: int, tls: TlsSettings }
     Four deadlines, not one, because "how long should this wait" has different honest answers depending on what a connection is...
+gc struct TlsSettings { on: bool, cert_file: str, key_file: str, client_ca_file: str, handshake_timeout: int }
+    A certificate chain and its private key, as PEM files, read once when the server starts: a missing or mismatched pair stops it...
+no_tls() -> TlsSettings
+tls_files(cert_file: str, key_file: str) -> TlsSettings
+    HTTPS from these two PEM files, with every other setting at its default.
 default_server_config() -> ServerConfig
     Safe rather than infinite, per the todo item this answers.
 server_config_from(cfg: Config) -> ServerConfig
@@ -750,6 +755,8 @@ ConnGate.leave()
 ConnGate.open_now() -> int
 ConnGate.refusals_to_report(now: int) -> int
     The refusals to report, at most once per second of `now`: 0 when there are none or the last report was under a second ago.
+serve_tls_conn[S](r: Router[S], c: link, sc: ServerConfig, ctx: rawptr)
+    serve_conn over TLS: the handshake first, under its own deadline, then the same loop.
 accept_backoff(prev_ns: int) -> int
     The pause after a failed accept: 5ms, doubling to 1s while it keeps failing.
 listen_and_serve[S](r: Router[S], port: int) -> result[int, str]
