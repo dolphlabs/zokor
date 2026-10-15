@@ -564,11 +564,11 @@ cache_for(r: http.Response, seconds: int) -> http.Response
 ## router.sl -- The router: a request goes in, a response comes out, and the application's own state comes with it.
 enum Method { GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, TRACE, CONNECT }
     The HTTP methods, as a closed set.
-gc struct Ctx[S] { state: S, req: http.Request, params: opt[map[str]str], param1_name: str, param1_value: str, route: str, request_id: str, client_ip: str, out: opt[[str]], locals: opt[map[str]str], errors: Registry }
-struct Served { resp: http.Response, route: str }
+gc struct Ctx[S] { state: S, req: http.Request, params: opt[map[str]str], param1_name: str, param1_value: str, route: str, request_id: str, client_ip: str, out: opt[[str]], locals: opt[map[str]str], errors: Registry, upgrade: opt[Socket] }
+struct Served { resp: http.Response, route: str, upgrade: opt[Socket] }
     A response and the route pattern that produced it, for the request log.
-gc struct Route[S] { method: Method, pattern: str, befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], segs: [str], names: [str], wild: int, fkind: int, fpath: str, handler: fn(Ctx[S]) -> http.Response, has_static: bool, static_status: i32, static_ctype: str, static_body: bytes, static_rendered: bytes, static_hit: opt[http.StaticBody], static_close_hit: opt[http.StaticBody], no_map: opt[map[str]str] }
-gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security, sanitize: SanitizeMode, auto_etag: bool, rindex: [RNode], static_paths: map[str]int, idem: opt[Idempotency], gzip: opt[Compression], mounts: [FileMount], no_lines: opt[[str]], observations: opt[Metrics], tracer: opt[Tracer], no_tracer: opt[Tracer], request_locals: opt[map[str]str] }
+gc struct Route[S] { method: Method, pattern: str, befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], segs: [str], names: [str], wild: int, fkind: int, fpath: str, handler: fn(Ctx[S]) -> http.Response, has_static: bool, static_status: i32, static_ctype: str, static_body: bytes, static_rendered: bytes, static_hit: opt[http.StaticBody], static_close_hit: opt[http.StaticBody], no_map: opt[map[str]str], ws: int }
+gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security, sanitize: SanitizeMode, auto_etag: bool, rindex: [RNode], static_paths: map[str]int, idem: opt[Idempotency], gzip: opt[Compression], mounts: [FileMount], no_lines: opt[[str]], observations: opt[Metrics], tracer: opt[Tracer], no_tracer: opt[Tracer], request_locals: opt[map[str]str], sockets: [WsRoute[S]], no_socket: opt[Socket] }
     A `before` runs ahead of the handler and may end the request by returning a response; `none` carries on.
 new_router[S](state: S) -> Router[S]
     An application builds its router from its state alone; everything else starts empty or at the default a correct server should...
@@ -580,6 +580,10 @@ Router.handle_with(method: Method, pattern: str, h: fn(Ctx[S]) -> http.Response,
     The one registration path: a pattern is split exactly once, and the rules about `:params` and `*rest` live here alone.
 Router.static_bytes(p: str, status: i32, content_type: str, body: bytes, h: fn(Ctx[S]) -> http.Response) -> int
     The full set of HTTP methods, so no service has to fall back to `handle` with a string for anything standard.
+Router.websocket(p: str, open: fn(Ctx[S]) -> http.Response, w: WsRoute[S]) -> int
+    A WebSocket route (ws_serve.sl).
+Router.socketio(p: str, open: fn(Ctx[S]) -> http.Response, s: SioRoute[S]) -> int
+    A Socket.IO route (sio_serve.sl), usually at "/socket.io/".
 Router.get(p: str, h: fn(Ctx[S]) -> http.Response) -> int
 Router.head(p: str, h: fn(Ctx[S]) -> http.Response) -> int
 Router.post(p: str, h: fn(Ctx[S]) -> http.Response) -> int
@@ -652,6 +656,8 @@ Group.group(prefix: str) -> Group[S]
 Group.before(f: fn(Ctx[S]) -> opt[http.Response]) -> int
 Group.after(f: fn(Ctx[S], http.Response) -> http.Response) -> int
 Group.handle(method: Method, pattern: str, h: fn(Ctx[S]) -> http.Response) -> int
+Group.websocket(p: str, open: fn(Ctx[S]) -> http.Response, w: WsRoute[S]) -> int
+    r.websocket, under the group's prefix and with its hooks.
 Group.get(p: str, h: fn(Ctx[S]) -> http.Response) -> int
 Group.head(p: str, h: fn(Ctx[S]) -> http.Response) -> int
 Group.post(p: str, h: fn(Ctx[S]) -> http.Response) -> int
@@ -674,6 +680,10 @@ Ctx.cookies() -> map[str]str
     Every cookie the request carried.
 Ctx.set_local(key: str, v: str) -> int
     What a `before` resolved, read by the handler: the user a token belongs to, the tenant a subdomain names, the plan a customer...
+Ctx.socket() -> Socket
+    The socket a WebSocket route's handshake is opening: put it in a hub, set its locals.
+Ctx.accept_ws() -> http.Response
+    The 101 that accepts the upgrade.
 Ctx.local(key: str) -> str
 Ctx.has_local(key: str) -> bool
 Ctx.body_str() -> str
@@ -763,6 +773,53 @@ listen_and_serve[S](r: Router[S], port: int) -> result[int, str]
     Bind, then accept until the process is asked to stop.
 listen_and_serve_with[S](r: Router[S], port: int, sc: ServerConfig) -> result[int, str]
     Same, with timeouts, limits, and the shutdown drain window under the caller's control -- built from config with...
+
+## sio_serve.sl -- Socket.IO routes, served: Engine.IO v4 and Socket.IO v5 (what socket.io-client 3 and 4 speak) over the served WebSocket.
+gc struct SioRoute[S] { settings: SioSettings, event: fn(S, Socket, SioEvent), connect: opt[fn(S, Socket, str, str) -> result[bool, str]], disconnect: opt[fn(S, Socket, str, str)] }
+sio_route[S](event: fn(S, Socket, SioEvent)) -> SioRoute[S]
+SioRoute.on_connect(f: fn(S, Socket, str, str) -> result[bool, str]) -> SioRoute[S]
+SioRoute.on_disconnect(f: fn(S, Socket, str, str)) -> SioRoute[S]
+
+## socket.sl -- A live connection the serve loop holds open after an upgrade, and the hub that lets one connection's handler reach the others.
+gc struct Socket { id: str, route: str, protocol: str, client_ip: str, locals: map[str]str, lock: mutex, out: chan[Out], open: bool, ended: str, close_code: int, close_reason: str, hubs: [Hub], namespaces: map[str]bool, handler: int, handshake: http.Response, sio: bool }
+Socket.send_text(s: str) -> bool
+    Queues a text message.
+Socket.send_binary(b: bytes) -> bool
+Socket.emit(namespace: str, name: str, args_json: str) -> bool
+    Socket.IO: `emit(name, ...args)` on a namespace ("/" by default).
+Socket.emit_with_ack(namespace: str, name: str, args_json: str, id: int) -> bool
+    The same, asking the client to acknowledge: its answer arrives as an Ack event carrying `id`.
+Socket.ack(namespace: str, id: int, args_json: str) -> bool
+    The answer to a client event that asked for one (SioEvent.ack >= 0).
+Socket.disconnect_ns(namespace: str) -> bool
+    Disconnects the client from one namespace; the session stays.
+Socket.close(code: int, reason: str) -> bool
+    Starts the closing handshake with `code` (1000 normal, 1001 going away, 1008 policy, 4000-4999 the application's own) and...
+Socket.is_open() -> bool
+Socket.local(key: str) -> str
+    A value the handshake's hooks set on the request, "" when none did.
+Socket.set_local(key: str, v: str) -> int
+gc struct Hub { id: str, lock: mutex, sockets: map[str]Socket, rooms: map[str]map[str]bool }
+    Sockets by id, and rooms of them: what a chat, a live dashboard or a notification fan-out needs to reach more than the one...
+new_hub() -> Hub
+Hub.add(s: Socket) -> int
+Hub.remove(s: Socket) -> int
+    Takes the socket out of the hub and every room in it.
+Hub.join_room(s: Socket, room: str) -> int
+    Puts the socket in a room (adding it to the hub first if needed).
+Hub.leave_room(s: Socket, room: str) -> int
+Hub.count() -> int
+Hub.room_size(room: str) -> int
+Hub.get(id: str) -> opt[Socket]
+    The socket with this id, if it is in the hub.
+Hub.broadcast(text: str, except: str) -> int
+    Text to every WebSocket in the hub but `except` (an id, or "").
+Hub.broadcast_binary(b: bytes, except: str) -> int
+Hub.to_room(room: str, text: str, except: str) -> int
+Hub.to_room_binary(room: str, b: bytes, except: str) -> int
+Hub.emit_all(namespace: str, name: str, args_json: str, except: str) -> int
+    Socket.IO: one event to every Socket.IO session in the hub, encoded once.
+Hub.emit_to_room(room: str, namespace: str, name: str, args_json: str, except: str) -> int
 
 ## testkit.sl -- Building a request, and reading a response.
 gc struct TestRequest { method: Method, path: str, headers: map[str]str, body: bytes }
@@ -867,7 +924,7 @@ media_type_of(header: str) -> str
     The media type without its parameters: "image/png" from "image/png; charset=binary".
 
 ## ws.sl -- WebSocket, and Socket.IO on top of it.
-gc struct WsRules { max_frame_bytes: int, max_message_bytes: int, protocols: [str] }
+gc struct WsRules { max_frame_bytes: int, max_message_bytes: int, protocols: [str], ping_interval: int, pong_timeout: int, max_queue: int, close_timeout: int }
 default_ws() -> WsRules
 ws_allowing(protocols: [str]) -> WsRules
 enum Incoming { Text, Binary, Ping, Pong, Close }
@@ -907,6 +964,13 @@ sio_emit_with_ack(namespace: str, name: str, args_json: str, id: int) -> bytes
 sio_ack(namespace: str, id: int, args_json: str) -> bytes
     The reply to an event that carried an ack id.
 sio_disconnect(namespace: str) -> bytes
+
+## ws_serve.sl -- WebSocket routes, served: the handshake goes through the router like any request -- its `before`s run, so authentication and...
+gc struct WsRoute[S] { rules: WsRules, message: opt[fn(S, Socket, Message)], closed: opt[fn(S, Socket, int, str)], sio: opt[SioRoute[S]] }
+ws_route[S](rules: WsRules, message: fn(S, Socket, Message)) -> WsRoute[S]
+    The message handler is the one a route cannot do without; on_close is optional.
+WsRoute.on_close(f: fn(S, Socket, int, str)) -> WsRoute[S]
+    Called once when the connection ends, however it ended, with the code and reason: the peer's, the ones this side closed with,...
 
 ## internal/multipart (reached as UploadRules.limits)
 gc struct Limits { max_parts: int, max_files: int, max_file_bytes: int, max_field_bytes: int, max_total_bytes: int, max_headers_bytes: int, max_filename_bytes: int }
