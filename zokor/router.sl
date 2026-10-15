@@ -477,7 +477,11 @@ impl Router[S] {
     // the Engine.IO handshake's handler, as for websocket().
     pub fn socketio(self: Router[S], p: str, open: fn(Ctx[S]) -> http.Response,
                     s: SioRoute[S]) -> int {
-        return self.websocket(p, open, sio_as_ws(s));
+        let n = self.websocket(p, open, sio_as_ws(s));
+        // long-polling's client-to-server packets
+        let m = self.handle(Method.POST, p, open);
+        self.routes[m - 1].ws = len(self.sockets) - 1;
+        return n;
     }
 
     pub fn get(self: Router[S], p: str, h: fn(Ctx[S]) -> http.Response) -> int {
@@ -1713,6 +1717,7 @@ impl Ctx[S] {
         guard let s = self.upgrade else {
             panic("c.accept_ws() outside a WebSocket handshake: register the route with r.websocket");
         }
+        s.accepted = true;
         return s.handshake;
     }
 

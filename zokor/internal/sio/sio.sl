@@ -46,6 +46,10 @@ pub gc struct Packet {
     payload: str,
     // For a non-message packet: whatever followed the type character.
     data: str,
+    // BinaryEvent / BinaryAck: how many binary attachments follow it, each
+    // in a packet of its own; their places in the arguments are
+    // {"_placeholder":true,"num":N} objects.
+    attachments: int,
 }
 
 pub fn eio_code(t: Eio) -> int {
@@ -115,7 +119,8 @@ pub fn decode(text: str) -> result[Packet, str] {
             namespace: "/",
             ack: -1,
             payload: "",
-            data: rest
+            data: rest,
+            attachments: 0
         });
     }
     return decode_message(rest);
@@ -134,11 +139,16 @@ fn decode_message(s: str) -> result[Packet, str] {
         return err(e);
     }
     let i = 1;
+    let attachments = 0;
     // binary packets announce their attachment count as "<n>-"
     if sio == Sio.BinaryEvent || sio == Sio.BinaryAck {
         let saw = false;
         while i < n && b[i] >= 48 && b[i] <= 57 {
             saw = true;
+            if attachments > 100000 {
+                return err("a binary Socket.IO packet announces too many attachments");
+            }
+            attachments = attachments * 10 + (b[i] - 48);
             i = i + 1;
         }
         if !saw || i >= n || b[i] != 45 {
@@ -175,7 +185,8 @@ fn decode_message(s: str) -> result[Packet, str] {
         namespace: namespace,
         ack: ack,
         payload: payload,
-        data: ""
+        data: "",
+        attachments: attachments
     });
 }
 
@@ -283,8 +294,15 @@ pub fn encode_eio(t: Eio, data: str) -> str {
 // so `upgrades` is empty.
 pub fn open_packet(sid: str, ping_interval_ms: int, ping_timeout_ms: int,
                    max_payload: int) -> str {
+    return open_packet_with(sid, "[]", ping_interval_ms, ping_timeout_ms, max_payload);
+}
+
+// The same for a session that starts on long-polling and may move to
+// WebSocket: `upgrades` names the transports it may upgrade to.
+pub fn open_packet_with(sid: str, upgrades: str, ping_interval_ms: int,
+                        ping_timeout_ms: int, max_payload: int) -> str {
     return encode_eio(Eio.Open,
-        "{\"sid\":\"" + escape(sid) + "\",\"upgrades\":[]," +
+        "{\"sid\":\"" + escape(sid) + "\",\"upgrades\":" + upgrades + "," +
         "\"pingInterval\":" + to_str(ping_interval_ms) +
         ",\"pingTimeout\":" + to_str(ping_timeout_ms) +
         ",\"maxPayload\":" + to_str(max_payload) + "}");
@@ -337,6 +355,47 @@ pub fn event(namespace: str, name: str, args_json: str) -> str {
 pub fn event_with_ack(namespace: str, name: str, args_json: str,
                       ack: int) -> str {
     return message(Sio.Event, namespace, ack, array_of(name, args_json));
+}
+
+// `emit(name, ...args, ...attachments)` with binary attachments: the
+// text packet, whose arguments end with one placeholder per attachment.
+// The attachments themselves follow it, one packet each.
+pub fn binary_event(namespace: str, name: str, args_json: str, count: int,
+                    ack: int) -> str {
+    let args = trim(args_json);
+    let out = builder.new_str();
+    out.write(args);
+    let k = 0;
+    while k < count {
+        if out.size() > 0 {
+            out.write(",");
+        }
+        out.write("{\"_placeholder\":true,\"num\":" + to_str(k) + "}");
+        k = k + 1;
+    }
+    return digit(eio_code(Eio.Message)) + digit(sio_code(Sio.BinaryEvent)) +
+           to_str(count) + "-" + ns_prefix(namespace) + ack_part(ack) +
+           array_of(name, out.finish());
+}
+
+fn ns_prefix(namespace: str) -> str {
+    if len(namespace) > 0 && namespace != "/" {
+        return namespace + ",";
+    }
+    return "";
+}
+
+fn ack_part(ack: int) -> str {
+    if ack >= 0 {
+        return to_str(ack);
+    }
+    return "";
+}
+
+// HTTP long-polling carries several packets in one body, separated by the
+// record separator (0x1e); a binary packet travels as "b" + base64.
+pub fn record_separator() -> int {
+    return 30;
 }
 
 // The reply to a client event that asked for an acknowledgement.

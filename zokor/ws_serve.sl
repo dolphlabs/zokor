@@ -76,11 +76,21 @@ fn locals_of[S](c: Ctx[S]) -> map[str]str {
 // the socket is dropped from any hub the handler had already put it in.
 fn ws_handshake[S](r: Router[S], c: Ctx[S], rt: Route[S]) -> http.Response {
     let wr = r.sockets[rt.ws];
-    if let _so = wr.sio {
-        let why = sio_handshake_problem(c.query("EIO"), c.query("transport"), c.query("sid"));
+    let id = ws_socket_id();
+    if let so = wr.sio {
+        // Engine.IO: a long-polling request, a polling session moving to
+        // WebSocket, or (falling through) a new session straight on it
+        let why = sio_handshake_problem(c.query("EIO"), c.query("transport"), c.req.method);
         if len(why) > 0 {
             return respond_with(r.errors, "bad_request", why, c.request_id);
         }
+        if c.query("transport") == "polling" {
+            return sio_polling(r, wr, so, c, rt);
+        }
+        if len(c.query("sid")) > 0 {
+            return sio_upgrade_handshake(r, wr, so, c);
+        }
+        id = new_session_id();
     }
     let ur = upgrade(c.req, wr.rules);
     guard let accept = ur else let e = err_of(ur) {
@@ -88,7 +98,7 @@ fn ws_handshake[S](r: Router[S], c: Ctx[S], rt: Route[S]) -> http.Response {
                                 "sec-websocket-version", "13");
     }
     let protocol = http.resp_header(accept, "sec-websocket-protocol") ?? "";
-    let sock = new_socket(ws_socket_id(), rt.pattern, protocol, c.client_ip,
+    let sock = new_socket(id, rt.pattern, protocol, c.client_ip,
                           locals_of(c), wr.rules.max_queue, rt.ws, accept);
     if let _so = wr.sio {
         sock.sio = true;
@@ -96,7 +106,7 @@ fn ws_handshake[S](r: Router[S], c: Ctx[S], rt: Route[S]) -> http.Response {
     c.upgrade = some(sock);
     let open = rt.handler;
     let out = open(c);
-    if out.status != 101 {
+    if out.status != 101 || !sock.accepted {
         c.upgrade = r.no_socket;
         sock.finish("refused");
         leave_hubs(sock);
@@ -170,6 +180,16 @@ gc struct WsSession {
     ours: bool,
     // Socket.IO: the disconnect reason its handlers are told, once known.
     why: str,
+    // Socket.IO: a binary event waiting for its attachments, and how many
+    // are still to come.
+    bin: opt[SioEvent],
+    bin_left: int,
+}
+
+fn new_ws_session(rules: WsRules) -> WsSession {
+    let nothing: opt[SioEvent] = none;
+    return WsSession { conn: new_conn(rules), code: 1006, reason: "", done: false,
+                       ours: false, why: "", bin: nothing, bin_left: 0 };
 }
 
 // Feeds one read through the decoder and the handlers. Messages run in
@@ -182,9 +202,15 @@ fn ws_feed[S](r: Router[S], wr: WsRoute[S], s: Socket, ss: WsSession,
         s.finish("protocol error");
         ss.code = 1002;
         ss.reason = why;
+        ss.why = "parse error";
         ss.done = true;
         return;
     }
+    ws_feed_messages(r, wr, s, ss, msgs, lg);
+}
+
+fn ws_feed_messages[S](r: Router[S], wr: WsRoute[S], s: Socket, ss: WsSession,
+                       msgs: [Message], lg: Logger) {
     if let sr = wr.sio {
         sio_feed(r, sr, s, ss, msgs, lg);
         s.enqueue_frame(pending(ss.conn));
@@ -245,8 +271,70 @@ fn ws_session[S](r: Router[S], c: &mut link, buf: wire, filled: int,
     let wr = r.sockets[s.handler];
     let rules = wr.rules;
     let lg = sc.logger;
-    let ss = WsSession { conn: new_conn(rules), code: 1006, reason: "", done: false,
-                         ours: false, why: "" };
+    let ss = new_ws_session(rules);
+    // A polling session moving here proves the connection first
+    // (Engine.IO's probe), on this side of the split.
+    let carried: [Message] = [];
+    let upgraded = false;
+    if let so = wr.sio {
+        if let ps = sio_upgrading(so, s.id) {
+            let p = new_probe();
+            let deadline = until_of(time.mono() + rules.pong_timeout);
+            let chunk = b"";
+            if filled > 0 {
+                chunk = to_bytes(buf[0..filled]);
+            }
+            while !p.done && len(p.failed) == 0 {
+                if len(chunk) == 0 {
+                    let rr = c.recv(buf, deadline);
+                    guard let n = rr else let e = err_of(rr) {
+                        p.failed = to_str(e);
+                        break;
+                    }
+                    if n == 0 {
+                        p.failed = "the client went away";
+                        break;
+                    }
+                    chunk = to_bytes(buf[0..n]);
+                }
+                let got = receive(ss.conn, chunk);
+                chunk = b"";
+                guard let msgs = got else let why = err_of(got) {
+                    p.failed = why;
+                    break;
+                }
+                let owed = pending(ss.conn);
+                if len(owed) > 0 {
+                    let _o = c.send_bytes(owed, deadline);
+                }
+                sio_probe_messages(msgs, ps, p);
+                if p.answer {
+                    p.answer = false;
+                    let ar = c.send_bytes(text_frame("3probe"), deadline);
+                    guard let _a = ar else {
+                        p.failed = "cannot answer the probe";
+                        break;
+                    }
+                    // releases the GET the client is waiting on
+                    s.send_packet(sio_noop());
+                }
+            }
+            if len(p.failed) > 0 {
+                sio_upgrade_failed(ps, p.failed, lg);
+                return;
+            }
+            carried = p.rest;
+            upgraded = true;
+            // A binary event can straddle the switch: its packet POSTed
+            // over polling, its attachments sent here once paused.
+            mutex_lock(ps.lock);
+            ss.bin = ps.st.bin;
+            ss.bin_left = ps.st.bin_left;
+            mutex_unlock(ps.lock);
+            // the session is this connection's now, not the heartbeat's
+            sio_forget(so, s.id);
+        }
+    }
     let sr = c.split();
     guard let w = sr else let se = err_of(sr) {
         lg.error("WebSocket", "cannot split the connection: " + to_str(se));
@@ -257,8 +345,10 @@ fn ws_session[S](r: Router[S], c: &mut link, buf: wire, filled: int,
     let wdone: chan[int] = make_chan(1);
     spawn ws_writer(w, s, sc.write_timeout, wdone);
     if let so = wr.sio {
-        // Engine.IO's handshake: the session id and the timers, first
-        s.send_packet(sio_open_packet(s, so.settings));
+        if !upgraded {
+            // Engine.IO's handshake: the session id and the timers, first
+            s.send_packet(sio_open_packet(s, so.settings));
+        }
     }
     // A WebSocket peer is pinged when it goes quiet. A Socket.IO client
     // must hear a ping every pingInterval whatever else it hears -- it
@@ -271,7 +361,11 @@ fn ws_session[S](r: Router[S], c: &mut link, buf: wire, filled: int,
     let next_ping = time.mono() as int + rules.ping_interval;
     let pinged = 0;
     let closing = 0;
-    if filled > 0 {
+    if upgraded {
+        if len(carried) > 0 {
+            ws_feed_messages(r, wr, s, ss, carried, lg);
+        }
+    } else if filled > 0 {
         ws_feed(r, wr, s, ss, to_bytes(buf[0..filled]), lg);
     }
     while !ss.done {
