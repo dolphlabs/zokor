@@ -310,7 +310,7 @@ fn feature_edits(v: Vars, pg: bool) -> [[Edit]] {
     let f = v.feature;
     let ctor = f + "_store.in_memory()";
     if pg {
-        ctor = f + "_store.on_postgres(db)";
+        ctor = f + "_store.on_postgres(d.pool)";
     }
     let app_edits = [
         Edit { marker: "// zokor:imports", lines: [
