@@ -26,15 +26,10 @@
 //         return zokor.db_failure(c.errors, e, c.request_id);
 //     }
 //
-// Cost, measured (bench/postgres, against a local Postgres): about 2.2 us
-// a row over reading the cells by hand -- 1,000 rows 5.3 ms against 3.0
-// ms, 10 rows 412 us against 382 us. At API page sizes the round trip
-// dominates; for thousands of rows, read them with pg.get_* or
-// pg.stream.
-//
-// Rows map by name through JSON: integers, floats and numerics become
+// Rows map by name through slang's typed pg.rows_as decoder, without
+// rendering rows as JSON: integers, floats and numerics become
 // numbers, booleans booleans, json/jsonb columns their own JSON, NULL
-// `null` (so an opt field), bytea base64, timestamptz and timestamp RFC
+// none (so an opt field), bytea bytes or a base64 string, timestamps RFC
 // 3339 strings (so a timez.Time field, or a str), and everything else --
 // text, uuid -- a string. A column your struct does not name is
 // ignored; a field the query does not return must be an opt.
@@ -42,7 +37,6 @@
 import "builder";
 import "encoding";
 import "http";
-import "json";
 import "pg";
 
 // DATABASE_URL (postgres://user:pass@host:port/db?sslmode=require) and
@@ -160,21 +154,9 @@ fn row_into(sb: builder.Str, rows: pg.Rows, keys: [str], r: int) {
     sb.write("}");
 }
 
-// Every row as a T, matched by column name.
+// Every row as a T, matched by column name without intermediate JSON text.
 pub fn rows_as[T](rows: pg.Rows) -> result[[T], str] {
-    let sb = builder.new_str();
-    let keys = column_keys(rows);
-    sb.write("[");
-    let r = 0;
-    while r < rows.count {
-        if r > 0 {
-            sb.write(",");
-        }
-        row_into(sb, rows, keys, r);
-        r = r + 1;
-    }
-    sb.write("]");
-    let out: result[[T], str] = json.decode(sb.finish());
+    let out: result[[T], str] = pg.rows_as(rows);
     guard let list = out else let e = err_of(out) {
         return err("rows do not fit the struct: " + e);
     }
