@@ -1,5 +1,5 @@
 #!/bin/sh
-# `zokor new` and `zokor add feature`, end to end: generate a service
+# `zokor new`, `zokor add` and `zokor check`, end to end: generate a service
 # against THIS checkout of zokor (pinned through a throwaway git repo, the
 # way a real project pins a tag), then build it and run its tests, add a
 # feature and run that feature's, and check what must be refused.
@@ -79,6 +79,31 @@ expect_refusal "already exists" "$ZOKOR" new src
 expect_refusal "service name" "$ZOKOR" new "Bad Name"
 expect_refusal "--db is memory" "$ZOKOR" new other --db mysql
 
+# zokor check: clean as generated, and each rule catches its violation.
+"$ZOKOR" check >/dev/null || { "$ZOKOR" check; fail "zokor check fails on a generated project"; }
+violates() {
+    rule=$1 file=$2 text=$3
+    cp "$file" "$WORK/saved"
+    printf '%s\n' "$text" | cat - "$WORK/saved" >"$file"
+    expect_refusal "$file:1: $rule:" "$ZOKOR" check
+    cp "$WORK/saved" "$file"
+}
+violates imports src/orders/server/dto.sl 'import "../store" as orders_store;'
+violates imports src/orders/service/service.sl 'import "../../notes/store" as notes_store;'
+violates pure src/orders/domain/order.sl 'import "fs";'
+violates pg src/orders/server/dto.sl 'import "pg";'
+violates config src/orders/service/service.sl 'fn port() -> str { return proc.getenv("PORT"); }'
+violates sql src/orders/store/memory.sl 'fn q(id: str) -> str { return "select * from orders where id = " + id; }'
+violates tenant src/orders/service/service.sl 'pub fn count() -> int { return 0; }'
+cp src/orders/server/server.sl "$WORK/saved"
+grep -v require_tenant "$WORK/saved" >src/orders/server/server.sl
+expect_refusal "src/orders/server/server.sl:1: auth:" "$ZOKOR" check
+cp "$WORK/saved" src/orders/server/server.sl
+mkdir -p src/orders/server/extra && echo 'pub fn one() -> int { return 1; }' >src/orders/server/extra/extra.sl
+expect_refusal "src/orders/server/extra: tests:" "$ZOKOR" check
+rm -r src/orders/server/extra
+"$ZOKOR" check --json >"$WORK/check.json" || fail "zokor check --json fails on a clean project"
+
 # --db pg: the adapter switch, the pool, a migration per feature.
 cd "$WORK"
 # shellcheck disable=SC2086
@@ -87,6 +112,7 @@ cd pgdemo
 [ -f migrations/001_notes.sql ] || fail "--db pg wrote no migration"
 "$ZOKOR" add feature orders >/dev/null
 [ -f migrations/002_orders.sql ] || fail "add feature did not number its migration after 001"
+"$ZOKOR" check >/dev/null || { "$ZOKOR" check; fail "zokor check fails on a --db pg project"; }
 "$SLANGC" get >/dev/null
 make build SLANGC="$SLANGC" >"$WORK/build.log" 2>&1 || { grep -E "error" "$WORK/build.log"; fail "a --db pg project does not build"; }
 for p in src/notes/store src/orders/server src/platform/db; do
@@ -99,4 +125,4 @@ if [ -n "${SCAFFOLD_TEST_DATABASE_URL:-}" ]; then
 else
     msg="(live Postgres skipped: SCAFFOLD_TEST_DATABASE_URL is not set)"
 fi
-echo "PASS zokor new, add feature and add route: memory and --db pg projects build and pass $msg"
+echo "PASS zokor new, add feature, add route and check: memory and --db pg projects build and pass $msg"
