@@ -50,7 +50,7 @@ gc struct Template {
     lines: [str],
 }
 HEAD
-    for g in project feature pg_project pg_feature; do
+    for g in project light_project feature pg_project pg_feature; do
         group "$g"
     done
 }
