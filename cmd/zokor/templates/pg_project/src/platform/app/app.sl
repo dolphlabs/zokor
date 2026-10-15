@@ -1,6 +1,6 @@
-import "pg";
 import "zokor";
 import "../config" as config;
+import "../db" as db;
 // zokor:imports -- `zokor add feature` adds each feature's service and store
 
 // The service's state: its settings and every feature's service, each
@@ -10,7 +10,7 @@ pub gc struct App {
     settings: config.Settings
 }
 
-pub fn build(s: config.Settings, db: pg.Pool) -> result[App, str] {
+pub fn build(s: config.Settings, d: db.Db) -> result[App, str] {
     return ok(App {
         // zokor:build
         settings: s
