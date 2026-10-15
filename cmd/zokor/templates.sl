@@ -36,10 +36,15 @@ fn project_templates() -> [Template] {
         "",
         "## Commands",
         "",
-        "- `make test`: every package's tests. `make check`: tests and a build.",
+        "- `make test`: every package's tests. `make check`: `zokor check`, tests",
+        "  and a build; run it before you finish.",
+        "- `zokor check [--json]`: the rules below, as `file:line: rule: message`",
+        "  (one JSON object per line with --json). Fix what it reports.",
         "- `make run`: build and serve (configuration from `.env`, see `.env.example`).",
         "- `zokor add feature <name>`: a new feature slice, wired in. Use it rather",
         "  than writing the files by hand.",
+        "- `zokor add route <feature> <METHOD> <path> <handler>`: a route under the",
+        "  feature's prefix, a handler answering 501 until written, and its test.",
         "- `slangc doc zokor <name>`: zokor's API, one item at a time.",
         "",
         "## Layout",
@@ -61,8 +66,12 @@ fn project_templates() -> [Template] {
         "",
         "- Imports go one way: `server -> service -> domain`; `store` implements",
         "  `service`'s ports; `platform/app` wires stores to services. A feature",
-        "  reaches another only through that feature's `service`.",
+        "  reaches another only through that feature's `service`. Only `store/` and",
+        "  `platform/db` import pg; `domain` and `service` do no I/O.",
         "- The tenant is an explicit argument to every use case and store call.",
+        "- Every `server.sl` puts its routes behind `auth.require_tenant`; a file",
+        "  of routes that are public on purpose says `// zokor:public`.",
+        "- SQL is a literal with `$1, $2 ...`; values never join the text.",
         "- Configuration is read once, in `platform/config`; nothing else reads the",
         "  environment.",
         "- Every failure goes through a registered error code (`server/errors.sl`);",
@@ -91,7 +100,10 @@ fn project_templates() -> [Template] {
         "run: build",
         "\t./bin/__service__",
         "",
-        "check: test build"
+        "# The layering, tenant, SQL and config rules in AGENTS.md, then tests.",
+        "check:",
+        "\t$(ZOKOR) check",
+        "\t$(MAKE) test build"
     ] });
     push(out, Template { path: "migrations/.gitkeep", lines: [
 
@@ -492,7 +504,7 @@ fn feature_templates() -> [Template] {
         "                   .json_body(body).build());",
         "}",
         "",
-        "fn test_a___entity___round_trips_for_its_tenant_only() {",
+        "fn test_one___entity___round_trips_for_its_tenant_only() {",
         "    let r = router_under_test();",
         "    let made = post___entity__(r, key_a(), \"{\\\"title\\\":\\\"plan\\\",\\\"body\\\":\\\"ship it\\\"}\");",
         "    assert(zokor.resp_status(made) == 201, zokor.resp_text(made));",
@@ -894,9 +906,9 @@ fn pg_project_templates() -> [Template] {
         "}"
     ] });
     push(out, Template { path: "src/platform/app/app.sl", lines: [
-        "import \"pg\";",
         "import \"zokor\";",
         "import \"../config\" as config;",
+        "import \"../db\" as db;",
         "// zokor:imports -- `zokor add feature` adds each feature's service and store",
         "",
         "// The service's state: its settings and every feature's service, each",
@@ -906,7 +918,7 @@ fn pg_project_templates() -> [Template] {
         "    settings: config.Settings",
         "}",
         "",
-        "pub fn build(s: config.Settings, db: pg.Pool) -> result[App, str] {",
+        "pub fn build(s: config.Settings, d: db.Db) -> result[App, str] {",
         "    return ok(App {",
         "        // zokor:build",
         "        settings: s",
@@ -937,9 +949,18 @@ fn pg_project_templates() -> [Template] {
         "import \"zokor\";",
         "",
         "// The service's one Postgres pool: DATABASE_URL, DB_POOL_SIZE (10). Only",
-        "// this package and the features' store/ packages import pg.",
-        "pub fn open(cfg: zokor.Config) -> result[pg.Pool, str] {",
-        "    return zokor.pg_from_config(cfg);",
+        "// this package and the features' store/ packages import pg; everything",
+        "// else holds a Db.",
+        "pub gc struct Db {",
+        "    pool: pg.Pool,",
+        "}",
+        "",
+        "pub fn open(cfg: zokor.Config) -> result[Db, str] {",
+        "    let r = zokor.pg_from_config(cfg);",
+        "    guard let pool = r else let e = err_of(r) {",
+        "        return err(e);",
+        "    }",
+        "    return ok(Db { pool: pool });",
         "}"
     ] });
     push(out, Template { path: "src/platform/db/db_test.sl", lines: [

@@ -24,7 +24,7 @@ fn post___entity__(r: zokor.Router[app.App], key: str, body: str) -> http.Respon
                    .json_body(body).build());
 }
 
-fn test_a___entity___round_trips_for_its_tenant_only() {
+fn test_one___entity___round_trips_for_its_tenant_only() {
     let r = router_under_test();
     let made = post___entity__(r, key_a(), "{\"title\":\"plan\",\"body\":\"ship it\"}");
     assert(zokor.resp_status(made) == 201, zokor.resp_text(made));
