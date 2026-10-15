@@ -1,9 +1,8 @@
 name zokor
-version 0.1.0
+version 0.2.0
 exclude bench
 exclude docs
 exclude examples
 exclude assets
-exclude cmd
 
 pkg jwt git https://github.com/dolphlabs/jwt.git tag v0.1.0 dir src/jwt

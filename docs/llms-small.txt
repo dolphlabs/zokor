@@ -20,8 +20,6 @@ version 0.1.0
 pkg zokor git https://github.com/dolphlabs/zokor tag v0.2.0 dir zokor
 ```
 
-(Until `v0.2.0` is tagged: `tag v0.1.0 dir src`.)
-
 Then run `slangc get` in `app/`. Programs import the package with
 `import "zokor";`.
 
