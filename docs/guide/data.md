@@ -1,6 +1,6 @@
 # Data and storage
 
-> slang's pg package is the driver.
+> Use PostgreSQL, Redis, and SQL migrations in Zokor, with typed row decoding, transactions, connection pools, and configuration guidance.
 
 ## Postgres
 

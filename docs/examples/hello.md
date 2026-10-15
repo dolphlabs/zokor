@@ -1,6 +1,6 @@
 # Hello service
 
-> A zokor service.
+> A minimal Slang HTTP service built with Zokor. See how to configure the server, register a route, and return a JSON response.
 
 # Hello service
 
