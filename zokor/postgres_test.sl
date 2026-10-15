@@ -97,6 +97,41 @@ fn test_numbers_json_cannot_hold_become_strings() {
     assert(!json_number_ok("NaN") && !json_number_ok("Infinity") && !json_number_ok(""));
 }
 
+fn test_rows_as_rejects_invalid_metadata_without_panicking() {
+    let rows = pg.Rows { columns: ["name"], types: [25], binary_results: false,
+        count: -1, affected: 0, tag: "SELECT", chunks: [], locs: [], lens: [],
+        chunk_gen: 0, stream: 0, done: true };
+    let converted: result[[PgName], str] = rows_as(rows);
+    if let _items = converted { panic("negative row count accepted"); }
+    else let e = err_of(converted) {
+        assert(strings.has_prefix(e, "rows do not fit the struct: "), e);
+        assert(strings.contains(e, "metadata"), e);
+    }
+}
+
+fn test_rows_as_binary_fields_and_named_errors() {
+    let rows = pg.Rows { columns: ["note", "name", "id", "active", "price", "meta", "created"],
+        types: [25, 25, 20, 16, 1700, 3802, 25], binary_results: true,
+        count: 1, affected: 0, tag: "SELECT",
+        chunks: [b"tea", to_be(-9223372036854775808), b"\x01", b"3.5", b"{\"tags\":[\"hot\"]}", b"now"],
+        locs: [0, 0, 4294967296, 8589934592, 12884901888, 17179869184, 21474836480],
+        lens: [-1, 3, 8, 1, 3, 16, 3], chunk_gen: 0, stream: 0, done: true };
+    let converted: result[[PgItem], str] = rows_as(rows);
+    guard let items = converted else let e = err_of(converted) { panic(e); }
+    assert(len(items) == 1 && items[0].id == -9223372036854775808);
+    assert(items[0].name == "tea" && items[0].active && items[0].price == 3.5);
+    guard let meta = items[0].meta else { panic("JSON metadata missing"); }
+    assert(meta.tags[0] == "hot");
+    if let _note = items[0].note { panic("SQL NULL became present"); }
+    rows.lens[2] = 7;
+    let failed: result[[PgItem], str] = rows_as(rows);
+    if let _bad = failed { panic("invalid binary integer width accepted"); }
+    else let e = err_of(failed) {
+        assert(strings.has_prefix(e, "rows do not fit the struct: "), e);
+        assert(strings.contains(e, "row 0") && strings.contains(e, "field 'id'"), e);
+    }
+}
+
 fn test_live_rows_map_by_name_into_structs() {
     guard let p = pg_live("live_rows_map_by_name_into_structs") else { return; }
     pg_must(p, "drop table if exists zokor_t_items");

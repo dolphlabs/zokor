@@ -210,20 +210,22 @@ fn list_users(c: zokor.Ctx[App]) -> http.Response {
 
 - **Rows into structs, by column name.** `query_all`, `query_one` (none
   when there's no row), `conn_query_all` inside a transaction, and
-  `rows_as`:
+  `rows_as` use slang's compiler-backed `pg.rows_as`, binding column names
+  once without rendering intermediate JSON text:
   - integers, floats and numerics become numbers (NaN and infinity become
     strings)
   - booleans stay booleans
   - `json`/`jsonb` decode into nested structs
   - NULL becomes `none`, so use an `opt` field
-  - `bytea` becomes base64
+  - `bytea` reads into `bytes` or a base64 string
   - `timestamptz` and `timestamp` become RFC 3339 strings, so a
     `timez.Time` field reads them (a `timestamp` without a zone as UTC),
     and a `str` field gets the text an API would send
   - text and uuid become strings
 
   A column your struct doesn't name is ignored. A field the query doesn't
-  return must be an `opt`, or the result names the missing field.
+  return must be an `opt`, or the result names the missing field. Invalid
+  cell storage and type mismatches return errors with row and field context.
 - **Transactions.** `transaction(db, arg, body, deadline)` runs
   `body(conn, arg)` between `BEGIN` and `COMMIT`. An `err`, a failed
   `COMMIT` or a panic in the body rolls back, and the connection goes back
@@ -1490,8 +1492,9 @@ honest.
 
 ## Requirements
 
-slang v0.2.1 or later: zokor needs generic structs and methods, and the
-`dir` sub-directory pin. HTTPS (`TLS_CERT_FILE`) needs `link.tls_accept`
+slang's `dev` branch until its next release: typed Postgres mapping needs
+the compiler-backed `pg.rows_as`. zokor also needs generic structs and methods
+and the `dir` sub-directory pin. HTTPS (`TLS_CERT_FILE`) needs `link.tls_accept`
 and served WebSocket and Socket.IO routes need `link.split`, both on
 slang's `dev` branch until its next release.
 
