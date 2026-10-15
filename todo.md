@@ -329,16 +329,22 @@ to its generic response helper. No compiler change is included here.
 
 ## Performance
 
-- [ ] **The rest of the gap to plain slang** (docs/benchmarks.md, "zokor
-  against plain slang"). Landed since it was measured: slang's reactor no
-  longer nudges on deadline waits (slang #386, ~2 us a request), joined
-  spawns wake no idle worker (#387, -14% to -17% CPU at 1-4 clients), the
-  read deadlines share one clock read (#35), and extra response headers
-  cost 2 allocations instead of 52 (slang #396). Left, by size: the
-  per-request task that isolates handler panics (~1.5 us on Linux), and
-  `Ctx`/routing (~1-2 us). Needs a fresh measurement on a quiet host
-  before more work. Unreproduced: one c=2000 run on Linux collapsed to
-  356 rps with a 9 s p99; six runs after it did not.
+- [ ] **The rest of the gap to plain slang** (docs/benchmarks.md, "Five
+  servers on a quiet Linux host"). Measured fresh on 2026-10-15, with Go
+  net/http and Fiber in the same harness (bench/vs-go/run.sh: latgen,
+  pinned cores, CPU per request, RSS). Found and fixed: slang's
+  `crypto.rand` ran OpenSSL under a global mutex, and it was 17% of
+  zokor's CPU at c=50 and the whole c=2000 tail (slang #430: -13-21% CPU,
+  p99.9 186 -> 53 ms, RSS 89 -> 32 MiB at c=2000). Left, by size, on
+  `/users/:id`:
+  - The parked-connection GC root set: ~2.4 us a request at c=2000.
+    Minor-GC marking is 6x plain slang's per collection.
+  - The request id (~2.3 us) and the security headers (~1.6 us):
+    precompute the header bytes, buffer the randomness.
+  - Panic isolation (~2 us).
+  - `Ctx`/routing: under 0.5 us, now noise.
+  The c=2000 collapse did not reproduce in 48 c=2000 samples of the
+  slang-built servers.
 - [x] **Index the routes instead of scanning them** (route_index.sl).
   Above 16 routes the router keeps a segment trie in step with `routes`
   at registration; a lookup walks the path's literal and `:param`
