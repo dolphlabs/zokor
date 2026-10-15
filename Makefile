@@ -1,7 +1,7 @@
 SLANGC ?= slangc
 TESTFLAGS ?=
 
-.PHONY: test example example-ports check snippets api api-check cli cli-test templates templates-check
+.PHONY: test example example-ports check snippets api api-check docs docs-check cli cli-test templates templates-check
 
 # Every package dir is listed explicitly: a new package without its own
 # line here is a package with no tests, and that fails review.
@@ -69,5 +69,11 @@ api:
 api-check:
 	docs/gen_api.sh --check
 
+docs: api
+	python3 www/build.py
+
+docs-check: api-check
+	python3 www/build.py --check
+
 # Everything CI runs.
-check: test example example-chat example-ports snippets api-check templates-check cli-test
+check: test example example-chat example-ports snippets api-check docs-check templates-check cli-test
