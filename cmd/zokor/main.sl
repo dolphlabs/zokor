@@ -6,7 +6,8 @@ import "time";
 
 fn usage() -> str {
     return "usage:\n" +
-           "  zokor new <name> [--db pg] [--zokor-git URL] [--zokor-tag TAG]\n" +
+           "  zokor new <name> [--zokor-git URL] [--zokor-tag TAG]\n" +
+           "  zokor newcomp <name> [--db memory|pg] [--zokor-git URL] [--zokor-tag TAG]\n" +
            "  zokor add feature <name> [--entity <singular>]\n" +
            "  zokor add route <feature> <METHOD> <path> <handler>\n" +
            "  zokor check [--json]        the layout rules, from the service's root\n" +
@@ -107,13 +108,32 @@ fn new_cmd(args: [str]) {
     if len(f.rest) != 1 {
         fail_usage("new takes one service name");
     }
+    if has(f.values, "--db") {
+        fail_usage("--db needs the component scaffold: use zokor newcomp <name> --db pg");
+    }
+    let name = f.rest[0];
+    let r = new_project(name, flag(f, "--zokor-git", default_git()),
+                        flag(f, "--zokor-tag", default_tag()));
+    guard let written = r else let e = err_of(r) {
+        io.eprintln("zokor: " + e);
+        exit(1);
+    }
+    report(written, name + "/");
+    println("created " + name + ": cd " + name + " && slangc get && make test");
+}
+
+fn newcomp_cmd(args: [str]) {
+    let f = parse_flags(args, 2, ["--db", "--zokor-git", "--zokor-tag"]);
+    if len(f.rest) != 1 {
+        fail_usage("newcomp takes one service name");
+    }
     let db = flag(f, "--db", "memory");
     if db != "memory" && db != "pg" {
         fail_usage("--db is memory (the default) or pg");
     }
     let name = f.rest[0];
-    let r = new_project(name, db == "pg", flag(f, "--zokor-git", default_git()),
-                        flag(f, "--zokor-tag", default_tag()));
+    let r = new_component_project(name, db == "pg", flag(f, "--zokor-git", default_git()),
+                                  flag(f, "--zokor-tag", default_tag()));
     guard let written = r else let e = err_of(r) {
         io.eprintln("zokor: " + e);
         exit(1);
@@ -227,6 +247,8 @@ fn main() {
         migrate_cmd(args);
     } else if cmd == "new" {
         new_cmd(args);
+    } else if cmd == "newcomp" {
+        newcomp_cmd(args);
     } else if cmd == "add" {
         add_cmd(args);
     } else if cmd == "check" {
