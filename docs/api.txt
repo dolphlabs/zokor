@@ -481,7 +481,7 @@ pg_close(p: pg.Pool)
 row_json(rows: pg.Rows, r: int) -> str
     Row `r` as a JSON object keyed by column name.
 rows_as[T](rows: pg.Rows) -> result[[T], str]
-    Every row as a T, matched by column name.
+    Every row as a T, matched by column name without intermediate JSON text.
 query_all[T](p: pg.Pool, sql: str, args: [pg.Arg], deadline: until) -> result[[T], str]
     Runs `sql` with `args` on a pooled connection and returns every row as a T.
 query_one[T](p: pg.Pool, sql: str, args: [pg.Arg], deadline: until) -> result[opt[T], str]

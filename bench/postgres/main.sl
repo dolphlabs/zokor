@@ -2,7 +2,7 @@
 //
 //   query: the same SELECT, mapped into the same struct two ways --
 //          `raw` reads each cell with pg.get_* (the floor), `zokor` uses
-//          query_all (each row rendered as JSON, then json.decode).
+//          query_all (compiler-backed pg.rows_as, without JSON text).
 //   tx:    one UPDATE in a transaction -- `raw` sends BEGIN / UPDATE /
 //          COMMIT itself, `zokor` uses transaction() (adds a spawned
 //          task for panic isolation).
