@@ -78,7 +78,8 @@ fn short_config() -> ServerConfig {
         request_ids: d.request_ids,
         trusted_proxies: d.trusted_proxies,
         logger: d.logger,
-        max_connections: d.max_connections
+        max_connections: d.max_connections,
+        tls: d.tls
     };
 }
 
@@ -176,7 +177,8 @@ fn test_serve_conn_stalled_headers_close_at_header_timeout() {
         request_ids: d.request_ids,
         trusted_proxies: d.trusted_proxies,
         logger: d.logger,
-        max_connections: d.max_connections
+        max_connections: d.max_connections,
+        tls: d.tls
     };
     let r = serve_test_router();
     spawn serve_conn(r, server, sc);
@@ -218,7 +220,8 @@ fn tiny_body_config() -> ServerConfig {
         request_ids: d.request_ids,
         trusted_proxies: d.trusted_proxies,
         logger: d.logger,
-        max_connections: d.max_connections
+        max_connections: d.max_connections,
+        tls: d.tls
     };
 }
 
@@ -487,7 +490,8 @@ fn test_serve_conn_request_ids_can_be_turned_off() {
         request_ids: false,
         trusted_proxies: d.trusted_proxies,
         logger: d.logger,
-        max_connections: d.max_connections
+        max_connections: d.max_connections,
+        tls: d.tls
     };
     let resp = one_exchange(serve_test_router(), sc,
                             "GET /nope HTTP/1.1\r\nHost: t\r\n" +
@@ -579,7 +583,8 @@ fn max2_config() -> ServerConfig {
         request_ids: d.request_ids,
         trusted_proxies: d.trusted_proxies,
         logger: d.logger,
-        max_connections: d.max_connections
+        max_connections: d.max_connections,
+        tls: d.tls
     };
 }
 
@@ -946,7 +951,8 @@ fn test_serve_refuses_past_max_connections_with_503() {
     let sc = default_server_config();
     sc.logger = no_logger();
     let gate = new_conn_gate(1);
-    spawn accept_loop(serve_test_router(), ln, sc, gate);
+    let plain: opt[rawptr] = none;
+    spawn accept_loop(serve_test_router(), ln, sc, gate, plain);
 
     let release: chan[int] = make_chan(1);
     spawn hold_one(port, gate, release);

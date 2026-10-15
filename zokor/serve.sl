@@ -8,9 +8,13 @@
 // supported: one request is read, answered, and only then is the next
 // one read.
 //
-// What is NOT here yet: TLS.
+// HTTPS is terminated here when ServerConfig.tls is on (TLS_CERT_FILE and
+// TLS_KEY_FILE): each connection's task runs the handshake on its own
+// link, and the loop below then reads and writes it as it would plain
+// TCP. Behind a proxy that terminates TLS itself, leave it off.
 
 import "http";
+import "net";
 import "proc";
 import "strings";
 import "time";
@@ -77,7 +81,41 @@ pub gc struct ServerConfig {
     // answered 503 and closed at once instead of served: each connection
     // holds a file descriptor and a read buffer, and a flood of idle ones
     // would otherwise exhaust both. MAX_CONNECTIONS.
-    max_connections: int
+    max_connections: int,
+    // HTTPS, terminated by this server: off by default (no_tls()), on with
+    // a certificate and key (TLS_CERT_FILE, TLS_KEY_FILE). See TlsSettings.
+    tls: TlsSettings
+}
+
+// A certificate chain and its private key, as PEM files, read once when
+// the server starts: a missing or mismatched pair stops it starting
+// rather than leaving it serving nothing. Renewing a certificate means
+// restarting the process.
+pub gc struct TlsSettings {
+    on: bool,
+    cert_file: str,
+    key_file: str,
+    // A PEM bundle of the CAs whose client certificates are accepted.
+    // Set, every client must present one (mutual TLS); "" asks for none.
+    client_ca_file: str,
+    // How long a new connection has to finish its handshake. It is the
+    // connection's own deadline, in its own task, so a slow client holds
+    // its slot (MAX_CONNECTIONS) until then and nobody else's.
+    handshake_timeout: int,
+}
+
+pub fn no_tls() -> TlsSettings {
+    return TlsSettings { on: false, cert_file: "", key_file: "",
+                         client_ca_file: "", handshake_timeout: 10000000000 };
+}
+
+// HTTPS from these two PEM files, with every other setting at its default.
+pub fn tls_files(cert_file: str, key_file: str) -> TlsSettings {
+    let t = no_tls();
+    t.on = true;
+    t.cert_file = cert_file;
+    t.key_file = key_file;
+    return t;
 }
 
 // Safe rather than infinite, per the todo item this answers. 60s idle
@@ -115,7 +153,8 @@ pub fn default_server_config() -> ServerConfig {
         // 10,000: above any one instance's honest keep-alive load, and
         // with the default 16KB read buffer about 160MB of buffers at
         // most. Raise the process's open-file limit to match.
-        max_connections: 10000
+        max_connections: 10000,
+        tls: no_tls()
     };
 }
 
@@ -125,7 +164,8 @@ pub fn default_server_config() -> ServerConfig {
 // MAX_REQUESTS_PER_CONN (plain integers), REQUEST_IDS (true/false),
 // TRUSTED_PROXIES and PROXY_HEADER (see trusted_proxies_from), LOG_FORMAT,
 // LOG_LEVEL, LOG_REQUESTS and NO_COLOR (see logger_from), MAX_CONNECTIONS
-// (a positive integer).
+// (a positive integer), and TLS_CERT_FILE, TLS_KEY_FILE,
+// TLS_CLIENT_CA_FILE and TLS_HANDSHAKE_TIMEOUT (see tls_from).
 pub fn server_config_from(cfg: Config) -> ServerConfig {
     let d = default_server_config();
     return ServerConfig {
@@ -143,8 +183,53 @@ pub fn server_config_from(cfg: Config) -> ServerConfig {
         request_ids: bool_or(cfg, "REQUEST_IDS", d.request_ids),
         trusted_proxies: trusted_proxies_from(cfg),
         logger: logger_from(cfg),
-        max_connections: max_connections_from(cfg, d.max_connections)
+        max_connections: max_connections_from(cfg, d.max_connections),
+        tls: tls_from(cfg, d.tls)
     };
+}
+
+// TLS_CERT_FILE and TLS_KEY_FILE together turn HTTPS on; one without the
+// other is recorded for check(cfg), as is a client CA with no certificate
+// to go with it. The files are opened when the server starts, not here.
+fn tls_from(cfg: Config, d: TlsSettings) -> TlsSettings {
+    let t = no_tls();
+    t.cert_file = str_or(cfg, "TLS_CERT_FILE", d.cert_file);
+    t.key_file = str_or(cfg, "TLS_KEY_FILE", d.key_file);
+    t.client_ca_file = str_or(cfg, "TLS_CLIENT_CA_FILE", d.client_ca_file);
+    t.handshake_timeout = duration_or(cfg, "TLS_HANDSHAKE_TIMEOUT",
+                                      d.handshake_timeout);
+    let has_cert = len(t.cert_file) > 0;
+    let has_key = len(t.key_file) > 0;
+    if has_cert && !has_key {
+        record(cfg, "TLS_KEY_FILE", "", "is required when TLS_CERT_FILE is set");
+    } else if has_key && !has_cert {
+        record(cfg, "TLS_CERT_FILE", "", "is required when TLS_KEY_FILE is set");
+    } else if len(t.client_ca_file) > 0 && !has_cert {
+        record(cfg, "TLS_CLIENT_CA_FILE", t.client_ca_file,
+               "needs TLS_CERT_FILE and TLS_KEY_FILE: mutual TLS is TLS first");
+    }
+    t.on = has_cert && has_key;
+    return t;
+}
+
+// The server context for `t`, made once and shared by every connection.
+// none when TLS is off.
+fn load_tls(t: TlsSettings) -> result[opt[rawptr], str] {
+    let off: opt[rawptr] = none;
+    if !t.on {
+        return ok(off);
+    }
+    let cr: result[rawptr, str] = net.tls_server_ctx(t.cert_file, t.key_file);
+    guard let ctx = cr else let e = err_of(cr) {
+        return err("cannot load TLS_CERT_FILE/TLS_KEY_FILE: " + e);
+    }
+    if len(t.client_ca_file) > 0 {
+        let rr: result[bool, str] = net.tls_ctx_require_client(ctx, t.client_ca_file);
+        guard let _r = rr else let e2 = err_of(rr) {
+            return err("cannot load TLS_CLIENT_CA_FILE: " + e2);
+        }
+    }
+    return ok(some(ctx));
 }
 
 // MAX_CONNECTIONS, a positive integer. Anything else is recorded for
@@ -615,9 +700,30 @@ impl ConnGate {
 
 // serve_conn, then the connection's slot back -- the one place a
 // connection ends, so the count cannot drift.
-fn serve_counted[S](r: Router[S], c: link, sc: ServerConfig, gate: ConnGate) {
-    serve_conn(r, c, sc);
+fn serve_counted[S](r: Router[S], c: link, sc: ServerConfig, gate: ConnGate,
+                    tls: opt[rawptr]) {
+    if let ctx = tls {
+        serve_tls_conn(r, c, sc, ctx);
+    } else {
+        serve_conn(r, c, sc);
+    }
     gate.leave();
+}
+
+// serve_conn over TLS: the handshake first, under its own deadline, then
+// the same loop. A failed handshake has no request to answer -- a port
+// scanner, a plaintext client, a browser's dropped preconnect -- so it is
+// logged at debug and the connection closed.
+pub fn serve_tls_conn[S](r: Router[S], c: link, sc: ServerConfig, ctx: rawptr) {
+    let hr = c.tls_accept(ctx, until_of(time.mono() + sc.tls.handshake_timeout));
+    guard let _h = hr else let e = err_of(hr) {
+        if sc.logger.enabled(LogLevel.DEBUG) {
+            sc.logger.debug("TLS", "handshake with " + peer_ip_of(inspect(c.peer())) +
+                            " failed: " + to_str(e));
+        }
+        return;
+    }
+    serve_conn(r, c, sc);
 }
 
 // The answer to a connection over the cap: a 503 the client can act on
@@ -636,7 +742,7 @@ fn refuse_conn(c: link, sec: Security, reg: Registry) {
 
 // One accept. Returns "" or, when accept itself failed, why.
 fn accept_one[S](r: Router[S], ln: &mut link, sc: ServerConfig,
-                 gate: ConnGate) -> str {
+                 gate: ConnGate, tls: opt[rawptr]) -> str {
     let ar = ln.accept(until_never());
     guard let c = ar else let e = err_of(ar) {
         return to_str(e);
@@ -644,7 +750,11 @@ fn accept_one[S](r: Router[S], ln: &mut link, sc: ServerConfig,
     // if/else rather than an early return: slang's move check is not
     // path-sensitive, so a move in a returning branch still counts after it.
     if gate.enter() {
-        spawn serve_counted(r, c, sc, gate);
+        spawn serve_counted(r, c, sc, gate, tls);
+    } else if sc.tls.on {
+        // A 503 would be plaintext to a client expecting a handshake, and
+        // a handshake is the work the cap exists to refuse: close it.
+        drop_conn(c);
     } else {
         refuse_conn(c, r.security, trace_edge_registry(r));
         let n = gate.refusals_to_report(time.mono() as int);
@@ -654,6 +764,11 @@ fn accept_one[S](r: Router[S], ln: &mut link, sc: ServerConfig,
         }
     }
     return "";
+}
+
+// Closes `c`: a link closes when its last owner returns.
+fn drop_conn(c: link) {
+    let _p = c.port();
 }
 
 // The pause after a failed accept: 5ms, doubling to 1s while it keeps
@@ -678,11 +793,12 @@ pub fn accept_backoff(prev_ns: int) -> int {
 // blocked `accept` observe it. Once this loop exits, `accept_first`
 // drains in-flight connections up to `sc.shutdown_timeout` -- see
 // `drain` below.
-fn accept_loop[S](r: Router[S], ln: link, sc: ServerConfig, gate: ConnGate) {
+fn accept_loop[S](r: Router[S], ln: link, sc: ServerConfig, gate: ConnGate,
+                  tls: opt[rawptr]) {
     let mut_ln = ln;
     let backoff = 0;
     while !proc.shutdown_requested() {
-        let why = accept_one(r, &mut mut_ln, sc, gate);
+        let why = accept_one(r, &mut mut_ln, sc, gate, tls);
         if len(why) == 0 {
             if backoff > 0 {
                 sc.logger.log("Server", "accepting again");
@@ -767,6 +883,12 @@ pub fn listen_and_serve[S](r: Router[S], port: int) -> result[int, str] {
 pub fn listen_and_serve_with[S](r: Router[S], port: int,
                                 sc: ServerConfig) -> result[int, str] {
     sc.logger.start();
+    let lt = load_tls(sc.tls);
+    guard let tls = lt else let te = err_of(lt) {
+        sc.logger.error("Server", te);
+        sc.logger.flush(1000000000);
+        return err(te);
+    }
     r.ready.logger = sc.logger;
     log_routes(r, sc.logger);
     let gate = new_conn_gate(sc.max_connections);
@@ -776,10 +898,10 @@ pub fn listen_and_serve_with[S](r: Router[S], port: int,
     }
     let i = 1;
     while i < n {
-        spawn acceptor_task(r, port, sc, gate);
+        spawn acceptor_task(r, port, sc, gate, tls);
         i = i + 1;
     }
-    return accept_first(r, port, sc, gate);
+    return accept_first(r, port, sc, gate, tls);
 }
 
 // "Mapped {/users/:id, GET} route" per route, as Nest prints at startup,
@@ -805,12 +927,13 @@ fn log_routes[S](r: Router[S], lg: Logger) {
 // runtime kills the task. Each acceptor therefore owns its listener
 // from bind to accept, and nothing crosses the boundary but the
 // router (a gc struct, shared, never moved).
-fn acceptor_task[S](r: Router[S], port: int, sc: ServerConfig, gate: ConnGate) {
+fn acceptor_task[S](r: Router[S], port: int, sc: ServerConfig, gate: ConnGate,
+                    tls: opt[rawptr]) {
     let lr = link_listen(port, 1);
     guard let ln = lr else {
         return;
     }
-    accept_loop(r, ln, sc, gate);
+    accept_loop(r, ln, sc, gate, tls);
 }
 
 // Waits for every in-flight `spawn`ed task to finish, same as
@@ -847,7 +970,7 @@ fn drain_to(deadline: duration, others: int) {
 // regardless -- long enough for ordinary work to complete, bounded so
 // one stuck connection cannot hang a deployment's shutdown forever.
 fn accept_first[S](r: Router[S], port: int, sc: ServerConfig,
-                   gate: ConnGate) -> result[int, str] {
+                   gate: ConnGate, tls: opt[rawptr]) -> result[int, str] {
     let first = listen_reuse(port);
     guard let ln0 = first else let e = err_of(first) {
         let why = "cannot listen on port " + to_str(port) + ": " + to_str(e);
@@ -855,8 +978,12 @@ fn accept_first[S](r: Router[S], port: int, sc: ServerConfig,
         sc.logger.flush(1000000000);
         return err(why);
     }
-    sc.logger.log("Server", "Listening on :" + to_str(port));
-    accept_loop(r, ln0, sc, gate);
+    let scheme = "";
+    if sc.tls.on {
+        scheme = " (HTTPS)";
+    }
+    sc.logger.log("Server", "Listening on :" + to_str(port) + scheme);
+    accept_loop(r, ln0, sc, gate, tls);
     sc.logger.log("Server", "Shutting down: draining in-flight requests");
     // The console writer is a task too, and outlives every connection:
     // waiting for zero would always run out the whole timeout.
