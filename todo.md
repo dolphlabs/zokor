@@ -346,8 +346,19 @@ to its generic response helper. No compiler change is included here.
   - The parked-connection GC root set: ~2.4 us a request at c=2000.
     Minor-GC marking is 6x plain slang's per collection.
   - The request id (~2.3 us) and the security headers (~1.6 us):
-    precompute the header bytes, buffer the randomness.
-  - Panic isolation (~2 us).
+    precompute the header bytes, buffer the randomness. Partly done in
+    d574722 (2026-10-15): ids from a per-connection RequestIds (one
+    crypto.rand per 32), the id line added without with_header, and
+    Security.apply skipping its prefix check on a response with no extra
+    lines -- allocations 30 -> 23 and server CPU 23.8 -> 21.9 us on
+    `/users/:id`, 24.2 -> 22.7 us on `/echo` (c=50, ABBA x3). What is
+    left is in slang's stdlib http: every extra header line is scanned
+    for CR/LF and written twice per response, so lines zokor validated
+    once at registration are re-checked per request. Removing that needs
+    an http API for pre-validated header bytes (slang, ask first).
+  - Panic isolation (~2 us) is slang's spawn + join_wait per request;
+    cheaper needs a runtime change there (pooled task stacks, or
+    unwinding a panicked task), not a zokor one.
   - `Ctx`/routing: under 0.5 us, now noise.
   The c=2000 collapse did not reproduce in 48 c=2000 samples of the
   slang-built servers.
