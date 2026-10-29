@@ -1,0 +1,22 @@
+# Zokor
+
+> A backend framework for slang.
+
+## Pages
+
+- [zokor](index.md): A backend framework for slang.
+- [Start here](guide/start.md): Create a Slang backend service with Zokor. Follow the setup guide for installation, project structure, requirements, and your first routes.
+- [HTTP APIs](guide/http.md): Build HTTP APIs with Zokor routing, middleware, authentication, validation, uploads, rate limits, caching, pagination, and content negotiation.
+- [Data and storage](guide/data.md): Use PostgreSQL, Redis, and SQL migrations in Zokor, with typed row decoding, transactions, connection pools, and configuration guidance.
+- [Operations](guide/operations.md): Configure and operate Zokor services with timeouts, graceful shutdown, HTTPS, logging, background jobs, metrics, tracing, and OpenAPI.
+- [Realtime connections](guide/realtime.md): Build WebSocket and Socket.IO services in Slang with Zokor's route integration and sans-I/O protocol handlers.
+- [Project structure](guide/architecture.md): Explore Zokor's project structure, testing approach, dependency ports and fakes, agent guide, and framework design.
+- [API reference](api/index.md): Browse public Zokor types, functions, and methods, with signatures and descriptions generated from the source package.
+- [Hello service](examples/hello.md): A minimal Slang HTTP service built with Zokor. See how to configure the server, register a route, and return a JSON response.
+- [Chat service](examples/chat.md): A Slang chat service using Zokor, with WebSocket and Socket.IO clients connected to the same room.
+- [Ports and fakes](examples/ports.md): A runnable Slang example showing how to isolate dependencies behind ports and test Zokor services with fakes.
+- [Examples](examples/index.md): Explore runnable Slang examples built with Zokor, from a minimal HTTP service to WebSocket chat and testable ports and fakes.
+
+## Source
+
+The guide is pulled from README.md. API entries come from docs/api.txt, generated and checked from zokor/. Examples are read directly from examples/.

@@ -1,0 +1,1083 @@
+import "http";
+import "proc";
+import "strings";
+import "time";
+
+gc struct ServeState { hits: int }
+
+fn ok_hi(c: Ctx[ServeState]) -> http.Response {
+    return text(200, "hi");
+}
+
+fn panics_handler(c: Ctx[ServeState]) -> http.Response {
+    panic("boom");
+}
+
+fn panic_test_router() -> Router[ServeState] {
+    let r = new_router(ServeState { hits: 0 });
+    r.get("/hi", ok_hi);
+    r.get("/boom", panics_handler);
+    return r;
+}
+
+fn test_default_server_config_is_safe() {
+    let d = default_server_config();
+    // Safe rather than infinite: every field is a real, positive
+    // bound, not 0 (which would time out immediately) and not left
+    // unset.
+    assert(d.idle_timeout > 0);
+    assert(d.header_timeout > 0);
+    assert(d.body_timeout > 0);
+    assert(d.write_timeout > 0);
+    // The relative shape the doc comment claims: idle is the most
+    // generous (a real client legitimately sits idle between
+    // requests), header the tightest (nothing legitimate takes long
+    // to send a request line and headers once it starts).
+    assert(d.idle_timeout > d.body_timeout);
+    assert(d.body_timeout > d.header_timeout);
+    assert(d.max_request_bytes > 0);
+    assert(d.max_requests_per_conn > 0);
+    assert(d.shutdown_timeout > 0);
+}
+
+fn test_server_config_from_defaults_when_unset() {
+    let c = cfg_of("SERVICE_NAME=api\n");
+    let sc = server_config_from(c);
+    let d = default_server_config();
+    assert(sc.idle_timeout == d.idle_timeout);
+    assert(sc.header_timeout == d.header_timeout);
+    assert(sc.body_timeout == d.body_timeout);
+    assert(sc.write_timeout == d.write_timeout);
+    assert(sc.max_request_bytes == d.max_request_bytes);
+    assert(sc.max_requests_per_conn == d.max_requests_per_conn);
+    assert(sc.shutdown_timeout == d.shutdown_timeout);
+}
+
+fn test_server_config_from_overrides() {
+    let c = cfg_of("IDLE_TIMEOUT=1s\nREAD_HEADER_TIMEOUT=250ms\nREAD_BODY_TIMEOUT=2s\nWRITE_TIMEOUT=3s\nMAX_REQUEST_BYTES=8192\nMAX_REQUESTS_PER_CONN=500\nSHUTDOWN_TIMEOUT=5s\n");
+    let sc = server_config_from(c);
+    assert(sc.idle_timeout == 1000000000);
+    assert(sc.header_timeout == 250000000);
+    assert(sc.body_timeout == 2000000000);
+    assert(sc.write_timeout == 3000000000);
+    assert(sc.max_request_bytes == 8192);
+    assert(sc.max_requests_per_conn == 500);
+    assert(sc.shutdown_timeout == 5000000000);
+}
+
+fn short_config() -> ServerConfig {
+    let d = default_server_config();
+    return ServerConfig {
+        idle_timeout: 200000000,
+        header_timeout: 200000000,
+        body_timeout: 200000000,
+        write_timeout: 200000000,
+        max_request_bytes: d.max_request_bytes,
+        max_requests_per_conn: d.max_requests_per_conn,
+        shutdown_timeout: d.shutdown_timeout,
+        request_ids: d.request_ids,
+        trusted_proxies: d.trusted_proxies,
+        logger: d.logger,
+        max_connections: d.max_connections,
+        tls: d.tls
+    };
+}
+
+fn serve_test_router() -> Router[ServeState] {
+    let r = new_router(ServeState { hits: 0 });
+    r.get("/hi", ok_hi);
+    return r;
+}
+
+// A real request over a real socket pair, well within every deadline:
+// wiring ServerConfig through serve_conn must not change ordinary
+// behavior. Connected inline rather than through a shared helper
+// returning both ends: `link` is move-only (spawn takes it, not a
+// reference), and a struct field cannot be moved out of individually.
+fn test_serve_conn_normal_request() {
+    let lr = link_listen(0);
+    guard let ln = lr else { panic("listen"); }
+    let dr = link_dial("127.0.0.1", ln.port(), until_never());
+    guard let client = dr else { panic("dial"); }
+    let ar = ln.accept(until_never());
+    guard let server = ar else { panic("accept"); }
+    let r = serve_test_router();
+    spawn serve_conn(r, server, default_server_config());
+    let req = to_bytes("GET /hi HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n");
+    let a = arena_new(4096);
+    let out = a.wire(len(req));
+    let i = 0;
+    while i < len(req) {
+        out[i] = req[i];
+        i = i + 1;
+    }
+    let sr = client.send(out, until_never());
+    guard let _n = sr else { panic("client send"); }
+    let inb = a.wire(2048);
+    let rr = client.recv(inb, until_of(time.mono() + 2000000000));
+    guard let n = rr else { panic("client recv"); }
+    if n < 12 { panic("response too short"); }
+    if inb[9] != 50 { panic("expected status 200"); }
+    println("serve_conn_normal_request ok");
+}
+
+// Nothing sent at all: idle_timeout governs, and serve_conn actually
+// closes the connection (rather than holding it, or the task, open
+// forever) once it fires. Observed from the CLIENT side, which sees
+// its peer close: a 0-byte read.
+fn test_serve_conn_idle_closes_connection() {
+    let lr = link_listen(0);
+    guard let ln = lr else { panic("listen"); }
+    let dr = link_dial("127.0.0.1", ln.port(), until_never());
+    guard let client = dr else { panic("dial"); }
+    let ar = ln.accept(until_never());
+    guard let server = ar else { panic("accept"); }
+    let r = serve_test_router();
+    spawn serve_conn(r, server, short_config());
+    let a = arena_new(4096);
+    let inb = a.wire(2048);
+    let t0 = time.mono();
+    let rr = client.recv(inb, until_of(time.mono() + 2000000000));
+    let dt = time.mono() - t0;
+    guard let n = rr else {
+        // A recv error (connection reset) is an acceptable way for
+        // this to surface too, depending on how the OS reports a
+        // half-closed peer -- either shape means the connection did
+        // not hang.
+        if dt > 2000000000 { panic("idle close took too long"); }
+        println("serve_conn_idle_closes_connection: recv err");
+        return;
+    }
+    if dt > 2000000000 { panic("idle close took too long"); }
+    if n != 0 { panic("expected a 0-byte read (peer closed), got " + to_str(n)); }
+    println("serve_conn_idle_closes_connection ok");
+}
+
+// A slow-loris client: the request starts, then stalls mid-headers.
+// header_timeout governs from there, not the much longer idle_timeout,
+// so the connection closes within the header window. The three read
+// deadlines share one clock read; a header deadline built from the idle
+// window would hold this connection for 60 s.
+fn test_serve_conn_stalled_headers_close_at_header_timeout() {
+    let lr = link_listen(0);
+    guard let ln = lr else { panic("listen"); }
+    let dr = link_dial("127.0.0.1", ln.port(), until_never());
+    guard let client = dr else { panic("dial"); }
+    let ar = ln.accept(until_never());
+    guard let server = ar else { panic("accept"); }
+    let d = default_server_config();
+    let sc = ServerConfig {
+        idle_timeout: d.idle_timeout,
+        header_timeout: 200000000,
+        body_timeout: d.body_timeout,
+        write_timeout: d.write_timeout,
+        max_request_bytes: d.max_request_bytes,
+        max_requests_per_conn: d.max_requests_per_conn,
+        shutdown_timeout: d.shutdown_timeout,
+        request_ids: d.request_ids,
+        trusted_proxies: d.trusted_proxies,
+        logger: d.logger,
+        max_connections: d.max_connections,
+        tls: d.tls
+    };
+    let r = serve_test_router();
+    spawn serve_conn(r, server, sc);
+    let partial = to_bytes("GET /hi HTTP/1.1\r\nHost: t\r\n");
+    let a = arena_new(4096);
+    let out = a.wire(len(partial));
+    let i = 0;
+    while i < len(partial) {
+        out[i] = partial[i];
+        i = i + 1;
+    }
+    let sr = client.send(out, until_never());
+    guard let _n = sr else { panic("client send"); }
+    let inb = a.wire(2048);
+    let t0 = time.mono();
+    let rr = client.recv(inb, until_of(time.mono() + 5000000000));
+    let dt = time.mono() - t0;
+    if dt > 2000000000 {
+        panic("stalled headers held for " + to_str(dt) + " ns");
+    }
+    guard let n = rr else {
+        println("serve_conn_stalled_headers: recv err");
+        return;
+    }
+    if n != 0 { panic("expected the peer to close, got " + to_str(n) + " bytes"); }
+    println("serve_conn_stalled_headers ok");
+}
+
+fn tiny_body_config() -> ServerConfig {
+    let d = default_server_config();
+    return ServerConfig {
+        idle_timeout: d.idle_timeout,
+        header_timeout: d.header_timeout,
+        body_timeout: d.body_timeout,
+        write_timeout: d.write_timeout,
+        max_request_bytes: 256,
+        max_requests_per_conn: d.max_requests_per_conn,
+        shutdown_timeout: d.shutdown_timeout,
+        request_ids: d.request_ids,
+        trusted_proxies: d.trusted_proxies,
+        logger: d.logger,
+        max_connections: d.max_connections,
+        tls: d.tls
+    };
+}
+
+fn resp_status_bytes(inb: wire) -> str {
+    return to_str(inb[9..12]);
+}
+
+// A declared body bigger than max_request_bytes: answered with 413
+// (not silently dropped -- the connection knows exactly where this
+// request would have ended, from its own Content-Length, so there is
+// no framing ambiguity in answering before closing).
+fn test_serve_conn_body_too_large_answers_413() {
+    let lr = link_listen(0);
+    guard let ln = lr else { panic("listen"); }
+    let dr = link_dial("127.0.0.1", ln.port(), until_never());
+    guard let client = dr else { panic("dial"); }
+    let ar = ln.accept(until_never());
+    guard let server = ar else { panic("accept"); }
+    let r = serve_test_router();
+    spawn serve_conn(r, server, tiny_body_config());
+    let req = to_bytes(
+        "POST /hi HTTP/1.1\r\nHost: t\r\nContent-Length: 10000\r\n\r\n");
+    let a = arena_new(4096);
+    let out = a.wire(len(req));
+    let i = 0;
+    while i < len(req) {
+        out[i] = req[i];
+        i = i + 1;
+    }
+    let sr = client.send(out, until_never());
+    guard let _n = sr else { panic("client send"); }
+    let inb = a.wire(2048);
+    let rr = client.recv(inb, until_of(time.mono() + 2000000000));
+    guard let n = rr else { panic("client recv"); }
+    if n < 12 { panic("response too short"); }
+    if resp_status_bytes(inb) != "413" {
+        panic("expected 413, got " + resp_status_bytes(inb));
+    }
+    // the connection is closed after this answer, so it must say so
+    if strings.find(conn_resp_text(inb, n), "connection: close") < 0 {
+        panic("the 413 before closing must say Connection: close");
+    }
+    println("serve_conn_body_too_large_answers_413 ok");
+}
+
+// Headers alone (no blank line, ever) bigger than max_request_bytes:
+// 431, distinct from the body case above.
+fn test_serve_conn_headers_too_large_answers_431() {
+    let lr = link_listen(0);
+    guard let ln = lr else { panic("listen"); }
+    let dr = link_dial("127.0.0.1", ln.port(), until_never());
+    guard let client = dr else { panic("dial"); }
+    let ar = ln.accept(until_never());
+    guard let server = ar else { panic("accept"); }
+    let r = serve_test_router();
+    spawn serve_conn(r, server, tiny_body_config());
+    let junk = "";
+    let j = 0;
+    while j < 400 {
+        junk = junk + "a";
+        j = j + 1;
+    }
+    let req = to_bytes("GET /hi HTTP/1.1\r\nHost: t\r\nX-Long: " + junk);
+    let a = arena_new(4096);
+    let out = a.wire(len(req));
+    let i = 0;
+    while i < len(req) {
+        out[i] = req[i];
+        i = i + 1;
+    }
+    let sr = client.send(out, until_never());
+    guard let _n = sr else { panic("client send"); }
+    let inb = a.wire(2048);
+    let rr = client.recv(inb, until_of(time.mono() + 2000000000));
+    guard let n = rr else { panic("client recv"); }
+    if n < 12 { panic("response too short"); }
+    if resp_status_bytes(inb) != "431" {
+        panic("expected 431, got " + resp_status_bytes(inb));
+    }
+    println("serve_conn_headers_too_large_answers_431 ok");
+}
+
+// The first n bytes of a response, lowercased, for header checks.
+fn conn_resp_text(inb: wire, n: int) -> str {
+    return strings.to_lower(to_str(inb[0..n]));
+}
+
+fn req_wire(s: str, a: &mut arena) -> wire {
+    let b = to_bytes(s);
+    let w = a.wire(len(b));
+    let i = 0;
+    while i < len(b) {
+        w[i] = b[i];
+        i = i + 1;
+    }
+    return w;
+}
+
+// The response before a server-initiated close must say so: RFC 9112
+// 9.6. A client told keep-alive may already be sending its next request
+// on a connection that is closing, and a POST on it cannot safely be
+// retried. The request that hits max_requests_per_conn closes the
+// connection; its response used to carry "Connection: keep-alive".
+fn test_serve_conn_last_response_before_limit_says_close() {
+    let lr = link_listen(0);
+    guard let ln = lr else { panic("listen"); }
+    let dr = link_dial("127.0.0.1", ln.port(), until_never());
+    guard let client = dr else { panic("dial"); }
+    let ar = ln.accept(until_never());
+    guard let server = ar else { panic("accept"); }
+    let r = serve_test_router();
+    spawn serve_conn(r, server, max2_config());
+    let a = arena_new(4096);
+    let out = req_wire("GET /hi HTTP/1.1\r\nHost: t\r\n\r\n", &mut a);
+    let inb = a.wire(2048);
+    let round = 0;
+    while round < 2 {
+        let sr = client.send(out, until_never());
+        guard let _n = sr else { panic("client send " + to_str(round)); }
+        let rr = client.recv(inb, until_of(time.mono() + 2000000000));
+        guard let n = rr else { panic("client recv " + to_str(round)); }
+        let text = conn_resp_text(inb, n);
+        let want = "connection: keep-alive";
+        if round == 1 {
+            want = "connection: close";
+        }
+        if strings.find(text, want) < 0 {
+            panic("response " + to_str(round + 1) + " of 2 lacks '" + want +
+                  "': " + text);
+        }
+        round = round + 1;
+    }
+    println("serve_conn_last_response_before_limit_says_close ok");
+}
+
+// A client that asks to close gets a response that says it is closing,
+// on a dynamic route and on a static one (write_static's own close
+// variant).
+fn test_serve_conn_answers_close_when_client_asks() {
+    let r = serve_test_router();
+    r.static_bytes("/s", 200, "text/plain", b"static", ok_hi);
+    for p in ["/hi", "/s"] {
+        let lr = link_listen(0);
+        guard let ln = lr else { panic("listen"); }
+        let dr = link_dial("127.0.0.1", ln.port(), until_never());
+        guard let client = dr else { panic("dial"); }
+        let ar = ln.accept(until_never());
+        guard let server = ar else { panic("accept"); }
+        spawn serve_conn(r, server, default_server_config());
+        let a = arena_new(4096);
+        let out = req_wire("GET " + p + " HTTP/1.1\r\nHost: t\r\n" +
+                          "Connection: close\r\n\r\n", &mut a);
+        let sr = client.send(out, until_never());
+        guard let _n = sr else { panic("client send"); }
+        let inb = a.wire(2048);
+        let rr = client.recv(inb, until_of(time.mono() + 2000000000));
+        guard let n = rr else { panic("client recv"); }
+        let text = conn_resp_text(inb, n);
+        if strings.find(text, "connection: close") < 0 ||
+           strings.find(text, "keep-alive") >= 0 {
+            panic(p + ": a closing response must say close, once: " + text);
+        }
+    }
+    println("serve_conn_answers_close_when_client_asks ok");
+}
+
+// One request over a real connection, through serve_conn; the raw
+// response text, or "" if none came back.
+fn one_exchange(r: Router[ServeState], sc: ServerConfig, request: str) -> str {
+    let lr = link_listen(0);
+    guard let ln = lr else { panic("listen"); }
+    let dr = link_dial("127.0.0.1", ln.port(), until_never());
+    guard let client = dr else { panic("dial"); }
+    let ar = ln.accept(until_never());
+    guard let server = ar else { panic("accept"); }
+    spawn serve_conn(r, server, sc);
+    let a = arena_new(4096);
+    let out = req_wire(request, &mut a);
+    let sr = client.send(out, until_never());
+    guard let _n = sr else { panic("client send"); }
+    let inb = a.wire(2048);
+    let rr = client.recv(inb, until_of(time.mono() + 2000000000));
+    guard let n = rr else { return ""; }
+    return to_str(inb[0..n]);
+}
+
+// The X-Request-Id header's value in a raw response, or "".
+fn id_header(resp: str) -> str {
+    let at = strings.find(resp, "x-request-id: ");
+    if at < 0 {
+        return "";
+    }
+    let rest = strings.slice(resp, at + 14, len(resp));
+    return strings.slice(rest, 0, strings.find(rest, "\r\n"));
+}
+
+// Every dynamic request is answered under an id: generated when the
+// client sent none, the same one in the X-Request-Id header and in the
+// error envelope, so a customer quoting it finds the exact request.
+fn test_serve_conn_gives_dynamic_requests_ids() {
+    let r = serve_test_router();
+    let sc = default_server_config();
+    let ok_resp = one_exchange(r, sc, "GET /hi HTTP/1.1\r\nHost: t\r\n" +
+                               "Connection: close\r\n\r\n");
+    if !is_generated(id_header(ok_resp)) {
+        panic("200 without a generated id: " + ok_resp);
+    }
+    let nf = one_exchange(r, sc, "GET /nope HTTP/1.1\r\nHost: t\r\n" +
+                          "Connection: close\r\n\r\n");
+    let id = id_header(nf);
+    if !is_generated(id) {
+        panic("404 without a generated id: " + nf);
+    }
+    if strings.find(nf, "\"request_id\":\"" + id + "\"") < 0 {
+        panic("the envelope does not carry the header's id: " + nf);
+    }
+    if id == id_header(ok_resp) {
+        panic("two requests shared an id");
+    }
+    println("serve_conn_gives_dynamic_requests_ids ok");
+}
+
+// The probes over a real connection: the frame path misses (no route),
+// falls through to serve_id, and the router answers them there.
+fn test_serve_conn_answers_health_probes() {
+    let r = serve_test_router();
+    r.health();
+    let sc = default_server_config();
+    let live = one_exchange(r, sc, "GET /healthz HTTP/1.1\r\nHost: t\r\n" +
+                            "Connection: close\r\n\r\n");
+    if !strings.has_prefix(live, "HTTP/1.1 200") || strings.find(live, "{\"status\":\"ok\"}") < 0 {
+        panic("healthz: " + live);
+    }
+    let ready = one_exchange(r, sc, "GET /readyz HTTP/1.1\r\nHost: t\r\n" +
+                             "Connection: close\r\n\r\n");
+    if !strings.has_prefix(ready, "HTTP/1.1 200") ||
+       strings.find(ready, "{\"status\":\"ok\",\"checks\":{}}") < 0 {
+        panic("readyz: " + ready);
+    }
+    println("serve_conn_answers_health_probes ok");
+}
+
+fn test_serve_conn_reuses_a_well_formed_client_id() {
+    let r = serve_test_router();
+    let nf = one_exchange(r, default_server_config(),
+                          "GET /nope HTTP/1.1\r\nHost: t\r\n" +
+                          "X-Request-Id: client-7.A_b\r\n" +
+                          "Connection: close\r\n\r\n");
+    if id_header(nf) != "client-7.A_b" ||
+       strings.find(nf, "\"request_id\":\"client-7.A_b\"") < 0 {
+        panic("a well-formed client id was not reused: " + nf);
+    }
+    println("serve_conn_reuses_a_well_formed_client_id ok");
+}
+
+fn test_serve_conn_request_ids_can_be_turned_off() {
+    let d = default_server_config();
+    let sc = ServerConfig {
+        idle_timeout: d.idle_timeout,
+        header_timeout: d.header_timeout,
+        body_timeout: d.body_timeout,
+        write_timeout: d.write_timeout,
+        max_request_bytes: d.max_request_bytes,
+        max_requests_per_conn: d.max_requests_per_conn,
+        shutdown_timeout: d.shutdown_timeout,
+        request_ids: false,
+        trusted_proxies: d.trusted_proxies,
+        logger: d.logger,
+        max_connections: d.max_connections,
+        tls: d.tls
+    };
+    let resp = one_exchange(serve_test_router(), sc,
+                            "GET /nope HTTP/1.1\r\nHost: t\r\n" +
+                            "Connection: close\r\n\r\n");
+    if strings.find(resp, "x-request-id") >= 0 {
+        panic("request_ids = false still sent an id: " + resp);
+    }
+    println("serve_conn_request_ids_can_be_turned_off ok");
+}
+
+// The 500 a panicking handler leaves behind is answered under the
+// request's id too, in the header and the envelope.
+fn test_serve_conn_panic_500_carries_the_request_id() {
+    let resp = one_exchange(panic_test_router(), default_server_config(),
+                            "GET /boom HTTP/1.1\r\nHost: t\r\n" +
+                            "X-Request-Id: boom-1\r\n\r\n");
+    if id_header(resp) != "boom-1" ||
+       strings.find(resp, "\"request_id\":\"boom-1\"") < 0 {
+        panic("the 500 lost the request id: " + resp);
+    }
+    println("serve_conn_panic_500_carries_the_request_id ok");
+}
+
+fn h_client_ip(c: Ctx[ServeState]) -> http.Response {
+    return text(200, "client=" + c.client_ip);
+}
+
+fn client_router() -> Router[ServeState] {
+    let r = new_router(ServeState { hits: 0 });
+    r.get("/ip", h_client_ip);
+    return r;
+}
+
+fn ip_request(xff: str) -> str {
+    return "GET /ip HTTP/1.1\r\nHost: t\r\nX-Forwarded-For: " + xff +
+           "\r\nConnection: close\r\n\r\n";
+}
+
+// Without trusted proxies the socket's peer is the client: a header the
+// client wrote changes nothing.
+fn test_serve_conn_client_ip_ignores_headers_by_default() {
+    let resp = one_exchange(client_router(), default_server_config(),
+                            ip_request("6.6.6.6"));
+    if strings.find(resp, "client=127.0.0.1") < 0 {
+        panic("expected the peer, 127.0.0.1: " + resp);
+    }
+    println("serve_conn_client_ip_ignores_headers_by_default ok");
+}
+
+// Behind a trusted proxy (here the test's own loopback peer), the
+// forwarded address is the client.
+fn test_serve_conn_client_ip_behind_a_trusted_proxy() {
+    let c = cfg_of("TRUSTED_PROXIES=127.0.0.1/32\n");
+    let resp = one_exchange(client_router(), server_config_from(c),
+                            ip_request("1.1.1.1, 198.51.100.7"));
+    if strings.find(resp, "client=198.51.100.7") < 0 {
+        panic("expected the forwarded client 198.51.100.7: " + resp);
+    }
+    println("serve_conn_client_ip_behind_a_trusted_proxy ok");
+}
+
+// A bad TRUSTED_PROXIES or PROXY_HEADER is a configuration problem,
+// reported by check() with every other one, not discovered in traffic.
+fn test_server_config_reports_bad_proxy_settings() {
+    let c = cfg_of("TRUSTED_PROXIES=10.0.0.1/8\nPROXY_HEADER=x-real-ip\n");
+    let _sc = server_config_from(c);
+    let r = check(c);
+    guard let _ok = r else let e = err_of(r) {
+        if strings.find(e, "TRUSTED_PROXIES") < 0 ||
+           strings.find(e, "did you mean 10.0.0.0/8") < 0 ||
+           strings.find(e, "PROXY_HEADER") < 0 {
+            panic("check() missed a proxy setting: " + e);
+        }
+        return;
+    }
+    panic("bad proxy settings passed check()");
+}
+
+fn max2_config() -> ServerConfig {
+    let d = default_server_config();
+    return ServerConfig {
+        idle_timeout: d.idle_timeout,
+        header_timeout: d.header_timeout,
+        body_timeout: d.body_timeout,
+        write_timeout: d.write_timeout,
+        max_request_bytes: d.max_request_bytes,
+        max_requests_per_conn: 2,
+        shutdown_timeout: d.shutdown_timeout,
+        request_ids: d.request_ids,
+        trusted_proxies: d.trusted_proxies,
+        logger: d.logger,
+        max_connections: d.max_connections,
+        tls: d.tls
+    };
+}
+
+// max_requests_per_conn == 2: the second request is still answered
+// normally, but the connection closes right after -- observed by the
+// client seeing its peer close instead of a third response arriving.
+fn test_serve_conn_closes_after_max_requests() {
+    let lr = link_listen(0);
+    guard let ln = lr else { panic("listen"); }
+    let dr = link_dial("127.0.0.1", ln.port(), until_never());
+    guard let client = dr else { panic("dial"); }
+    let ar = ln.accept(until_never());
+    guard let server = ar else { panic("accept"); }
+    let r = serve_test_router();
+    spawn serve_conn(r, server, max2_config());
+    let req = to_bytes("GET /hi HTTP/1.1\r\nHost: t\r\n\r\n");
+    let a = arena_new(4096);
+    let out = a.wire(len(req));
+    let i = 0;
+    while i < len(req) {
+        out[i] = req[i];
+        i = i + 1;
+    }
+    let b = arena_new(4096);
+    let inb = b.wire(2048);
+    let round = 0;
+    while round < 2 {
+        let sr = client.send(out, until_never());
+        guard let _n = sr else { panic("client send " + to_str(round)); }
+        let rr = client.recv(inb, until_of(time.mono() + 2000000000));
+        guard let n = rr else { panic("client recv " + to_str(round)); }
+        if resp_status_bytes(inb) != "200" {
+            panic("expected 200 on request " + to_str(round) + ", got " +
+                  resp_status_bytes(inb));
+        }
+        round = round + 1;
+    }
+    // A third request: the server should already be gone.
+    let sr3 = client.send(out, until_never());
+    guard let _n3 = sr3 else {
+        println("serve_conn_closes_after_max_requests: send failed, ok");
+        return;
+    }
+    let rr3 = client.recv(inb, until_of(time.mono() + 2000000000));
+    guard let n3 = rr3 else {
+        println("serve_conn_closes_after_max_requests: recv err, ok");
+        return;
+    }
+    if n3 != 0 {
+        panic("expected the connection to be closed after 2 requests, " +
+              "got a response instead");
+    }
+    println("serve_conn_closes_after_max_requests ok");
+}
+
+// A handler that panics answers 500 rather than silently dropping
+// the connection or taking the whole process down: spawn/join_wait
+// isolate the panic (see `dispatch`'s own doc comment in serve.sl);
+// serve_conn just has to notice and answer.
+fn test_serve_conn_panicking_handler_answers_500() {
+    let lr = link_listen(0);
+    guard let ln = lr else { panic("listen"); }
+    let dr = link_dial("127.0.0.1", ln.port(), until_never());
+    guard let client = dr else { panic("dial"); }
+    let ar = ln.accept(until_never());
+    guard let server = ar else { panic("accept"); }
+    let r = panic_test_router();
+    spawn serve_conn(r, server, default_server_config());
+    let req = to_bytes("GET /boom HTTP/1.1\r\nHost: t\r\n\r\n");
+    let a = arena_new(4096);
+    let out = a.wire(len(req));
+    let i = 0;
+    while i < len(req) {
+        out[i] = req[i];
+        i = i + 1;
+    }
+    let sr = client.send(out, until_never());
+    guard let _n = sr else { panic("client send"); }
+    let inb = a.wire(2048);
+    let rr = client.recv(inb, until_of(time.mono() + 2000000000));
+    guard let n = rr else { panic("client recv"); }
+    if n < 12 { panic("response too short"); }
+    if resp_status_bytes(inb) != "500" {
+        panic("expected 500, got " + resp_status_bytes(inb));
+    }
+    // the connection is closed after this answer, so it must say so
+    if strings.find(conn_resp_text(inb, n), "connection: close") < 0 {
+        panic("the 500 before closing must say Connection: close");
+    }
+    println("serve_conn_panicking_handler_answers_500 ok");
+}
+
+// The static fast path never runs a handler, so a panic there is not
+// a reachable case -- what matters instead is that splitting
+// serve_static into match_static + a dynamic fallback did not change
+// its behavior: an ordinary static-shaped request still answers
+// normally, and a route that panics does not disturb one that
+// doesn't, on the same router.
+fn test_serve_conn_static_route_unaffected_by_panic_isolation() {
+    let lr = link_listen(0);
+    guard let ln = lr else { panic("listen"); }
+    let dr = link_dial("127.0.0.1", ln.port(), until_never());
+    guard let client = dr else { panic("dial"); }
+    let ar = ln.accept(until_never());
+    guard let server = ar else { panic("accept"); }
+    let r = panic_test_router();
+    spawn serve_conn(r, server, default_server_config());
+    let req = to_bytes("GET /hi HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n");
+    let a = arena_new(4096);
+    let out = a.wire(len(req));
+    let i = 0;
+    while i < len(req) {
+        out[i] = req[i];
+        i = i + 1;
+    }
+    let sr = client.send(out, until_never());
+    guard let _n = sr else { panic("client send"); }
+    let inb = a.wire(2048);
+    let rr = client.recv(inb, until_of(time.mono() + 2000000000));
+    guard let n = rr else { panic("client recv"); }
+    if n < 12 { panic("response too short"); }
+    if inb[9] != 50 { panic("expected status 200"); }
+    println("serve_conn_static_route_unaffected_by_panic_isolation ok");
+}
+
+fn slow_task(ms: int) {
+    time.sleep(ms * 1000000);
+}
+
+// The drain tests measure against the tasks already running when they
+// start: under `slangc test` each test is itself a spawned task, so
+// `proc.active_tasks()` is never 0 from inside one, and leftovers from
+// an earlier test are counted in the baseline rather than waited for.
+// The deadline actually bounds the wait: a task that runs far past it
+// does not make `drain` wait for it -- it returns once the deadline
+// passes regardless, which is the whole point of a bounded shutdown
+// drain over the unbounded wait it replaced.
+fn test_drain_stops_at_deadline() {
+    let base = proc.active_tasks();
+    spawn slow_task(500);
+    let t0 = time.mono();
+    drain_to(time.mono() + 100000000, base);
+    let dt = time.mono() - t0;
+    if dt > 400000000 {
+        panic("drain did not stop at its deadline, took " + to_str(dt));
+    }
+    // Let the background task finish before returning, so it does not
+    // leak into whatever test runs next.
+    drain_to(time.mono() + 2000000000, base);
+    println("drain_stops_at_deadline ok");
+}
+
+// The common case: everything finishes well within the deadline, and
+// drain returns as soon as it does rather than waiting the deadline
+// out regardless.
+fn test_drain_returns_early_when_idle() {
+    let base = proc.active_tasks();
+    spawn slow_task(50);
+    let t0 = time.mono();
+    drain_to(time.mono() + 2000000000, base);
+    let dt = time.mono() - t0;
+    if dt > 500000000 {
+        panic("drain waited for its full deadline instead of returning " +
+              "once idle, took " + to_str(dt));
+    }
+    println("drain_returns_early_when_idle ok");
+}
+
+test_default_server_config_is_safe();
+test_server_config_from_defaults_when_unset();
+test_server_config_from_overrides();
+test_serve_conn_normal_request();
+test_serve_conn_idle_closes_connection();
+test_serve_conn_stalled_headers_close_at_header_timeout();
+test_serve_conn_body_too_large_answers_413();
+test_serve_conn_headers_too_large_answers_431();
+test_serve_conn_closes_after_max_requests();
+test_serve_conn_last_response_before_limit_says_close();
+test_serve_conn_answers_close_when_client_asks();
+test_serve_conn_gives_dynamic_requests_ids();
+test_serve_conn_reuses_a_well_formed_client_id();
+test_serve_conn_request_ids_can_be_turned_off();
+test_serve_conn_panic_500_carries_the_request_id();
+test_serve_conn_client_ip_ignores_headers_by_default();
+test_serve_conn_client_ip_behind_a_trusted_proxy();
+test_drain_returns_early_when_idle();
+test_drain_stops_at_deadline();
+test_serve_conn_panicking_handler_answers_500();
+test_serve_conn_static_route_unaffected_by_panic_isolation();
+
+// ---- the request log, from a real connection ----------------------------
+
+fn log_config(ch: chan[LogEvent]) -> ServerConfig {
+    let sc = default_server_config();
+    sc.logger = channel_logger(ch, LogLevel.LOG, true);
+    return sc;
+}
+
+fn next_event(ch: chan[LogEvent]) -> LogEvent {
+    let r = chan_recv(ch);
+    guard let ev = r else {
+        panic("log channel closed");
+    }
+    return ev;
+}
+
+fn s_static(c: Ctx[ServeState]) -> http.Response {
+    return text(200, "fixed");
+}
+
+fn test_serve_conn_logs_matched_unmatched_and_static_requests() {
+    let ch: chan[LogEvent] = make_chan(16);
+    let sc = log_config(ch);
+    let r = serve_test_router();
+    r.static_bytes("/s", 200, "text/plain; charset=utf-8", b"fixed", s_static);
+
+    let _a = one_exchange(r, sc, "GET /hi?token=secret HTTP/1.1\r\nHost: t\r\n" +
+                          "Connection: close\r\n\r\n");
+    let ev = next_event(ch);
+    if !ev.request || ev.method != "GET" || ev.route != "/hi" || ev.status != 200 {
+        panic("matched: " + ev.method + " " + ev.route + " " + to_str(ev.status));
+    }
+    if len(ev.path) != 0 {
+        panic("a matched request carried its path: " + ev.path);
+    }
+    if ev.size != 2 || ev.client_ip != "127.0.0.1" || !is_generated(ev.request_id) {
+        panic("matched fields: " + to_str(ev.size) + " " + ev.client_ip + " " + ev.request_id);
+    }
+    if ev.duration_ns <= 0 {
+        panic("no duration");
+    }
+
+    let _b = one_exchange(r, sc, "GET /nope?x=1 HTTP/1.1\r\nHost: t\r\n" +
+                          "Connection: close\r\n\r\n");
+    let nf = next_event(ch);
+    if nf.route != "" || nf.path != "/nope" || nf.status != 404 {
+        panic("unmatched: " + nf.route + " " + nf.path + " " + to_str(nf.status));
+    }
+    if level_name(nf.level) != "warn" {
+        panic("a 404 is a warning");
+    }
+
+    let _c = one_exchange(r, sc, "GET /s HTTP/1.1\r\nHost: t\r\n" +
+                          "Connection: close\r\n\r\n");
+    let st = next_event(ch);
+    if st.route != "/s" || st.status != 200 || st.size != 5 || st.request_id != "" {
+        panic("static: " + st.route + " " + to_str(st.status) + " " + to_str(st.size));
+    }
+    println("serve_conn_logs_matched_unmatched_and_static_requests ok");
+}
+
+fn test_serve_conn_logs_a_panic_with_its_request_id() {
+    let ch: chan[LogEvent] = make_chan(16);
+    let sc = log_config(ch);
+    let _resp = one_exchange(panic_test_router(), sc,
+                             "GET /boom HTTP/1.1\r\nHost: t\r\nX-Request-Id: abc-1\r\n\r\n");
+    let line = next_event(ch);
+    if line.request || level_name(line.level) != "error" ||
+       !strings.has_prefix(line.message, "handler panicked: boom at ") ||
+       !strings.has_suffix(line.message, " (abc-1)") {
+        panic("panic line: " + line.message);
+    }
+    let rec = next_event(ch);
+    if rec.status != 500 || rec.request_id != "abc-1" || rec.path != "/boom" {
+        panic("panic record: " + to_str(rec.status) + " " + rec.request_id + " " + rec.path);
+    }
+    println("serve_conn_logs_a_panic_with_its_request_id ok");
+}
+
+fn test_serve_conn_logs_an_oversized_request() {
+    let ch: chan[LogEvent] = make_chan(16);
+    let sc = tiny_body_config();
+    sc.logger = channel_logger(ch, LogLevel.LOG, true);
+    let junk = strings.repeat("a", 400);
+    let _resp = one_exchange(serve_test_router(), sc,
+                             "GET /hi HTTP/1.1\r\nHost: t\r\nX-Long: " + junk);
+    let ev = next_event(ch);
+    if ev.status != 431 || ev.method != "-" || ev.client_ip != "127.0.0.1" {
+        panic("431 record: " + to_str(ev.status) + " " + ev.method);
+    }
+    println("serve_conn_logs_an_oversized_request ok");
+}
+
+// ---- the connection cap ---------------------------------------------------
+
+fn test_conn_gate_counts_and_refuses_past_its_max() {
+    let g = new_conn_gate(2);
+    assert(g.enter() && g.enter());
+    assert(!g.enter(), "a third connection past a max of 2");
+    assert(g.open_now() == 2);
+    g.leave();
+    assert(g.enter(), "a slot freed is a slot");
+    assert(new_conn_gate(0).max == 1, "a max below 1 is 1");
+}
+
+fn test_refusals_are_reported_at_most_once_a_second() {
+    let g = new_conn_gate(1);
+    g.enter();
+    g.enter();
+    g.enter();
+    assert(g.refusals_to_report(5000000000) == 2);
+    g.enter();
+    assert(g.refusals_to_report(5500000000) == 0, "half a second later: held back");
+    assert(g.refusals_to_report(6000000000) == 1);
+    assert(g.refusals_to_report(9000000000) == 0, "nothing new to report");
+}
+
+fn test_accept_backoff_doubles_to_a_ceiling() {
+    assert(accept_backoff(0) == 5000000);
+    assert(accept_backoff(5000000) == 10000000);
+    let b = 5000000;
+    let i = 0;
+    while i < 20 {
+        b = accept_backoff(b);
+        i = i + 1;
+    }
+    assert(b == 1000000000, to_str(b));
+}
+
+fn test_max_connections_from_config() {
+    assert(server_config_from(cfg_of("MAX_CONNECTIONS=250\n")).max_connections == 250);
+    assert(server_config_from(cfg_of("")).max_connections == 10000);
+    let c = cfg_of("MAX_CONNECTIONS=lots\n");
+    assert(server_config_from(c).max_connections == 10000);
+    let r = check(c);
+    guard let _ok = r else let e = err_of(r) {
+        assert(strings.contains(e, "MAX_CONNECTIONS"), e);
+        return;
+    }
+    panic("a bad MAX_CONNECTIONS was not reported");
+}
+
+// One keep-alive exchange on a fresh connection to `port`; the
+// connection closes when this returns.
+fn cap_exchange(port: int) -> str {
+    let dr = link_dial("127.0.0.1", port, until_never());
+    guard let client = dr else { panic("dial"); }
+    let a = arena_new(4096);
+    let out = req_wire("GET /hi HTTP/1.1\r\nHost: t\r\n\r\n", &mut a);
+    let sr = client.send(out, until_never());
+    guard let _n = sr else { panic("send"); }
+    let inb = a.wire(2048);
+    let rr = client.recv(inb, until_of(time.mono() + 2000000000));
+    guard let n = rr else { return ""; }
+    return to_str(inb[0..n]);
+}
+
+fn hold_one(port: int, gate: ConnGate, release: chan[int]) {
+    let dr = link_dial("127.0.0.1", port, until_never());
+    guard let client = dr else { panic("dial"); }
+    let a = arena_new(4096);
+    let out = req_wire("GET /hi HTTP/1.1\r\nHost: t\r\n\r\n", &mut a);
+    let _s = client.send(out, until_never());
+    let inb = a.wire(2048);
+    let _r = client.recv(inb, until_of(time.mono() + 2000000000));
+    // the connection stays open, and counted, until told to go
+    let _go = chan_recv(release);
+}
+
+fn test_serve_refuses_past_max_connections_with_503() {
+    let lr = link_listen(0);
+    guard let ln = lr else { panic("listen"); }
+    let port = ln.port();
+    let sc = default_server_config();
+    sc.logger = no_logger();
+    let gate = new_conn_gate(1);
+    let plain: opt[rawptr] = none;
+    spawn accept_loop(serve_test_router(), ln, sc, gate, plain);
+
+    let release: chan[int] = make_chan(1);
+    spawn hold_one(port, gate, release);
+    let waited = 0;
+    while gate.open_now() < 1 && waited < 200 {
+        time.sleep(5000000);
+        waited = waited + 1;
+    }
+    if gate.open_now() != 1 {
+        panic("the first connection was never counted");
+    }
+    let refused = cap_exchange(port);
+    if !strings.has_prefix(refused, "HTTP/1.1 503") ||
+       strings.find(refused, "retry-after: 1") < 0 ||
+       strings.find(refused, "Connection: close") < 0 {
+        panic("over the cap: " + refused);
+    }
+    chan_send(release, 1);
+    waited = 0;
+    while gate.open_now() > 0 && waited < 200 {
+        time.sleep(5000000);
+        waited = waited + 1;
+    }
+    let served = cap_exchange(port);
+    if !strings.has_prefix(served, "HTTP/1.1 200") {
+        panic("a freed slot was not reused: " + served);
+    }
+    println("serve_refuses_past_max_connections_with_503 ok");
+}
+
+// ---- CORS over a real connection ------------------------------------------
+
+fn test_serve_conn_cors_on_static_routes_and_after_a_panic() {
+    let r = panic_test_router();
+    r.static_bytes("/s", 200, "text/plain; charset=utf-8", b"fixed", s_static);
+    if r.cors(cors_policy(["https://app.example.com"])) < 0 {
+        panic("policy refused");
+    }
+    let sc = default_server_config();
+    sc.logger = no_logger();
+    let st = one_exchange(r, sc, "GET /s HTTP/1.1\r\nHost: t\r\n" +
+                          "Origin: https://app.example.com\r\nConnection: close\r\n\r\n");
+    if strings.find(st, "access-control-allow-origin: https://app.example.com") < 0 ||
+       strings.find(st, "\r\n\r\nfixed") < 0 {
+        panic("static route from an allowed origin: " + st);
+    }
+    let plain = one_exchange(r, sc, "GET /s HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n");
+    if strings.find(plain, "access-control") >= 0 || strings.find(plain, "fixed") < 0 {
+        panic("static route without an Origin: " + plain);
+    }
+    let boom = one_exchange(r, sc, "GET /boom HTTP/1.1\r\nHost: t\r\n" +
+                            "Origin: https://app.example.com\r\n\r\n");
+    if !strings.has_prefix(boom, "HTTP/1.1 500") ||
+       strings.find(boom, "access-control-allow-origin: https://app.example.com") < 0 {
+        panic("the 500 after a panic: " + boom);
+    }
+    println("serve_conn_cors_on_static_routes_and_after_a_panic ok");
+}
+
+fn st_frame(headers: bytes) -> http.WireFrame {
+    return http.WireFrame {
+        line_end: 0, head_end: 0, body_start: 0, body_end: 0, end: 0, version: 1,
+        close: false, filled: 0, method: "GET", path: "/s", headers: headers, body: b""
+    };
+}
+
+fn test_static_fast_path_is_kept_without_an_origin() {
+    let r = serve_test_router();
+    r.static_bytes("/s", 200, "text/plain; charset=utf-8", b"fixed", s_static);
+    r.cors(cors_policy(["https://app.example.com"]));
+    let without = st_frame(b"host: t\r\n");
+    assert(r.static_index(without) >= 0, "no Origin: still static");
+    let with = st_frame(b"host: t\r\norigin: https://x.com\r\n");
+    assert(r.static_index(with) < 0, "an Origin needs per-request headers");
+}
+
+fn test_serve_conn_errors_built_outside_the_router_carry_security_headers() {
+    let sc = default_server_config();
+    sc.logger = no_logger();
+    let boom = one_exchange(panic_test_router(), sc, "GET /boom HTTP/1.1\r\nHost: t\r\n\r\n");
+    if !strings.has_prefix(boom, "HTTP/1.1 500") || strings.find(boom, "x-content-type-options: nosniff") < 0 {
+        panic("panic 500: " + boom);
+    }
+    let tiny = tiny_body_config();
+    tiny.logger = no_logger();
+    let big = one_exchange(serve_test_router(), tiny,
+                           "GET /hi HTTP/1.1\r\nHost: t\r\nX-Long: " + strings.repeat("a", 400));
+    if !strings.has_prefix(big, "HTTP/1.1 431") || strings.find(big, "x-content-type-options: nosniff") < 0 {
+        panic("431: " + big);
+    }
+    println("serve_conn_errors_built_outside_the_router_carry_security_headers ok");
+}
+
+// A HEAD answer carries the Content-Length its GET would (RFC 9110
+// 9.3.2), and no body: it used to say `Content-Length: 0` once the router
+// had dropped the body. Kept alive, so a byte of body would be read as the
+// start of the next answer: the GET after it must come back whole.
+fn test_serve_conn_head_says_the_get_length_and_sends_no_body() {
+    let lr = link_listen(0);
+    guard let ln = lr else { panic("listen"); }
+    let dr = link_dial("127.0.0.1", ln.port(), until_never());
+    guard let client = dr else { panic("dial"); }
+    let ar = ln.accept(until_never());
+    guard let server = ar else { panic("accept"); }
+    let r = serve_test_router();
+    spawn serve_conn(r, server, default_server_config());
+    let a = arena_new(8192);
+    let sr = client.send(req_wire("HEAD /hi HTTP/1.1\r\nHost: t\r\n\r\nGET /hi HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n", &mut a),
+                         until_never());
+    guard let _n = sr else { panic("client send"); }
+    let inb = a.wire(4096);
+    let got = 0;
+    while true {
+        let rr = client.recv(inb[got..], until_of(time.mono() + 2000000000));
+        guard let n = rr else { break; }
+        if n == 0 { break; }
+        got = got + n;
+    }
+    let text = conn_resp_text(inb, got);
+    let second = strings.find(strings.slice(text, 1, len(text)), "http/1.1 ") + 1;
+    assert(second > 0, text);
+    let head_answer = strings.slice(text, 0, second);
+    let get_answer = strings.slice(text, second, len(text));
+    assert(strings.contains(head_answer, "content-length: 2\r\n"), head_answer);
+    assert(strings.has_suffix(head_answer, "\r\n\r\n"), head_answer);
+    assert(strings.has_suffix(get_answer, "\r\n\r\nhi"), get_answer);
+    println("serve_conn_head_length ok");
+}

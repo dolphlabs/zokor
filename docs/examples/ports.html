@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zokor Example: Ports and Fakes</title>
+<meta name="description" content="A runnable Slang example showing how to isolate dependencies behind ports and test Zokor services with fakes.">
+<meta name="author" content="Dolphlabs">
+<meta property="og:site_name" content="Zokor">
+<meta property="og:title" content="Zokor Example: Ports and Fakes">
+<meta property="og:description" content="A runnable Slang example showing how to isolate dependencies behind ports and test Zokor services with fakes.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://zokor.dolphlabs.com/examples/ports">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Zokor Example: Ports and Fakes">
+<meta name="twitter:description" content="A runnable Slang example showing how to isolate dependencies behind ports and test Zokor services with fakes.">
+<link rel="canonical" href="https://zokor.dolphlabs.com/examples/ports">
+<link rel="alternate" type="text/markdown" href="../examples/ports.md" title="Markdown">
+<link rel="alternate" type="text/plain" href="../llms.txt" title="llms.txt">
+<link rel="stylesheet" href="../style.css">
+<link rel="icon" type="image/png" sizes="64x64" href="../assets/zokor-icon-64.png">
+<meta property="og:image" content="https://zokor.dolphlabs.com/assets/zokor-card-1200x630.jpg"><meta property="og:image:alt" content="Zokor, a backend framework for Slang"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta name="twitter:image" content="https://zokor.dolphlabs.com/assets/zokor-card-1200x630.jpg"><meta name="twitter:image:alt" content="Zokor, a backend framework for Slang">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <a class="brand" href="../">
+    <img src="../assets/zokor-header-256.png" width="40" height="40" alt="">
+    <span>zokor</span>
+  </a>
+  <button id="navtoggle" class="navtoggle" type="button" aria-label="Toggle navigation"
+          aria-expanded="false" aria-controls="mainnav">
+    <span></span><span></span><span></span>
+  </button>
+  <nav class="mainnav" id="mainnav" aria-label="Main navigation"><a href="../">Home</a><a href="../guide/start">Start</a><a href="../api/">API</a><a href="../examples/">Examples</a></nav>
+  <div class="tools">
+    <label class="search-label" for="search">Search</label>
+    <input id="search" type="search" placeholder="Search docs…" autocomplete="off"
+           aria-label="Search documentation" aria-controls="results">
+    <button id="theme" type="button" aria-label="Toggle color theme">◐</button>
+  </div>
+</header>
+<div id="navscrim" class="navscrim" hidden></div>
+<div id="results" class="results" role="listbox" aria-label="Search results" hidden></div>
+
+<main id="main">
+
+<div class="page">
+  <article class="content">
+<header class="page-head"><p class="page-kicker">Zokor documentation</p><h1>Ports and fakes</h1><p class="tagline">A runnable Slang example showing how to isolate dependencies behind ports and test Zokor services with fakes.</p><p class="agentline"><a href="../examples/ports.md">Markdown</a> · <a href="../llms.txt">llms.txt</a> · <a href="../api.json">api.json</a></p></header>
+<p class="example-intro">The example is built from the source files below, with tests beside each package.</p>
+<p class="run-command">Run it from the repository root: <code>make example-ports</code></p>
+<section class="example-file" id="source-examples-ports-src-application-inventory-ports-sl"><h2>examples/ports/src/application/inventory/ports.sl<a class="anchor" href="#source-examples-ports-src-application-inventory-ports-sl" aria-label="Link to this file">#</a></h2><div class="code"><div class="code-head"><span class="code-label">examples/ports/src/application/inventory/ports.sl</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-slang"><span class="tok-keyword">import</span> <span class="tok-string">&quot;../../domain/inventory&quot;</span> <span class="tok-keyword">as</span> stock;
+
+<span class="tok-comment">// C is explicit adapter state: function fields never capture credentials or globals.</span>
+<span class="tok-keyword">pub</span> <span class="tok-keyword">gc</span> <span class="tok-keyword">struct</span> StockPort[C] {
+    context: C,
+    lookup: <span class="tok-keyword">fn</span>(C, <span class="tok-type">str</span>, <span class="tok-type">str</span>) -&gt; <span class="tok-type">result</span>[<span class="tok-type">opt</span>[stock.Stock], <span class="tok-type">str</span>],
+}</code></pre></div></section>
+<section class="example-file" id="source-examples-ports-src-application-inventory-service-sl"><h2>examples/ports/src/application/inventory/service.sl<a class="anchor" href="#source-examples-ports-src-application-inventory-service-sl" aria-label="Link to this file">#</a></h2><div class="code"><div class="code-head"><span class="code-label">examples/ports/src/application/inventory/service.sl</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-slang"><span class="tok-keyword">import</span> <span class="tok-string">&quot;../../domain/inventory&quot;</span> <span class="tok-keyword">as</span> stock;
+<span class="tok-keyword">import</span> <span class="tok-string">&quot;strings&quot;</span>;
+
+<span class="tok-keyword">pub</span> <span class="tok-keyword">gc</span> <span class="tok-keyword">struct</span> Service[C] { port: StockPort[C] }
+
+<span class="tok-keyword">pub</span> <span class="tok-keyword">fn</span> new_service[C](port: StockPort[C]) -&gt; Service[C] { <span class="tok-keyword">return</span> Service[C] { port: port }; }
+
+<span class="tok-comment">// Tenant identity is resolved at the edge and passed through every port call.</span>
+<span class="tok-keyword">pub</span> <span class="tok-keyword">fn</span> find[C](service: Service[C], tenant_id: <span class="tok-type">str</span>, sku: <span class="tok-type">str</span>) -&gt; <span class="tok-type">result</span>[<span class="tok-type">opt</span>[stock.Stock], <span class="tok-type">str</span>] {
+    <span class="tok-keyword">let</span> checked = stock.<span class="tok-function">key</span>(tenant_id, sku);
+    <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> _key = checked <span class="tok-keyword">else</span> <span class="tok-keyword">let</span> e = <span class="tok-builtin">err_of</span>(checked) { <span class="tok-keyword">return</span> <span class="tok-builtin">err</span>(e); }
+    <span class="tok-keyword">let</span> lookup = service.port.lookup;
+    <span class="tok-keyword">let</span> loaded = <span class="tok-function">lookup</span>(service.port.context, tenant_id, sku);
+    <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> maybe = loaded <span class="tok-keyword">else</span> <span class="tok-keyword">let</span> e = <span class="tok-builtin">err_of</span>(loaded) { <span class="tok-keyword">return</span> <span class="tok-builtin">err</span>(e); }
+    <span class="tok-keyword">if</span> <span class="tok-keyword">let</span> row = maybe {
+        <span class="tok-keyword">if</span> row.tenant_id != tenant_id || row.sku != sku { <span class="tok-keyword">return</span> <span class="tok-builtin">err</span>(<span class="tok-string">&quot;adapter returned a different tenant_id or sku&quot;</span>); }
+        <span class="tok-keyword">if</span> row.available &lt; <span class="tok-number">0</span> { <span class="tok-keyword">return</span> <span class="tok-builtin">err</span>(<span class="tok-string">&quot;adapter returned a negative available count&quot;</span>); }
+    }
+    <span class="tok-keyword">return</span> <span class="tok-builtin">ok</span>(maybe);
+}
+
+<span class="tok-comment">// Share the domain rule with the HTTP edge without importing adapters.</span>
+<span class="tok-keyword">pub</span> <span class="tok-keyword">fn</span> <span class="tok-function">valid_sku</span>(sku: <span class="tok-type">str</span>) -&gt; <span class="tok-type">bool</span> { <span class="tok-keyword">return</span> stock.<span class="tok-function">identifier</span>(sku); }</code></pre></div></section>
+<section class="example-file" id="source-examples-ports-src-domain-inventory-stock-sl"><h2>examples/ports/src/domain/inventory/stock.sl<a class="anchor" href="#source-examples-ports-src-domain-inventory-stock-sl" aria-label="Link to this file">#</a></h2><div class="code"><div class="code-head"><span class="code-label">examples/ports/src/domain/inventory/stock.sl</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-slang"><span class="tok-keyword">import</span> <span class="tok-string">&quot;strings&quot;</span>;
+
+<span class="tok-keyword">pub</span> <span class="tok-keyword">struct</span> Stock { tenant_id: <span class="tok-type">str</span>, sku: <span class="tok-type">str</span>, available: <span class="tok-type">int</span> }
+
+<span class="tok-keyword">pub</span> <span class="tok-keyword">fn</span> <span class="tok-function">identifier</span>(value: <span class="tok-type">str</span>) -&gt; <span class="tok-type">bool</span> {
+    <span class="tok-keyword">if</span> <span class="tok-builtin">len</span>(value) &lt; <span class="tok-number">1</span> || <span class="tok-builtin">len</span>(value) &gt; <span class="tok-number">64</span> { <span class="tok-keyword">return</span> <span class="tok-keyword">false</span>; }
+    <span class="tok-keyword">for</span> ch <span class="tok-keyword">in</span> <span class="tok-builtin">to_bytes</span>(value) {
+        <span class="tok-keyword">if</span> !((ch &gt;= <span class="tok-number">65</span> &amp;&amp; ch &lt;= <span class="tok-number">90</span>) || (ch &gt;= <span class="tok-number">97</span> &amp;&amp; ch &lt;= <span class="tok-number">122</span>) ||
+             (ch &gt;= <span class="tok-number">48</span> &amp;&amp; ch &lt;= <span class="tok-number">57</span>) || ch == <span class="tok-number">45</span> || ch == <span class="tok-number">95</span>) { <span class="tok-keyword">return</span> <span class="tok-keyword">false</span>; }
+    }
+    <span class="tok-keyword">return</span> <span class="tok-keyword">true</span>;
+}
+
+<span class="tok-comment">// The separator cannot occur in either identifier: tenant keys stay distinct.</span>
+<span class="tok-keyword">pub</span> <span class="tok-keyword">fn</span> <span class="tok-function">key</span>(tenant_id: <span class="tok-type">str</span>, sku: <span class="tok-type">str</span>) -&gt; <span class="tok-type">result</span>[<span class="tok-type">str</span>, <span class="tok-type">str</span>] {
+    <span class="tok-keyword">let</span> problems: [<span class="tok-type">str</span>] = [];
+    <span class="tok-keyword">if</span> !<span class="tok-function">identifier</span>(tenant_id) { <span class="tok-builtin">push</span>(problems, <span class="tok-string">&quot;tenant_id must contain 1..64 ASCII letters, digits, - or _&quot;</span>); }
+    <span class="tok-keyword">if</span> !<span class="tok-function">identifier</span>(sku) { <span class="tok-builtin">push</span>(problems, <span class="tok-string">&quot;sku must contain 1..64 ASCII letters, digits, - or _&quot;</span>); }
+    <span class="tok-keyword">if</span> <span class="tok-builtin">len</span>(problems) &gt; <span class="tok-number">0</span> { <span class="tok-keyword">return</span> <span class="tok-builtin">err</span>(strings.<span class="tok-type">join</span>(problems, <span class="tok-string">&quot;; &quot;</span>)); }
+    <span class="tok-keyword">return</span> <span class="tok-builtin">ok</span>(tenant_id + <span class="tok-string">&quot;:&quot;</span> + sku);
+}
+
+<span class="tok-keyword">pub</span> <span class="tok-keyword">fn</span> <span class="tok-function">new_stock</span>(tenant_id: <span class="tok-type">str</span>, sku: <span class="tok-type">str</span>, available: <span class="tok-type">int</span>) -&gt; <span class="tok-type">result</span>[Stock, <span class="tok-type">str</span>] {
+    <span class="tok-keyword">let</span> problems: [<span class="tok-type">str</span>] = [];
+    <span class="tok-keyword">let</span> checked = <span class="tok-function">key</span>(tenant_id, sku);
+    <span class="tok-keyword">if</span> <span class="tok-keyword">let</span> _key = checked {} <span class="tok-keyword">else</span> <span class="tok-keyword">let</span> e = <span class="tok-builtin">err_of</span>(checked) { <span class="tok-builtin">push</span>(problems, e); }
+    <span class="tok-keyword">if</span> available &lt; <span class="tok-number">0</span> { <span class="tok-builtin">push</span>(problems, <span class="tok-string">&quot;available must be nonnegative&quot;</span>); }
+    <span class="tok-keyword">if</span> <span class="tok-builtin">len</span>(problems) &gt; <span class="tok-number">0</span> { <span class="tok-keyword">return</span> <span class="tok-builtin">err</span>(strings.<span class="tok-type">join</span>(problems, <span class="tok-string">&quot;; &quot;</span>)); }
+    <span class="tok-keyword">return</span> <span class="tok-builtin">ok</span>(Stock { tenant_id: tenant_id, sku: sku, available: available });
+}</code></pre></div></section>
+<section class="example-file" id="source-examples-ports-src-infrastructure-memory-client-sl"><h2>examples/ports/src/infrastructure/memory/client.sl<a class="anchor" href="#source-examples-ports-src-infrastructure-memory-client-sl" aria-label="Link to this file">#</a></h2><div class="code"><div class="code-head"><span class="code-label">examples/ports/src/infrastructure/memory/client.sl</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-slang"><span class="tok-keyword">import</span> <span class="tok-string">&quot;../../application/inventory&quot;</span> <span class="tok-keyword">as</span> inventory;
+<span class="tok-keyword">import</span> <span class="tok-string">&quot;../../domain/inventory&quot;</span> <span class="tok-keyword">as</span> stock;
+<span class="tok-keyword">import</span> <span class="tok-string">&quot;strings&quot;</span>;
+
+<span class="tok-comment">// Seed once at startup; immutable afterwards, so readers do not need a lock.</span>
+<span class="tok-keyword">pub</span> <span class="tok-keyword">gc</span> <span class="tok-keyword">struct</span> Store { stocks: <span class="tok-type">map</span>[<span class="tok-type">str</span>]stock.Stock }
+
+<span class="tok-keyword">pub</span> <span class="tok-keyword">fn</span> <span class="tok-function">new_store</span>(rows: [stock.Stock]) -&gt; <span class="tok-type">result</span>[Store, <span class="tok-type">str</span>] {
+    <span class="tok-keyword">let</span> values: <span class="tok-type">map</span>[<span class="tok-type">str</span>]stock.Stock = {};
+    <span class="tok-keyword">let</span> problems: [<span class="tok-type">str</span>] = [];
+    <span class="tok-keyword">let</span> i = <span class="tok-number">0</span>;
+    <span class="tok-keyword">for</span> row <span class="tok-keyword">in</span> rows {
+        <span class="tok-keyword">let</span> made = stock.<span class="tok-function">new_stock</span>(row.tenant_id, row.sku, row.available);
+        <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> checked = made <span class="tok-keyword">else</span> <span class="tok-keyword">let</span> e = <span class="tok-builtin">err_of</span>(made) {
+            <span class="tok-builtin">push</span>(problems, <span class="tok-string">&quot;rows[&quot;</span> + <span class="tok-builtin">to_str</span>(i) + <span class="tok-string">&quot;]: &quot;</span> + e); i += <span class="tok-number">1</span>; <span class="tok-keyword">continue</span>;
+        }
+        <span class="tok-keyword">let</span> key = stock.<span class="tok-function">key</span>(checked.tenant_id, checked.sku) ?? <span class="tok-string">&quot;&quot;</span>;
+        <span class="tok-keyword">if</span> <span class="tok-builtin">has</span>(values, key) { <span class="tok-builtin">push</span>(problems, <span class="tok-string">&quot;rows[&quot;</span> + <span class="tok-builtin">to_str</span>(i) + <span class="tok-string">&quot;]: duplicate tenant_id and sku&quot;</span>); }
+        <span class="tok-keyword">else</span> { values[key] = checked; }
+        i += <span class="tok-number">1</span>;
+    }
+    <span class="tok-keyword">if</span> <span class="tok-builtin">len</span>(problems) &gt; <span class="tok-number">0</span> { <span class="tok-keyword">return</span> <span class="tok-builtin">err</span>(strings.<span class="tok-type">join</span>(problems, <span class="tok-string">&quot;; &quot;</span>)); }
+    <span class="tok-keyword">return</span> <span class="tok-builtin">ok</span>(Store { stocks: values });
+}
+
+<span class="tok-keyword">pub</span> <span class="tok-keyword">fn</span> <span class="tok-function">lookup</span>(ctx: Store, tenant_id: <span class="tok-type">str</span>, sku: <span class="tok-type">str</span>) -&gt; <span class="tok-type">result</span>[<span class="tok-type">opt</span>[stock.Stock], <span class="tok-type">str</span>] {
+    <span class="tok-keyword">let</span> checked = stock.<span class="tok-function">key</span>(tenant_id, sku);
+    <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> key = checked <span class="tok-keyword">else</span> <span class="tok-keyword">let</span> e = <span class="tok-builtin">err_of</span>(checked) { <span class="tok-keyword">return</span> <span class="tok-builtin">err</span>(e); }
+    <span class="tok-keyword">if</span> !<span class="tok-builtin">has</span>(ctx.stocks, key) { <span class="tok-keyword">let</span> absent: <span class="tok-type">opt</span>[stock.Stock] = <span class="tok-builtin">none</span>; <span class="tok-keyword">return</span> <span class="tok-builtin">ok</span>(absent); }
+    <span class="tok-keyword">return</span> <span class="tok-builtin">ok</span>(<span class="tok-builtin">some</span>(ctx.stocks[key]));
+}
+
+<span class="tok-keyword">pub</span> <span class="tok-keyword">fn</span> <span class="tok-function">new_stock_port</span>(ctx: Store) -&gt; inventory.StockPort[Store] {
+    <span class="tok-keyword">return</span> inventory.StockPort[Store] { context: ctx, lookup: lookup };
+}</code></pre></div></section>
+<section class="example-file" id="source-examples-ports-src-interfaces-web-router-sl"><h2>examples/ports/src/interfaces/web/router.sl<a class="anchor" href="#source-examples-ports-src-interfaces-web-router-sl" aria-label="Link to this file">#</a></h2><div class="code"><div class="code-head"><span class="code-label">examples/ports/src/interfaces/web/router.sl</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-slang"><span class="tok-keyword">import</span> <span class="tok-string">&quot;../../../../../zokor&quot;</span> <span class="tok-keyword">as</span> zokor;
+<span class="tok-keyword">import</span> <span class="tok-string">&quot;../../application/inventory&quot;</span> <span class="tok-keyword">as</span> inventory;
+<span class="tok-keyword">import</span> <span class="tok-string">&quot;http&quot;</span>;
+<span class="tok-keyword">import</span> <span class="tok-string">&quot;json&quot;</span>;
+
+<span class="tok-keyword">pub</span> <span class="tok-keyword">fn</span> <span class="tok-function">register_errors</span>(errors: zokor.Registry) {
+    zokor.<span class="tok-function">register</span>(errors, <span class="tok-string">&quot;inventory.not_found&quot;</span>, <span class="tok-number">404</span>, <span class="tok-string">&quot;stock not found&quot;</span>);
+    zokor.<span class="tok-function">register</span>(errors, <span class="tok-string">&quot;inventory.unavailable&quot;</span>, <span class="tok-number">503</span>, <span class="tok-string">&quot;inventory is unavailable&quot;</span>);
+}
+
+<span class="tok-comment">// The route wrapper resolves authentication and passes explicit values here.</span>
+<span class="tok-keyword">pub</span> <span class="tok-keyword">fn</span> show[C](service: inventory.Service[C], tenant_id: <span class="tok-type">str</span>, sku: <span class="tok-type">str</span>,
+               errors: zokor.Registry, request_id: <span class="tok-type">str</span>) -&gt; http.Response {
+    <span class="tok-keyword">if</span> !inventory.<span class="tok-function">valid_sku</span>(sku) {
+        <span class="tok-keyword">return</span> zokor.<span class="tok-function">respond_fields</span>(errors, <span class="tok-string">&quot;validation_failed&quot;</span>,
+            [zokor.<span class="tok-function">field</span>(<span class="tok-string">&quot;sku&quot;</span>, <span class="tok-string">&quot;must contain 1..64 ASCII letters, digits, - or _&quot;</span>)], request_id);
+    }
+    <span class="tok-keyword">let</span> loaded = inventory.<span class="tok-function">find</span>(service, tenant_id, sku);
+    <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> maybe = loaded <span class="tok-keyword">else</span> { <span class="tok-keyword">return</span> zokor.<span class="tok-function">respond</span>(errors, <span class="tok-string">&quot;inventory.unavailable&quot;</span>, request_id); }
+    <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> row = maybe <span class="tok-keyword">else</span> { <span class="tok-keyword">return</span> zokor.<span class="tok-function">respond</span>(errors, <span class="tok-string">&quot;inventory.not_found&quot;</span>, request_id); }
+    <span class="tok-keyword">return</span> zokor.<span class="tok-function">ok_json</span>(json.<span class="tok-function">encode</span>(row));
+}</code></pre></div></section>
+<section class="example-file" id="source-examples-ports-src-main-sl"><h2>examples/ports/src/main.sl<a class="anchor" href="#source-examples-ports-src-main-sl" aria-label="Link to this file">#</a></h2><div class="code"><div class="code-head"><span class="code-label">examples/ports/src/main.sl</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-slang"><span class="tok-comment">// Startup wiring is the only package that knows the concrete adapter.</span>
+<span class="tok-keyword">import</span> <span class="tok-string">&quot;application/inventory&quot;</span> <span class="tok-keyword">as</span> inventory;
+<span class="tok-keyword">import</span> <span class="tok-string">&quot;domain/inventory&quot;</span> <span class="tok-keyword">as</span> stock;
+<span class="tok-keyword">import</span> <span class="tok-string">&quot;infrastructure/memory&quot;</span> <span class="tok-keyword">as</span> memory;
+<span class="tok-keyword">import</span> <span class="tok-string">&quot;interfaces/web&quot;</span> <span class="tok-keyword">as</span> rest;
+<span class="tok-keyword">import</span> <span class="tok-string">&quot;../../../zokor&quot;</span> <span class="tok-keyword">as</span> zokor;
+<span class="tok-keyword">import</span> <span class="tok-string">&quot;http&quot;</span>;
+
+<span class="tok-keyword">gc</span> <span class="tok-keyword">struct</span> App { inventory: inventory.Service[memory.Store], tokens: zokor.TokenStore }
+<span class="tok-keyword">fn</span> <span class="tok-function">require_tenant</span>(c: zokor.Ctx[App]) -&gt; <span class="tok-type">opt</span>[http.Response] {
+    <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> tenant_id = zokor.<span class="tok-function">bearer_subject</span>(c, c.state.tokens) <span class="tok-keyword">else</span> {
+        <span class="tok-keyword">return</span> <span class="tok-builtin">some</span>(zokor.<span class="tok-function">respond</span>(c.errors, <span class="tok-string">&quot;unauthorized&quot;</span>, c.request_id));
+    }
+    c.<span class="tok-function">set_local</span>(<span class="tok-string">&quot;tenant_id&quot;</span>, tenant_id);
+    <span class="tok-keyword">return</span> <span class="tok-builtin">none</span>;
+}
+<span class="tok-keyword">fn</span> <span class="tok-function">show_stock</span>(c: zokor.Ctx[App]) -&gt; http.Response {
+    <span class="tok-keyword">return</span> rest.<span class="tok-function">show</span>(c.state.inventory, c.<span class="tok-function">local</span>(<span class="tok-string">&quot;tenant_id&quot;</span>), c.<span class="tok-function">param</span>(<span class="tok-string">&quot;sku&quot;</span>), c.errors, c.request_id);
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">main</span>() {
+    <span class="tok-keyword">let</span> cfg = zokor.<span class="tok-function">load_config</span>();
+    <span class="tok-keyword">let</span> count = zokor.<span class="tok-function">int_or</span>(cfg, <span class="tok-string">&quot;EXAMPLE_STOCK&quot;</span>, <span class="tok-number">7</span>);
+    <span class="tok-keyword">let</span> checked = zokor.<span class="tok-function">check</span>(cfg);
+    <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> _config = checked <span class="tok-keyword">else</span> <span class="tok-keyword">let</span> e = <span class="tok-builtin">err_of</span>(checked) { <span class="tok-builtin">println</span>(e); <span class="tok-builtin">exit</span>(<span class="tok-number">1</span>); }
+    <span class="tok-keyword">let</span> made = stock.<span class="tok-function">new_stock</span>(<span class="tok-string">&quot;tenant_a&quot;</span>, <span class="tok-string">&quot;pen&quot;</span>, count);
+    <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> row = made <span class="tok-keyword">else</span> <span class="tok-keyword">let</span> e = <span class="tok-builtin">err_of</span>(made) { <span class="tok-builtin">println</span>(e); <span class="tok-builtin">exit</span>(<span class="tok-number">1</span>); }
+    <span class="tok-keyword">let</span> seeded = memory.<span class="tok-function">new_store</span>([row]);
+    <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> adapter = seeded <span class="tok-keyword">else</span> <span class="tok-keyword">let</span> e = <span class="tok-builtin">err_of</span>(seeded) { <span class="tok-builtin">println</span>(e); <span class="tok-builtin">exit</span>(<span class="tok-number">1</span>); }
+    <span class="tok-keyword">let</span> service = inventory.<span class="tok-function">new_service</span>(memory.<span class="tok-function">new_stock_port</span>(adapter));
+    <span class="tok-keyword">let</span> tokens = zokor.<span class="tok-function">new_token_store</span>(<span class="tok-number">0</span>);
+    <span class="tok-keyword">let</span> issued = tokens.<span class="tok-function">issue</span>(<span class="tok-string">&quot;tenant_a&quot;</span>);
+    <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> token = issued <span class="tok-keyword">else</span> { <span class="tok-builtin">println</span>(<span class="tok-string">&quot;token issue failed&quot;</span>); <span class="tok-builtin">exit</span>(<span class="tok-number">1</span>); }
+    <span class="tok-keyword">let</span> router = zokor.<span class="tok-function">new_router</span>(App { inventory: service, tokens: tokens });
+    rest.<span class="tok-function">register_errors</span>(router.errors);
+    router.<span class="tok-function">before</span>(require_tenant);
+    router.<span class="tok-function">get</span>(<span class="tok-string">&quot;/stock/:sku&quot;</span>, show_stock);
+    <span class="tok-comment">// Drive the same handler pipeline hermetically. A server passes router to listen_and_serve.</span>
+    <span class="tok-keyword">let</span> denied = router.<span class="tok-function">serve</span>(zokor.<span class="tok-function">get_request</span>(<span class="tok-string">&quot;/stock/pen&quot;</span>).<span class="tok-function">build</span>());
+    <span class="tok-builtin">println</span>(<span class="tok-string">&quot;unauthenticated -&gt; &quot;</span> + <span class="tok-builtin">to_str</span>(denied.status));
+    <span class="tok-keyword">let</span> found = router.<span class="tok-function">serve</span>(zokor.<span class="tok-function">get_request</span>(<span class="tok-string">&quot;/stock/pen&quot;</span>).<span class="tok-function">bearer</span>(token).<span class="tok-function">build</span>());
+    <span class="tok-builtin">println</span>(<span class="tok-string">&quot;stock -&gt; &quot;</span> + <span class="tok-builtin">to_str</span>(found.status) + <span class="tok-string">&quot; &quot;</span> + zokor.<span class="tok-function">resp_text</span>(found));
+    <span class="tok-keyword">let</span> missing = router.<span class="tok-function">serve</span>(zokor.<span class="tok-function">get_request</span>(<span class="tok-string">&quot;/stock/missing&quot;</span>).<span class="tok-function">bearer</span>(token).<span class="tok-function">build</span>());
+    <span class="tok-builtin">println</span>(<span class="tok-string">&quot;missing -&gt; &quot;</span> + <span class="tok-builtin">to_str</span>(missing.status) + <span class="tok-string">&quot; &quot;</span> + zokor.<span class="tok-function">resp_error_code</span>(missing));
+}
+<span class="tok-function">main</span>();</code></pre></div></section>
+  </article>
+  <aside class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <nav id="toc"></nav>
+  </aside>
+</div>
+</main>
+<footer class="foot">
+  <div class="foot-brand"><img src="../assets/zokor-icon-64.png" width="32" height="32" alt="">
+    <span>zokor</span></div>
+  <p>Generated from <code>README.md</code>, <code>zokor/</code> and <code>examples/</code>.
+     Built and maintained by <a href="https://dolphlabs.com" rel="noopener">Dolphlabs</a>.</p>
+  <p class="foot-links"><a href="../api/">API</a> ·
+     <a href="../llms.txt">llms.txt</a> ·
+     <a href="https://github.com/dolphlabs/zokor" rel="noopener">GitHub</a></p>
+</footer>
+<script src="../app.js" defer></script>
+</body>
+</html>

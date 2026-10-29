@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zokor Architecture | Project Structure &amp; Testing</title>
+<meta name="description" content="Explore Zokor&#x27;s project structure, testing approach, dependency ports and fakes, agent guide, and framework design.">
+<meta name="author" content="Dolphlabs">
+<meta property="og:site_name" content="Zokor">
+<meta property="og:title" content="Zokor Architecture | Project Structure &amp; Testing">
+<meta property="og:description" content="Explore Zokor&#x27;s project structure, testing approach, dependency ports and fakes, agent guide, and framework design.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://zokor.dolphlabs.com/guide/architecture">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Zokor Architecture | Project Structure &amp; Testing">
+<meta name="twitter:description" content="Explore Zokor&#x27;s project structure, testing approach, dependency ports and fakes, agent guide, and framework design.">
+<link rel="canonical" href="https://zokor.dolphlabs.com/guide/architecture">
+<link rel="alternate" type="text/markdown" href="../guide/architecture.md" title="Markdown">
+<link rel="alternate" type="text/plain" href="../llms.txt" title="llms.txt">
+<link rel="stylesheet" href="../style.css">
+<link rel="icon" type="image/png" sizes="64x64" href="../assets/zokor-icon-64.png">
+<meta property="og:image" content="https://zokor.dolphlabs.com/assets/zokor-card-1200x630.jpg"><meta property="og:image:alt" content="Zokor, a backend framework for Slang"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta name="twitter:image" content="https://zokor.dolphlabs.com/assets/zokor-card-1200x630.jpg"><meta name="twitter:image:alt" content="Zokor, a backend framework for Slang">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <a class="brand" href="../">
+    <img src="../assets/zokor-header-256.png" width="40" height="40" alt="">
+    <span>zokor</span>
+  </a>
+  <button id="navtoggle" class="navtoggle" type="button" aria-label="Toggle navigation"
+          aria-expanded="false" aria-controls="mainnav">
+    <span></span><span></span><span></span>
+  </button>
+  <nav class="mainnav" id="mainnav" aria-label="Main navigation"><a href="../">Home</a><a href="../guide/start" class="active" aria-current="page">Start</a><a href="../api/">API</a><a href="../examples/">Examples</a></nav>
+  <div class="tools">
+    <label class="search-label" for="search">Search</label>
+    <input id="search" type="search" placeholder="Search docs…" autocomplete="off"
+           aria-label="Search documentation" aria-controls="results">
+    <button id="theme" type="button" aria-label="Toggle color theme">◐</button>
+  </div>
+</header>
+<div id="navscrim" class="navscrim" hidden></div>
+<div id="results" class="results" role="listbox" aria-label="Search results" hidden></div>
+<nav class="subnav" aria-label="Guide pages"><a href="../guide/start">Start</a><a href="../guide/http">HTTP</a><a href="../guide/data">Data</a><a href="../guide/operations">Operations</a><a href="../guide/realtime">Realtime</a><a href="../guide/architecture" aria-current="page">Architecture</a></nav>
+<main id="main">
+
+<div class="page">
+  <article class="content">
+<header class="page-head"><p class="page-kicker">Zokor documentation</p><h1>Project structure</h1><p class="tagline">Explore Zokor&#x27;s project structure, testing approach, dependency ports and fakes, agent guide, and framework design.</p><p class="agentline"><a href="../guide/architecture.md">Markdown</a> · <a href="../llms.txt">llms.txt</a> · <a href="../api.json">api.json</a></p></header>
+<section class="readme-section"><h2 id="testing">Testing<a class="anchor" href="#testing" aria-label="Link to this section">#</a></h2><p>A request builder and response readers, so a test says what it means instead of assembling an <code>http.Request</code> by hand:</p>
+<div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-slang"><span class="tok-keyword">let</span> resp = r.<span class="tok-function">serve</span>(zokor.<span class="tok-function">request</span>(zokor.Method.POST, <span class="tok-string">&quot;/api/orgs&quot;</span>)
+    .<span class="tok-function">bearer</span>(<span class="tok-string">&quot;token&quot;</span>)
+    .<span class="tok-function">json_body</span>(<span class="tok-string">&quot;{\&quot;name\&quot;:\&quot;acme\&quot;}&quot;</span>)
+    .<span class="tok-function">build</span>());
+
+<span class="tok-function">assert</span>(zokor.<span class="tok-function">resp_status</span>(resp) == <span class="tok-number">201</span>);
+<span class="tok-function">assert</span>(zokor.<span class="tok-function">resp_json</span>(resp).<span class="tok-function">get</span>(<span class="tok-string">&quot;id&quot;</span>).<span class="tok-function">str_or</span>(<span class="tok-string">&quot;&quot;</span>) == <span class="tok-string">&quot;org_7&quot;</span>);
+<span class="tok-function">assert</span>(zokor.<span class="tok-function">resp_error_code</span>(denied) == <span class="tok-string">&quot;unauthorized&quot;</span>);
+<span class="tok-function">assert</span>(zokor.<span class="tok-function">resp_error_fields</span>(invalid)[<span class="tok-number">0</span>] == <span class="tok-string">&quot;seats&quot;</span>);</code></pre></div>
+<p><code>request</code>, <code>get_request</code>, <code>.header</code>, <code>.bearer</code>, <code>.basic</code>, <code>.content_type</code>, <code>.json</code>, <code>.json_body</code>, <code>.body_str</code>, <code>.multipart</code> (with <code>upload_part</code>), and on the way back <code>resp_status</code>, <code>resp_text</code>, <code>resp_header</code>, <code>resp_json</code>, <code>resp_error_code</code>, <code>resp_error_fields</code>. It ships in the package because your service&#x27;s tests need it too.</p></section>
+<section class="readme-section"><h2 id="layout">Layout<a class="anchor" href="#layout" aria-label="Link to this section">#</a></h2><div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="">zokor/            the package your service imports
+  router.sl       Router[S], Route[S], Ctx[S]
+  errors.sl       Registry, Code, ErrorView, the envelope
+  config.sl       Config, load_config, require_*
+  respond.sl      success responses
+  ids.sl          request and session ids
+  json.sl         Json, the checker, DTO helpers
+  testkit.sl      the request builder and response readers
+  upload.sl       uploads: rules, Form, Upload, safe filenames
+  ratelimit.sl    RateLimiter, rate_limit
+  tokens.sl       TokenStore, bearer_subject
+  ws.sl           WebSocket connections and Socket.IO
+  socket.sl       Socket, Hub: a served connection and its rooms
+  ws_serve.sl     r.websocket: the handshake and a connection&#x27;s two tasks
+  sio_serve.sl    r.socketio: Engine.IO sessions over the WebSocket
+  internal/
+    path/         split, query parsing, percent-decoding
+    envfile/      .env parsing
+    validate/     the value rules
+    multipart/    the multipart/form-data parser
+    ws/           RFC <span class="tok-number">6455</span> frames and the handshake
+    sio/          Engine.IO and Socket.IO packets
+examples/
+  hello/          routes, config, errors, DTOs, uploads
+  chat/           WebSocket and socket.io
+www/              docs-site builder, theme and resized logo assets
+assets/           the logo
+todo.md           what is next, checkable
+docs/             generated site, benchmarks, llms-small.txt (the agent
+                guide: every snippet compile-checked by `make snippets`),
+                api.txt (every public symbol, generated by gen_api.sh)
+.github/          CI: tests, guide snippets, API and site freshness</code></pre></div>
+<p><code>internal/</code> holds the pure parts: no sockets, no clock, no environment. That is where the tests are cheapest and the hot paths easiest to keep honest.</p></section>
+<section class="readme-section"><h2 id="tests">Tests<a class="anchor" href="#tests" aria-label="Link to this section">#</a></h2><div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="">make test</code></pre></div>
+<p><code>make check</code> runs the tests, all examples, the agent guide&#x27;s snippets (<code>docs/llms-small.txt</code>, via <code>make snippets</code>), and the API and site freshness checks. CI runs the same against slangc built from slang <code>dev</code>.</p></section>
+<section class="readme-section"><h2 id="dependencies-ports-and-fakes">Dependencies: ports and fakes<a class="anchor" href="#dependencies-ports-and-fakes" aria-label="Link to this section">#</a></h2><p>Use a struct of function values, wired once at startup. A service holds that port and calls it; concrete database or HTTP clients live in adapters. Slang has no closures, so pass adapter state explicitly rather than hiding it in globals:</p>
+<div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-slang"><span class="tok-keyword">pub</span> <span class="tok-keyword">gc</span> <span class="tok-keyword">struct</span> StockPort[C] {
+    context: C,
+    lookup: <span class="tok-keyword">fn</span>(C, <span class="tok-type">str</span>, <span class="tok-type">str</span>) -&gt; <span class="tok-type">result</span>[<span class="tok-type">opt</span>[Stock], <span class="tok-type">str</span>],
+}
+<span class="tok-comment">// A top-level adapter function has the same signature:</span>
+<span class="tok-comment">// lookup(context, tenant_id, sku). Startup injects its function and context.</span></code></pre></div>
+<p>The application defines the port. Infrastructure imports that definition and implements it; application code imports domain types and never the adapter. The bootstrap imports both and connects them. Tenant identity remains an explicit argument through each call. An optional result separates a missing record from an unavailable dependency. The HTTP edge maps failures to registered errors without exposing adapter diagnostics.</p>
+<p><a href="../examples/ports#source-examples-ports-src-main-sl">examples/ports/src/main.sl</a> is the worked example: a tenant-scoped stock service, an immutable memory adapter, a protected route, and startup configuration. <code>make example-ports</code> drives the real router pipeline without opening sockets. It prints an unauthenticated 401, the seeded stock, and a registered missing-stock 404. The existing hello/chat examples keep their behavior.</p>
+<p>Application fakes live in <code>fakes_test.sl</code>, so the compiler excludes them from service builds. They supply the same function signature with their own explicit state, return canned success/absence/failure, and record calls. Tests prove that invalid input never reaches a port, tenant identity is passed through, another tenant&#x27;s record is rejected, unauthenticated HTTP requests cannot invoke the port, and adapter details do not reach clients. <code>make test</code> lists all four example packages; <code>make check</code> also runs its startup wiring.</p>
+<p>For generic application services, use small concrete top-level route functions in the bootstrap to call the generic HTTP helpers. The example uses this ordinary function-value pattern for registration and gives tests their own wrappers. Each adapter owns its concurrency rules: the example copies its seed data once and never mutates it after startup; a mutable adapter must synchronize its state.</p></section>
+<section class="readme-section"><h2 id="agent-guide">Agent guide<a class="anchor" href="#agent-guide" aria-label="Link to this section">#</a></h2><p>An agent writing a service reads slang&#x27;s <code>llms-small.txt</code> then <a href="../llms-small.txt">docs/llms-small.txt</a>: one page, example-first, with the one way for errors, config, validation, routing and tests, and recipes for headers, rate limits, bearer tokens, uploads, shared state, background workers and graceful shutdown. Every snippet in it is a whole program that compiles and runs; <code>make snippets</code> proves it.</p>
+<p><a href="../api/">docs/api.txt</a> is the companion: every public symbol, its signature and one line, small enough to keep in context instead of reading <code>zokor/</code>. It is generated (<code>make api</code>, which runs <code>docs/gen_api.sh</code>); CI fails if it is stale.</p>
+<p><code>make docs</code> builds the static site at <code>docs/index.html</code> from this README, the generated API reference and the service examples. <code>make docs-check</code> fails when the committed site is stale.</p></section>
+<section class="readme-section"><h2 id="not-yet">Not yet<a class="anchor" href="#not-yet" aria-label="Link to this section">#</a></h2><p>The full list, ordered and checkable, is <a href="https://github.com/dolphlabs/zokor/blob/dev/todo.md" rel="noopener">todo.md</a>. The remaining work is the <code>v0.2.0</code> release after slang ships the required compiler and package features, the measured performance gap described in <a href="https://github.com/dolphlabs/zokor/blob/dev/docs/benchmarks.md" rel="noopener">docs/benchmarks.md</a>, and the MongoDB adapter, which is currently deferred. The HTTP, realtime, migrations, metrics, tracing, pagination and OpenAPI work listed earlier in this README is implemented.</p></section>
+<section class="readme-section"><h2 id="contributing-and-licence">Contributing and licence<a class="anchor" href="#contributing-and-licence" aria-label="Link to this section">#</a></h2><p>zokor is MIT-licensed (<a href="https://github.com/dolphlabs/zokor/blob/dev/LICENSE" rel="noopener">LICENSE</a>), by Dolph Tech Limited. <a href="https://github.com/dolphlabs/zokor/blob/dev/CONTRIBUTING.md" rel="noopener">CONTRIBUTING.md</a> says how to build, test and send a change; report security problems privately as <a href="https://github.com/dolphlabs/zokor/blob/dev/SECURITY.md" rel="noopener">SECURITY.md</a> describes; everyone taking part follows the <a href="https://github.com/dolphlabs/zokor/blob/dev/CODE_OF_CONDUCT.md" rel="noopener">Code of Conduct</a>.</p></section>
+  </article>
+  <aside class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <nav id="toc"></nav>
+  </aside>
+</div>
+</main>
+<footer class="foot">
+  <div class="foot-brand"><img src="../assets/zokor-icon-64.png" width="32" height="32" alt="">
+    <span>zokor</span></div>
+  <p>Generated from <code>README.md</code>, <code>zokor/</code> and <code>examples/</code>.
+     Built and maintained by <a href="https://dolphlabs.com" rel="noopener">Dolphlabs</a>.</p>
+  <p class="foot-links"><a href="../api/">API</a> ·
+     <a href="../llms.txt">llms.txt</a> ·
+     <a href="https://github.com/dolphlabs/zokor" rel="noopener">GitHub</a></p>
+</footer>
+<script src="../app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zokor WebSockets &amp; Socket.IO | Realtime Guide</title>
+<meta name="description" content="Build WebSocket and Socket.IO services in Slang with Zokor&#x27;s route integration and sans-I/O protocol handlers.">
+<meta name="author" content="Dolphlabs">
+<meta property="og:site_name" content="Zokor">
+<meta property="og:title" content="Zokor WebSockets &amp; Socket.IO | Realtime Guide">
+<meta property="og:description" content="Build WebSocket and Socket.IO services in Slang with Zokor&#x27;s route integration and sans-I/O protocol handlers.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://zokor.dolphlabs.com/guide/realtime">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Zokor WebSockets &amp; Socket.IO | Realtime Guide">
+<meta name="twitter:description" content="Build WebSocket and Socket.IO services in Slang with Zokor&#x27;s route integration and sans-I/O protocol handlers.">
+<link rel="canonical" href="https://zokor.dolphlabs.com/guide/realtime">
+<link rel="alternate" type="text/markdown" href="../guide/realtime.md" title="Markdown">
+<link rel="alternate" type="text/plain" href="../llms.txt" title="llms.txt">
+<link rel="stylesheet" href="../style.css">
+<link rel="icon" type="image/png" sizes="64x64" href="../assets/zokor-icon-64.png">
+<meta property="og:image" content="https://zokor.dolphlabs.com/assets/zokor-card-1200x630.jpg"><meta property="og:image:alt" content="Zokor, a backend framework for Slang"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta name="twitter:image" content="https://zokor.dolphlabs.com/assets/zokor-card-1200x630.jpg"><meta name="twitter:image:alt" content="Zokor, a backend framework for Slang">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <a class="brand" href="../">
+    <img src="../assets/zokor-header-256.png" width="40" height="40" alt="">
+    <span>zokor</span>
+  </a>
+  <button id="navtoggle" class="navtoggle" type="button" aria-label="Toggle navigation"
+          aria-expanded="false" aria-controls="mainnav">
+    <span></span><span></span><span></span>
+  </button>
+  <nav class="mainnav" id="mainnav" aria-label="Main navigation"><a href="../">Home</a><a href="../guide/start" class="active" aria-current="page">Start</a><a href="../api/">API</a><a href="../examples/">Examples</a></nav>
+  <div class="tools">
+    <label class="search-label" for="search">Search</label>
+    <input id="search" type="search" placeholder="Search docs…" autocomplete="off"
+           aria-label="Search documentation" aria-controls="results">
+    <button id="theme" type="button" aria-label="Toggle color theme">◐</button>
+  </div>
+</header>
+<div id="navscrim" class="navscrim" hidden></div>
+<div id="results" class="results" role="listbox" aria-label="Search results" hidden></div>
+<nav class="subnav" aria-label="Guide pages"><a href="../guide/start">Start</a><a href="../guide/http">HTTP</a><a href="../guide/data">Data</a><a href="../guide/operations">Operations</a><a href="../guide/realtime" aria-current="page">Realtime</a><a href="../guide/architecture">Architecture</a></nav>
+<main id="main">
+
+<div class="page">
+  <article class="content">
+<header class="page-head"><p class="page-kicker">Zokor documentation</p><h1>Realtime connections</h1><p class="tagline">Build WebSocket and Socket.IO services in Slang with Zokor&#x27;s route integration and sans-I/O protocol handlers.</p><p class="agentline"><a href="../guide/realtime.md">Markdown</a> · <a href="../llms.txt">llms.txt</a> · <a href="../api.json">api.json</a></p></header>
+<section class="readme-section"><h2 id="websocket">WebSocket<a class="anchor" href="#websocket" aria-label="Link to this section">#</a></h2><p>A WebSocket route is a handshake handler plus the handlers for what happens after it. The handshake goes through the router like any request -- its <code>before</code>s run, so authentication, rate limits and CORS apply -- and once the <code>101</code> is written the connection belongs to the socket:</p>
+<div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-slang"><span class="tok-keyword">fn</span> <span class="tok-function">chat_open</span>(c: zokor.Ctx[App]) -&gt; http.Response {
+    <span class="tok-keyword">if</span> c.<span class="tok-function">local</span>(<span class="tok-string">&quot;user&quot;</span>) == <span class="tok-string">&quot;&quot;</span> {                      <span class="tok-comment">// set by an auth before</span>
+        <span class="tok-keyword">return</span> zokor.<span class="tok-function">respond</span>(c.errors, <span class="tok-string">&quot;unauthorized&quot;</span>, c.request_id);
+    }
+    <span class="tok-keyword">let</span> s = c.<span class="tok-function">socket</span>();                              <span class="tok-comment">// not yet open</span>
+    s.<span class="tok-function">set_local</span>(<span class="tok-string">&quot;user&quot;</span>, c.<span class="tok-function">local</span>(<span class="tok-string">&quot;user&quot;</span>));
+    c.state.hub.<span class="tok-function">join_room</span>(s, <span class="tok-string">&quot;lobby&quot;</span>);
+    <span class="tok-keyword">return</span> c.<span class="tok-function">accept_ws</span>();                            <span class="tok-comment">// the 101; anything else refuses</span>
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">chat_message</span>(app: App, s: zokor.Socket, m: zokor.Message) {
+    app.hub.<span class="tok-function">to_room</span>(<span class="tok-string">&quot;lobby&quot;</span>, s.<span class="tok-function">local</span>(<span class="tok-string">&quot;user&quot;</span>) + <span class="tok-string">&quot;: &quot;</span> + m.text, s.id);
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">chat_left</span>(app: App, s: zokor.Socket, code: <span class="tok-type">int</span>, reason: <span class="tok-type">str</span>) { ... }
+
+r.<span class="tok-function">websocket</span>(<span class="tok-string">&quot;/chat&quot;</span>, chat_open,
+            zokor.<span class="tok-function">ws_route</span>(zokor.<span class="tok-function">ws_allowing</span>([<span class="tok-string">&quot;chat&quot;</span>]), chat_message)
+                .<span class="tok-function">on_close</span>(chat_left));</code></pre></div>
+<p><code>s.send_text</code>, <code>s.send_binary</code> and <code>s.close(code, reason)</code> work from any task -- this socket&#x27;s handler, another connection&#x27;s, a background job -- and never wait: a send queues the message, and the connection&#x27;s writer task puts it on the wire. A <strong><code>Hub</code></strong> holds sockets by id and in rooms: <code>add</code>, <code>join_room</code>, <code>leave_room</code>, <code>broadcast</code>, <code>to_room</code>, <code>get</code>, <code>count</code>, <code>room_size</code>. A socket leaves every hub it was in when its connection ends. The hub is in-process; several instances need their own fan-out between them (Redis pub/sub, say).</p>
+<p>Each connection is two tasks: one reads, decodes and calls the handlers in order, one message at a time; the other writes. What the settings in <code>WsRules</code> bound, and what happens at each:</p>
+<ul><li><strong>A client that stops reading</strong> fills its queue (<code>max_queue</code>, 256<p>messages) and is closed instead of holding memory, or the broadcaster, hostage.</p></li><li><strong>A peer that vanished</strong> without a FIN is pinged after <code>ping_interval</code><p>(25s) of silence and closed <code>pong_timeout</code> (20s) later.</p></li><li><strong>A handler that panics</strong> closes its connection with 1011; every other<p>connection carries on. <code>on_close</code> runs once however the connection ended, with the peer&#x27;s code, ours, 1002 for a protocol error or 1006 when the peer vanished.</p></li><li><strong>SIGTERM</strong> closes every open socket with 1001 (&quot;server shutting down&quot;),<p>so clients reconnect elsewhere, before the drain.</p></li><li><strong>Over TLS</strong> (<code>TLS_CERT_FILE</code>) the same route serves <code>wss://</code>.</li></ul>
+<p>Underneath, a connection is a <strong>state machine, not a socket</strong> (<code>new_conn</code>, <code>receive</code>, <code>pending</code>): bytes in, whole messages and bytes to send out. That is what the tests drive without a network, and what refuses, with 1002, an unmasked client frame, a reserved bit or opcode, a fragmented or oversized control frame, a length that is not minimally encoded, a continuation with nothing to continue, a new message before the last finished, text that is not UTF-8, an invalid close code, and anything over <code>max_frame_bytes</code> / <code>max_message_bytes</code>. Ping/pong and the closing handshake are answered by the connection, because they are protocol rather than application.</p>
+<h3 id="socket-io">Socket.IO<a class="anchor" href="#socket-io" aria-label="Link to this section">#</a></h3>
+<p>socket.io clients (socket.io-client 3 and 4: Engine.IO v4, Socket.IO v5) on the same server, with the same handshake handler shape:</p>
+<div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-slang"><span class="tok-keyword">fn</span> <span class="tok-function">on_chat</span>(app: App, s: zokor.Socket, e: zokor.SioEvent) {
+    <span class="tok-keyword">if</span> e.name == <span class="tok-string">&quot;chat message&quot;</span> {
+        app.hub.<span class="tok-function">emit_to_room</span>(<span class="tok-string">&quot;lobby&quot;</span>, e.namespace, <span class="tok-string">&quot;chat message&quot;</span>, e.args_json, s.id);
+        <span class="tok-keyword">if</span> e.ack &gt;= <span class="tok-number">0</span> {
+            s.<span class="tok-function">ack</span>(e.namespace, e.ack, <span class="tok-string">&quot;[\&quot;delivered\&quot;]&quot;</span>);    <span class="tok-comment">// the client&#x27;s callback</span>
+        }
+    }
+}
+
+r.<span class="tok-function">socketio</span>(<span class="tok-string">&quot;/socket.io/&quot;</span>, chat_open,
+           zokor.<span class="tok-function">sio_route</span>(on_chat).<span class="tok-function">on_connect</span>(joined).<span class="tok-function">on_disconnect</span>(left));</code></pre></div>
+<p><code>on_connect(app, s, namespace, auth_json)</code> accepts a namespace with <code>ok(true)</code> or refuses it with <code>err(message)</code>, which the client sees as a <code>connect_error</code>; without one every namespace is accepted. Events for a namespace the client is not connected to are dropped. <code>s.emit</code>, <code>s.emit_with_ack</code> (the answer arrives as an <code>Ack</code> event), <code>s.ack</code> and <code>s.disconnect_ns</code> send; <code>hub.emit_all</code> and <code>hub.emit_to_room</code> encode an event once for every Socket.IO session they reach. A hub can hold WebSockets and Socket.IO sessions together: <code>to_room</code> reaches the first, <code>emit_to_room</code> the second, so a chat open to both calls both. <code>on_disconnect(app, s, namespace, reason)</code> runs once per connected namespace with socket.io&#x27;s reasons (<code>client namespace disconnect</code>, <code>transport close</code>, <code>ping timeout</code>, <code>server shutting down</code>, <code>server error</code> for a panicking handler). The Engine.IO heartbeat is run for you on <code>route.settings</code> (<code>ping_interval_ms</code>, <code>ping_timeout_ms</code>, <code>max_payload</code>).</p>
+<p>Both of socket.io&#x27;s transports are served, so a client needs no options: it starts on <strong>HTTP long-polling</strong> (a GET that waits for packets, a POST that carries its own) and moves to WebSocket once a probe over it succeeds, or stays on polling where WebSockets do not get through. The session -- its id, hubs, namespaces and locals -- is the same <code>Socket</code> throughout, and handlers cannot tell which transport a packet came by. Polling sessions live between requests: they are capped by <code>max_polling_sessions</code> (10,000; past it the handshake is answered 503), and one heartbeat task per route pings them and ends those that stop answering. Two GETs or two POSTs at once for one session end it, as Engine.IO requires. A polling POST is one HTTP request, so it is bounded by <code>MAX_REQUEST_BYTES</code> (16KB by default): raise it towards <code>max_payload</code> if clients send large events over polling.</p>
+<p><strong>Binary attachments</strong> work both ways. An event&#x27;s attachments arrive in <code>e.attachments</code> (in order; <code>args_json</code> holds a placeholder where each was), and <code>s.emit_binary(namespace, name, args_json, [data])</code> / <code>hub.emit_binary_to_room(..)</code> send them: binary frames over WebSocket, base64 over polling. An event may carry up to <code>max_attachments</code> (16).</p>
+<p><code>examples/chat</code> is one room for both kinds of client, served for real: <code>make example-chat</code> runs it against stand-in clients, and <code>slangc examples/chat/main.sl --run -- serve</code> serves it on :8080 for a browser. Checked against socket.io-client 4.7.5 and the <code>ws</code> package.</p></section>
+  </article>
+  <aside class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <nav id="toc"></nav>
+  </aside>
+</div>
+</main>
+<footer class="foot">
+  <div class="foot-brand"><img src="../assets/zokor-icon-64.png" width="32" height="32" alt="">
+    <span>zokor</span></div>
+  <p>Generated from <code>README.md</code>, <code>zokor/</code> and <code>examples/</code>.
+     Built and maintained by <a href="https://dolphlabs.com" rel="noopener">Dolphlabs</a>.</p>
+  <p class="foot-links"><a href="../api/">API</a> ·
+     <a href="../llms.txt">llms.txt</a> ·
+     <a href="https://github.com/dolphlabs/zokor" rel="noopener">GitHub</a></p>
+</footer>
+<script src="../app.js" defer></script>
+</body>
+</html>

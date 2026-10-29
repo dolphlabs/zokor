@@ -1,0 +1,589 @@
+import "http";
+import "strings";
+
+gc struct TestState {
+    hits: int,
+    name: str,
+}
+
+fn h_ok(c: Ctx[TestState]) -> http.Response {
+    return ok_json("{\"route\":\"" + c.route + "\"}");
+}
+
+fn h_static_hello(c: Ctx[TestState]) -> http.Response {
+    return text_bytes(200, b"Hello, World!");
+}
+
+fn h_param(c: Ctx[TestState]) -> http.Response {
+    return ok_json("{\"id\":\"" + c.param("id") + "\"}");
+}
+
+fn h_two(c: Ctx[TestState]) -> http.Response {
+    return ok_json("{\"id\":\"" + c.param("id") + "\",\"key\":\"" +
+                   c.param("key") + "\"}");
+}
+
+fn h_rest(c: Ctx[TestState]) -> http.Response {
+    return ok_json("{\"rest\":\"" + c.param("rest") + "\"}");
+}
+
+fn h_query(c: Ctx[TestState]) -> http.Response {
+    return text(200, c.query("q") + "|" + to_str(c.query_int("page", 1)));
+}
+
+fn h_state(c: Ctx[TestState]) -> http.Response {
+    c.state.hits = c.state.hits + 1;
+    return text(200, c.state.name + ":" + to_str(c.state.hits));
+}
+
+fn h_method(c: Ctx[TestState]) -> http.Response {
+    return text(200, to_str(c.method()) + "|" + c.method_str());
+}
+
+fn h_created(c: Ctx[TestState]) -> http.Response {
+    return created("{\"id\":\"new\"}", "/things/new");
+}
+
+gc struct Greeting {
+    message: str,
+}
+
+fn h_dto(c: Ctx[TestState]) -> http.Response {
+    let r: result[Greeting, http.Response] = dto(c);
+    guard let body = r else let resp = err_of(r) {
+        return resp;
+    }
+    return text(200, "got:" + body.message);
+}
+
+gc struct Search {
+    q: str,
+    page: i32,
+    active: bool,
+}
+
+fn h_query_as(c: Ctx[TestState]) -> http.Response {
+    let r: result[Search, http.Response] = query_as(c);
+    guard let s = r else let resp = err_of(r) {
+        return resp;
+    }
+    return text(200, s.q + "|" + to_str(s.page) + "|" + to_str(s.active));
+}
+
+fn block_secret(c: Ctx[TestState]) -> opt[http.Response] {
+    if c.route == "/secret" && c.bearer() != "letmein" {
+        return some(respond(new_registry(), "unauthorized", c.request_id));
+    }
+    return none;
+}
+
+fn stamp(c: Ctx[TestState], r: http.Response) -> http.Response {
+    return with_header(r, "x-route", c.route);
+}
+
+fn new_test_router() -> Router[TestState] {
+    return new_router(TestState { hits: 0, name: "t" });
+}
+
+fn req(method: str, p: str) -> http.Request {
+    let h: map[str]str = {};
+    let rr = http.request(method, p, "HTTP/1.1", h, to_bytes(""));
+    guard let r = rr else {
+        panic("req: bad test request");
+    }
+    return r;
+}
+
+fn req_auth(method: str, p: str, token: str) -> http.Request {
+    let h: map[str]str = {};
+    h["authorization"] = "Bearer " + token;
+    let rr = http.request(method, p, "HTTP/1.1", h, to_bytes(""));
+    guard let r = rr else {
+        panic("req_auth: bad test request");
+    }
+    return r;
+}
+
+fn test_every_http_method_routes() {
+    let r = new_test_router();
+    r.get("/m", h_ok);
+    r.head("/m", h_ok);
+    r.post("/m", h_ok);
+    r.put("/m", h_ok);
+    r.patch("/m", h_ok);
+    r.delete("/m", h_ok);
+    r.options("/m", h_ok);
+    r.trace("/m", h_ok);
+    r.connect("/m", h_ok);
+    let methods = [Method.GET, Method.HEAD, Method.POST, Method.PUT,
+                   Method.PATCH, Method.DELETE, Method.OPTIONS,
+                   Method.TRACE, Method.CONNECT];
+    let i = 0;
+    while i < len(methods) {
+        let resp = r.serve(req(to_str(methods[i]), "/m"));
+        assert(resp.status == 200);
+        i = i + 1;
+    }
+    assert(len(r.routes_list()) == 9);
+}
+
+fn test_any_registers_several() {
+    let r = new_test_router();
+    r.any([Method.GET, Method.POST], "/multi", h_ok);
+    assert(r.serve(req("GET", "/multi")).status == 200);
+    assert(r.serve(req("POST", "/multi")).status == 200);
+    assert(r.serve(req("DELETE", "/multi")).status == 405);
+}
+
+fn test_params_and_wildcard() {
+    let r = new_test_router();
+    r.get("/orgs/:id", h_param);
+    r.get("/orgs/:id/keys/:key", h_two);
+    r.get("/files/*rest", h_rest);
+    assert(to_str(r.serve(req("GET", "/orgs/7")).body) == "{\"id\":\"7\"}");
+    assert(to_str(r.serve(req("GET", "/orgs/7/keys/k1")).body) ==
+           "{\"id\":\"7\",\"key\":\"k1\"}");
+    assert(to_str(r.serve(req("GET", "/files/a/b/c.txt")).body) ==
+           "{\"rest\":\"a/b/c.txt\"}");
+    assert(r.serve(req("GET", "/orgs")).status == 404);
+}
+
+fn test_query_is_not_part_of_the_route() {
+    let r = new_test_router();
+    r.get("/s", h_query);
+    let resp = r.serve(req("GET", "/s?q=slang&page=3"));
+    assert(to_str(resp.body) == "slang|3");
+    assert(to_str(r.serve(req("GET", "/s")).body) == "|1");
+}
+
+fn test_unknown_verb_is_not_implemented() {
+    let r = new_test_router();
+    r.get("/thing", h_ok);
+    let resp = r.serve(req("BREW", "/thing"));
+    assert(resp.status == 501);
+}
+
+fn test_method_reaches_the_handler_as_a_value() {
+    let r = new_test_router();
+    r.post("/echo", h_method);
+    assert(to_str(r.serve(req("POST", "/echo")).body) == "POST|POST");
+}
+
+fn test_405_carries_allow_and_404_does_not() {
+    let r = new_test_router();
+    r.get("/thing", h_ok);
+    r.post("/thing", h_ok);
+    let resp = r.serve(req("DELETE", "/thing"));
+    assert(resp.status == 405);
+    assert(resp_header(resp, "allow") == "GET, POST, HEAD, OPTIONS");
+    let nf = r.serve(req("GET", "/nothing"));
+    assert(nf.status == 404);
+    assert(resp_header(nf, "allow") == "");
+}
+
+fn test_head_is_served_by_get_without_a_body() {
+    let r = new_test_router();
+    r.get("/page", h_ok);
+    let resp = r.serve(req("HEAD", "/page"));
+    assert(resp.status == 200);
+    assert(len(resp.body) == 0);
+    assert(resp_header(resp, "content-type") == "application/json; charset=utf-8");
+}
+
+fn test_options_is_answered_automatically() {
+    let r = new_test_router();
+    r.get("/thing", h_ok);
+    r.delete("/thing", h_ok);
+    let resp = r.serve(req("OPTIONS", "/thing"));
+    assert(resp.status == 204);
+    assert(resp_header(resp, "allow") == "GET, DELETE, HEAD, OPTIONS");
+}
+
+fn test_explicit_options_route_wins() {
+    let r = new_test_router();
+    r.get("/thing", h_ok);
+    r.options("/thing", h_ok);
+    let resp = r.serve(req("OPTIONS", "/thing"));
+    assert(resp.status == 200);
+}
+
+fn test_before_can_stop_and_after_always_runs() {
+    let r = new_test_router();
+    r.get("/secret", h_ok);
+    r.get("/open", h_ok);
+    r.before(block_secret);
+    r.after(stamp);
+    let blocked = r.serve(req("GET", "/secret"));
+    assert(blocked.status == 401);
+    assert(resp_header(blocked, "x-route") == "/secret");
+    let allowed = r.serve(req_auth("GET", "/secret", "letmein"));
+    assert(allowed.status == 200);
+    let open_r = r.serve(req("GET", "/open"));
+    assert(open_r.status == 200);
+    assert(resp_header(open_r, "x-route") == "/open");
+}
+
+fn test_state_reaches_handlers_and_persists() {
+    let r = new_test_router();
+    r.get("/hit", h_state);
+    assert(to_str(r.serve(req("GET", "/hit")).body) == "t:1");
+    assert(to_str(r.serve(req("GET", "/hit")).body) == "t:2");
+    assert(r.state.hits == 2);
+}
+
+fn test_request_id_is_echoed() {
+    let r = new_test_router();
+    r.get("/x", h_ok);
+    let resp = r.serve_id(req("GET", "/x"), "req-42");
+    assert(resp_header(resp, "x-request-id") == "req-42");
+    let missing = r.serve_id(req("GET", "/none"), "req-43");
+    assert(missing.status == 404);
+    assert(resp_header(missing, "x-request-id") == "req-43");
+}
+
+fn test_created_sets_location() {
+    let r = new_test_router();
+    r.post("/things", h_created);
+    let resp = r.serve(req("POST", "/things"));
+    assert(resp.status == 201);
+    assert(resp_header(resp, "location") == "/things/new");
+}
+
+fn test_trailing_slashes_are_the_same_route() {
+    let r = new_test_router();
+    r.get("/a/b", h_ok);
+    assert(r.serve(req("GET", "/a/b/")).status == 200);
+    assert(r.serve(req("GET", "//a//b")).status == 200);
+}
+
+fn test_new_router_defaults() {
+    let r = new_router(TestState { hits: 0, name: "fresh" });
+    assert(len(r.routes) == 0);
+    assert(r.state.name == "fresh");
+    // the defaults a correct server should have: OPTIONS and HEAD
+    // answered automatically until told otherwise
+    r.get("/x", h_ok);
+    assert(r.serve(req("HEAD", "/x")).status == 200);
+    assert(r.serve(req("OPTIONS", "/x")).status == 204);
+}
+
+fn test_new_group_matches_the_method() {
+    let r = new_test_router();
+    let g = new_group(r, "/api");
+    g.get("/things", h_ok);
+    let resp = r.serve(req("GET", "/api/things"));
+    assert(resp.status == 200);
+    assert(resp.body == to_bytes("{\"route\":\"/api/things\"}"));
+}
+
+fn json_post(p: str, body: str) -> http.Request {
+    let h: map[str]str = {};
+    h["content-type"] = "application/json";
+    let rr = http.request("POST", p, "HTTP/1.1", h, to_bytes(body));
+    guard let r = rr else {
+        panic("json_post: bad test request");
+    }
+    return r;
+}
+
+fn test_dto_decodes_or_answers_decode_failed() {
+    let r = new_test_router();
+    r.post("/greet", h_dto);
+    let good = r.serve(json_post("/greet", "{\"message\":\"hi\"}"));
+    assert(good.status == 200);
+    assert(to_str(good.body) == "got:hi");
+
+    // a missing required field goes through decode_failed, naming it
+    let bad = r.serve(json_post("/greet", "{}"));
+    assert(bad.status == 422);
+    assert(strings.contains(to_str(bad.body), "\"field\":\"message\""));
+}
+
+fn test_query_as_binds_typed_fields_or_answers_decode_failed() {
+    let r = new_test_router();
+    r.get("/search", h_query_as);
+    let good = r.serve(req("GET", "/search?q=slang&page=2&active=true"));
+    assert(good.status == 200);
+    assert(to_str(good.body) == "slang|2|true");
+
+    // page is not a number here, so it fails exactly like a bad body
+    let bad = r.serve(req("GET", "/search?q=slang&page=nope&active=true"));
+    assert(bad.status == 422);
+    assert(strings.contains(to_str(bad.body), "\"field\":\"page\""));
+}
+
+fn frame_req(method: str, target: str) -> http.WireFrame {
+    let raw = to_bytes(method + " " + target + " HTTP/1.1\r\nHost: t\r\n\r\n");
+    let fr = http.parse_frame(raw);
+    guard let f = fr else {
+        panic("frame_req: bad test frame");
+    }
+    // WireFrame carries parsed strs, not raw: method/path straight
+    // out, headers = the block, body = the slice. Tests build the
+    // same shape read_frame returns on the wire.
+    let hb = raw[f.line_end + 2..f.head_end];
+    let bb = raw[f.body_start..f.body_end];
+    let sp = 0;
+    while sp < f.line_end && raw[sp] != 32 {
+        sp = sp + 1;
+    }
+    let pstart = sp + 1;
+    let sp2 = pstart;
+    while sp2 < f.line_end && raw[sp2] != 32 {
+        sp2 = sp2 + 1;
+    }
+    return http.WireFrame {
+        line_end: 0,
+        head_end: f.head_end,
+        body_start: 0,
+        body_end: 0,
+        end: len(raw),
+        version: f.version,
+        close: false,
+        filled: 0,
+        method: to_str(raw[0..sp]),
+        path: to_str(raw[pstart..sp2]),
+        headers: hb,
+        body: bb
+    };
+}
+
+fn test_frame_exact_matches_without_segs() {
+    let r = new_test_router();
+    r.get("/", h_ok);
+    r.get("/users/:id", h_param);
+    r.get("/orgs/:id/keys/:key", h_two);
+    r.get("/files/*rest", h_rest);
+    let root = frame_req("GET", "/");
+    assert(to_str(r.serve_frame(root, "").body) ==
+           "{\"route\":\"/\"}");
+    let one = frame_req("GET", "/users/42");
+    assert(to_str(r.serve_frame(one, "").body) == "{\"id\":\"42\"}");
+    // query strings never reach the route: same frame shape, same answer
+    let q = frame_req("GET", "/users/42?verbose=true");
+    assert(to_str(r.serve_frame(q, "").body) == "{\"id\":\"42\"}");
+    // multi-param and wildcard shapes fall back to serve_id: same body
+    let two = frame_req("GET", "/orgs/7/keys/k1");
+    assert(to_str(r.serve_frame(two, "").body) ==
+           "{\"id\":\"7\",\"key\":\"k1\"}");
+    let wild = frame_req("GET", "/files/a/b/c.txt");
+    assert(to_str(r.serve_frame(wild, "").body) ==
+           "{\"rest\":\"a/b/c.txt\"}");
+    // method mismatch on an exact path is a 405 with Allow, not a 404
+    let bad = frame_req("DELETE", "/");
+    let denied = r.serve_frame(bad, "");
+    assert(denied.status == 405);
+    assert(resp_header(denied, "allow") == "GET, HEAD, OPTIONS");
+    // unknown path is a 404 through the same error shape
+    let nf = frame_req("GET", "/nothing");
+    assert(r.serve_frame(nf, "").status == 404);
+    // unknown verb is a 501, same as serve_id
+    let brew = frame_req("BREW", "/");
+    assert(r.serve_frame(brew, "").status == 501);
+}
+
+fn test_static_bytes_serves_without_a_handler_call() {
+    let r = new_test_router();
+    let n = r.static_bytes("/", 200, "text/plain; charset=utf-8",
+                            b"Hello, World!", h_static_hello);
+    assert(n == 1);
+    let f = frame_req("GET", "/");
+    let sr = r.serve_static(f);
+    guard let b = sr else {
+        println("FAIL static should hit");
+        exit(1);
+    }
+    assert(b.status == 200);
+    assert(b.content_type == "text/plain; charset=utf-8");
+    assert(b.body == b"Hello, World!");
+    // the prebuilt rendering carries every header the dynamic emit does,
+    // security headers included, and the same body; only the Date line's
+    // place differs (last, where write_static refreshes it)
+    let dynamic = to_str(http.serialize(r.security.apply(http.text_response_bytes(
+        200, "OK", "text/plain; charset=utf-8", b"Hello, World!"))));
+    let rendered = to_str(b.keep_alive);
+    assert(same_header_set(dynamic, rendered), rendered);
+    assert(strings.has_suffix(rendered, "\r\n\r\nHello, World!"));
+    // a dynamic route alongside still works through the same entry
+    r.get("/users/:id", h_param);
+    let one = frame_req("GET", "/users/42");
+    let dr = r.serve_static(one);
+    guard let _static_hit = dr else let dyn_resp = err_of(dr) {
+        assert(to_str(dyn_resp.body) == "{\"id\":\"42\"}");
+        // wrong method on a static path is NOT served statically: it
+        // falls through to the dynamic 405, not to stale bytes
+        let del = frame_req("DELETE", "/");
+        let mr = r.serve_static(del);
+        guard let _mhit = mr else let mresp = err_of(mr) {
+            assert(mresp.status == 405);
+            // unknown path misses static and 404s dynamically
+            let nf = frame_req("GET", "/nothing");
+            let nr = r.serve_static(nf);
+            guard let _nhit = nr else let nresp = err_of(nr) {
+                assert(nresp.status == 404);
+                return;
+            }
+            println("FAIL static must not answer unknown paths");
+            exit(1);
+        }
+        println("FAIL static must not answer DELETE");
+        exit(1);
+    }
+    println("FAIL dynamic should miss static");
+    exit(1);
+}
+
+fn test_static_bytes_refuses_params_and_wildcards() {
+    let r = new_test_router();
+    assert(r.static_bytes("/users/:id", 200, "text/plain", b"x",
+                           h_param) == -1);
+    assert(r.static_bytes("/files/*rest", 200, "text/plain", b"x",
+                           h_rest) == -1);
+    assert(len(r.routes_list()) == 0);
+}
+
+fn test_plain_get_is_never_static() {
+    // The regression this guards: `get` must not snapshot, even for
+    // a handler that ignores its Ctx -- state counters and clocks
+    // made auto-detection unsound. Only `static_bytes` snapshots.
+    let r = new_test_router();
+    r.get("/", h_static_hello);
+    assert(!r.routes[0].has_static);
+    let f = frame_req("GET", "/");
+    let sr = r.serve_static(f);
+    guard let _hit = sr else let dyn_resp = err_of(sr) {
+        assert(to_str(dyn_resp.body) == "Hello, World!");
+        return;
+    }
+    println("FAIL plain get must stay dynamic");
+    exit(1);
+}
+
+fn h_whoami(c: Ctx[TestState]) -> http.Response {
+    guard let m = c.locals else {
+        return text(200, c.local("user") + "|0|0");
+    }
+    let n = len(m);
+    let h = "0";
+    if c.has_local("user") {
+        h = "1";
+    }
+    return text(200, c.local("user") + "|" + to_str(n) + "|" + h);
+}
+
+fn set_who(c: Ctx[TestState]) -> opt[http.Response] {
+    c.set_local("user", "ada");
+    return none;
+}
+
+fn test_locals_materialise_on_first_write() {
+    // none reads empty; set_local materialises; second write reuses.
+    let r = new_test_router();
+    r.get("/who", h_whoami);
+    assert(to_str(r.serve(req("GET", "/who")).body) == "|0|0");
+    let r2 = new_test_router();
+    r2.before(set_who);
+    r2.get("/who", h_whoami);
+    assert(to_str(r2.serve(req("GET", "/who")).body) == "ada|1|1");
+    // two befores: still one map, count grows. The handler reads
+    // only (no third write) so the count it reports is exact.
+    let r3 = new_test_router();
+    r3.before(set_who);
+    r3.before(set_tenant);
+    r3.get("/who2", h_who2);
+    assert(to_str(r3.serve(req("GET", "/who2")).body) == "ada|acme|2");
+}
+
+// Reports what the request's locals held on arrival, then writes one.
+fn h_mark(c: Ctx[TestState]) -> http.Response {
+    let before = c.local("mark");
+    c.set_local("mark", "x");
+    return text(200, "before=" + before);
+}
+
+fn test_shared_none_does_not_carry_locals_between_requests() {
+    // Every Ctx a route builds starts from the same `none` (Route.no_map:
+    // a slang opt is a heap object, so a fresh none per request was an
+    // allocation). A write on one request must never be visible to the
+    // next on the same route -- exact, single-:id and general routes
+    // each build their Ctx on a different path.
+    let r = new_test_router();
+    r.get("/m", h_mark);
+    r.get("/m/:id", h_mark);
+    r.get("/m/:a/:b", h_mark);
+    for p in ["/m", "/m/7", "/m/1/2"] {
+        let i = 0;
+        while i < 2 {
+            let body = to_str(r.serve_frame(frame_req("GET", p), "").body);
+            if body != "before=" {
+                panic("locals leaked into a later request on " + p + ": " +
+                      body);
+            }
+            assert(to_str(r.serve(req("GET", p)).body) == "before=");
+            i = i + 1;
+        }
+    }
+}
+
+fn set_tenant(c: Ctx[TestState]) -> opt[http.Response] {
+    c.set_local("tenant", "acme");
+    return none;
+}
+
+fn h_who2(c: Ctx[TestState]) -> http.Response {
+    let n = 0;
+    guard let m = c.locals else {
+        return text(200, "nolocals");
+    }
+    n = len(m);
+    return text(200, c.local("user") + "|" + c.local("tenant") + "|" +
+                     to_str(n));
+}
+
+fn h_param_missing(c: Ctx[TestState]) -> http.Response {
+    if c.param("id") == "" {
+        return text(200, "empty");
+    }
+    return text(200, "full");
+}
+
+fn test_params_none_is_empty() {
+    let r = new_test_router();
+    r.get("/p", h_param_missing);
+    assert(to_str(r.serve(req("GET", "/p")).body) == "empty");
+}
+
+// Whether two serialized responses carry the same header lines, in any
+// order, Date compared by presence only.
+fn same_header_set(a: str, b: str) -> bool {
+    let la = header_lines(a);
+    let lb = header_lines(b);
+    if len(la) != len(lb) {
+        return false;
+    }
+    for l in la {
+        let found = false;
+        for m in lb {
+            if l == m {
+                found = true;
+            }
+        }
+        if !found {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn header_lines(raw: str) -> [str] {
+    let out: [str] = [];
+    let head = strings.slice(raw, 0, strings.find(raw, "\r\n\r\n"));
+    for l in strings.split(head, "\r\n") {
+        if strings.has_prefix(l, "date: ") {
+            push(out, "date: *");
+        } else {
+            push(out, l);
+        }
+    }
+    return out;
+}
