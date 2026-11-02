@@ -143,8 +143,7 @@ fails when the committed site is stale.
 ## Not yet
 
 The full list, ordered and checkable, is [todo.md](todo.md). The remaining
-work is the `v0.2.0` release after slang ships the required compiler and
-package features, the measured performance gap described in
+work is the measured performance gap described in
 [docs/benchmarks.md](docs/benchmarks.md), and the MongoDB adapter, which is
 currently deferred. The HTTP, realtime, migrations, metrics, tracing,
 pagination and OpenAPI work listed earlier in this README is implemented.

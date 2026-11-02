@@ -95,8 +95,8 @@ redis.release(pool, conn);
 
 ## Migrations
 
-`make cli` builds `bin/zokor`. Run `bin/zokor migrate [directory]` with
-`DATABASE_URL` configured; the default directory is `migrations`. Files
+Run `zokor migrate [directory]` (see [The zokor command](#the-zokor-command))
+with `DATABASE_URL` configured; the default directory is `migrations`. Files
 are numbered forward-only SQL, for example `001_create_users.sql`.
 Versions must be positive and unique; descriptions use ASCII letters,
 digits, underscores or hyphens. Files are ordered numerically.

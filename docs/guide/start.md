@@ -4,16 +4,23 @@
 
 ## Starting a service
 
-`zokor new` writes a service that compiles and passes its tests as it
-stands, laid out so a person or an agent changing one feature reads one
-directory:
+Install the `zokor` command (see [The zokor command](#the-zokor-command)),
+then:
 
 ```
-make cli                      # builds bin/zokor
-bin/zokor new billing         # or: --db pg for Postgres
-cd billing && slangc get && make test && make run
-bin/zokor add feature orders  # a new slice, wired in (--entity to name its type)
-bin/zokor add route orders POST /:id/cancel cancel_order
+zokor new billing             # a small service: startup, config, a health check
+cd billing && slangc get && make test
+make dev                      # rebuilds and restarts on every save
+```
+
+For the full layout, with a sample feature split into layers, start with
+`zokor newcomp` instead, and grow it a slice at a time:
+
+```
+zokor newcomp billing --db pg # --db memory (the default) or pg for Postgres
+cd billing && slangc get && make test
+zokor add feature orders      # a new slice, wired in (--entity to name its type)
+zokor add route orders POST /:id/cancel cancel_order
 ```
 
 `add route` registers the route under the feature's prefix (here
@@ -25,16 +32,15 @@ mounted and authenticated.
 layout: imports go `server -> service -> domain`, only `store/` and
 `platform/db` import `pg`, `domain` and `service` do no I/O, SQL is never
 built by concatenating a value, configuration is read only in
-`platform/config`, every public use case takes a `tenant_id`, every
-`server.sl` is behind `require_tenant` (or says `// zokor:public`), and every
-package has tests. It prints `file:line: rule: message`, or one JSON
-object per line with `--json`, and exits 1 on any problem.
+`platform/config`, and every package has tests. It prints
+`file:line: rule: message`, or one JSON object per line with `--json`, and
+exits 1 on any problem.
 
 ```
 src/main.sl            startup only: config, state, mount, serve
 src/platform/config/   every setting, read once
 src/platform/app/      App: the state handlers get as c.state
-src/platform/auth/     who the caller is (API keys -> tenant)
+src/platform/auth/     who the caller is
 src/platform/db/       the Postgres pool (--db pg)
 src/<feature>/
   domain/    types and rules; pure: no I/O, no zokor
@@ -46,19 +52,13 @@ migrations/  NNN_<feature>.sql (--db pg), applied by `zokor migrate`
 
 Each folder is a package with its tests beside it, and imports run one
 way: `server -> service -> domain`, with `store` implementing the
-service's ports and `platform/app` wiring them together. The example
-feature is a tenant-scoped notes API (create, get, list) behind
-`X-Api-Key`, with fakes in `*_test.sl` so they never ship. `add feature`
-writes the same slice under a new name and inserts it at the `// zokor:`
-markers in `src/platform/app/app.sl` and `src/main.sl`; it refuses a name
-that exists or that the generated code uses, and writes nothing then. The
-project's own `AGENTS.md` gives an agent these rules in a few lines.
-
-A new project pins `zokor` at `v0.2.0`, which is not tagged yet: until it
-is, pass `--zokor-git` and `--zokor-tag` for the commit you build against.
-The templates are real files under `cmd/zokor/templates/`, embedded by
-`make templates`; `tests/scaffold.sh` (part of `make check`) generates
-both kinds of project against this checkout and runs their tests.
+service's ports and `platform/app` wiring them together. The sample
+feature is a notes API (create, get, list), with fakes in `*_test.sl` so
+they never ship. `add feature` writes the same slice under a new name and
+inserts it at the `// zokor:` markers in `src/platform/app/app.sl` and
+`src/main.sl`; it refuses a name that exists or that the generated code
+uses, and writes nothing then. The project's own `AGENTS.md` gives an
+agent these rules in a few lines.
 
 ## Install
 
@@ -72,8 +72,7 @@ version 0.1.0
 pkg zokor git https://github.com/dolphlabs/zokor tag v0.2.0 dir zokor
 ```
 
-`v0.2.0` is the next release and is not tagged yet. Until it is, pin
-`tag v0.1.0 dir src`: the package lived in `src/` before the rename.
+`v0.1.0` and older lived in `src/`: pin those with `dir src`.
 
 Then fetch it, and import it as `import "zokor";`:
 

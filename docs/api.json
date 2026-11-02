@@ -571,6 +571,22 @@
         {
           "signature": "request_id_for(headers: bytes) -> str",
           "description": "The id a request is answered and logged under: the client's own X-Request-Id when it is 1-64 characters of [A-Za-z0-9._-], so..."
+        },
+        {
+          "signature": "request_id_with(headers: bytes, ids: RequestIds) -> str",
+          "description": "request_id_for, drawing a new id from `ids`: what the serve loop calls, once per dynamic request on a connection."
+        },
+        {
+          "signature": "gc struct RequestIds { pool: bytes, at: int, out: bytes }",
+          "description": "One connection's source of request ids: the same 128 random bits and `req_` + hex as new_request_id, but drawn 32 ids at a time."
+        },
+        {
+          "signature": "request_ids() -> RequestIds",
+          "description": ""
+        },
+        {
+          "signature": "RequestIds.next() -> str",
+          "description": ""
         }
       ]
     },

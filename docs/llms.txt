@@ -6,6 +6,7 @@
 
 - [zokor](index.md): A backend framework for slang.
 - [Start here](guide/start.md): Create a Slang backend service with Zokor. Follow the setup guide for installation, project structure, requirements, and your first routes.
+- [The zokor command](guide/cli.md): Install and use the zokor command: scaffold services and features, check the layout, rebuild on save, and apply migrations.
 - [HTTP APIs](guide/http.md): Build HTTP APIs with Zokor routing, middleware, authentication, validation, uploads, rate limits, caching, pagination, and content negotiation.
 - [Data and storage](guide/data.md): Use PostgreSQL, Redis, and SQL migrations in Zokor, with typed row decoding, transactions, connection pools, and configuration guidance.
 - [Operations](guide/operations.md): Configure and operate Zokor services with timeouts, graceful shutdown, HTTPS, logging, background jobs, metrics, tracing, and OpenAPI.
