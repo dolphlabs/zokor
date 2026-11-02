@@ -43,24 +43,27 @@
 </header>
 <div id="navscrim" class="navscrim" hidden></div>
 <div id="results" class="results" role="listbox" aria-label="Search results" hidden></div>
-<nav class="subnav" aria-label="Guide pages"><a href="../guide/start" aria-current="page">Start</a><a href="../guide/http">HTTP</a><a href="../guide/data">Data</a><a href="../guide/operations">Operations</a><a href="../guide/realtime">Realtime</a><a href="../guide/architecture">Architecture</a></nav>
+<nav class="subnav" aria-label="Guide pages"><a href="../guide/start" aria-current="page">Start</a><a href="../guide/cli">CLI</a><a href="../guide/http">HTTP</a><a href="../guide/data">Data</a><a href="../guide/operations">Operations</a><a href="../guide/realtime">Realtime</a><a href="../guide/architecture">Architecture</a></nav>
 <main id="main">
 
 <div class="page">
   <article class="content">
 <header class="page-head"><p class="page-kicker">Zokor documentation</p><h1>Start here</h1><p class="tagline">Create a Slang backend service with Zokor. Follow the setup guide for installation, project structure, requirements, and your first routes.</p><p class="agentline"><a href="../guide/start.md">Markdown</a> · <a href="../llms.txt">llms.txt</a> · <a href="../api.json">api.json</a></p></header>
-<section class="readme-section"><h2 id="starting-a-service">Starting a service<a class="anchor" href="#starting-a-service" aria-label="Link to this section">#</a></h2><p><code>zokor new</code> writes a service that compiles and passes its tests as it stands, laid out so a person or an agent changing one feature reads one directory:</p>
-<div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="">make cli                      # builds bin/zokor
-bin/zokor new billing         # or: --db pg <span class="tok-keyword">for</span> Postgres
-cd billing &amp;&amp; slangc get &amp;&amp; make test &amp;&amp; make run
-bin/zokor add feature orders  # a new slice, wired <span class="tok-keyword">in</span> (--entity to name its type)
-bin/zokor add route orders POST /:id/cancel cancel_order</code></pre></div>
+<section class="readme-section"><h2 id="starting-a-service">Starting a service<a class="anchor" href="#starting-a-service" aria-label="Link to this section">#</a></h2><p>Install the <code>zokor</code> command (see <a href="../guide/cli#the-zokor-command">The zokor command</a>), then:</p>
+<div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="">zokor new billing             # a small service: startup, config, a health check
+cd billing &amp;&amp; slangc get &amp;&amp; make test
+make dev                      # rebuilds and restarts on every save</code></pre></div>
+<p>For the full layout, with a sample feature split into layers, start with <code>zokor newcomp</code> instead, and grow it a slice at a time:</p>
+<div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="">zokor newcomp billing --db pg # --db memory (the <span class="tok-keyword">default</span>) or pg <span class="tok-keyword">for</span> Postgres
+cd billing &amp;&amp; slangc get &amp;&amp; make test
+zokor add feature orders      # a new slice, wired <span class="tok-keyword">in</span> (--entity to name its type)
+zokor add route orders POST /:id/cancel cancel_order</code></pre></div>
 <p><code>add route</code> registers the route under the feature&#x27;s prefix (here <code>POST /orders/:id/cancel</code>), behind the feature&#x27;s authentication, with a handler that answers 501 until it is written and a test that the route is mounted and authenticated.</p>
-<p><code>zokor check</code> (run by the project&#x27;s <code>make check</code>) holds a service to that layout: imports go <code>server -&gt; service -&gt; domain</code>, only <code>store/</code> and <code>platform/db</code> import <code>pg</code>, <code>domain</code> and <code>service</code> do no I/O, SQL is never built by concatenating a value, configuration is read only in <code>platform/config</code>, every public use case takes a <code>tenant_id</code>, every <code>server.sl</code> is behind <code>require_tenant</code> (or says <code>// zokor:public</code>), and every package has tests. It prints <code>file:line: rule: message</code>, or one JSON object per line with <code>--json</code>, and exits 1 on any problem.</p>
+<p><code>zokor check</code> (run by the project&#x27;s <code>make check</code>) holds a service to that layout: imports go <code>server -&gt; service -&gt; domain</code>, only <code>store/</code> and <code>platform/db</code> import <code>pg</code>, <code>domain</code> and <code>service</code> do no I/O, SQL is never built by concatenating a value, configuration is read only in <code>platform/config</code>, and every package has tests. It prints <code>file:line: rule: message</code>, or one JSON object per line with <code>--json</code>, and exits 1 on any problem.</p>
 <div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="">src/main.sl            startup only: config, state, mount, serve
 src/platform/config/   every setting, read once
 src/platform/app/      App: the state handlers get <span class="tok-keyword">as</span> c.state
-src/platform/auth/     who the caller is (API keys -&gt; tenant)
+src/platform/auth/     who the caller is
 src/platform/db/       the Postgres pool (--db pg)
 src/&lt;feature&gt;/
   domain/    types and rules; pure: no I/O, no zokor
@@ -68,14 +71,13 @@ src/&lt;feature&gt;/
   store/     adapters <span class="tok-keyword">for</span> those ports; store.sl picks one at startup
   server/    routes, DTOs, error codes
 migrations/  NNN_&lt;feature&gt;.sql (--db pg), applied by `zokor migrate`</code></pre></div>
-<p>Each folder is a package with its tests beside it, and imports run one way: <code>server -&gt; service -&gt; domain</code>, with <code>store</code> implementing the service&#x27;s ports and <code>platform/app</code> wiring them together. The example feature is a tenant-scoped notes API (create, get, list) behind <code>X-Api-Key</code>, with fakes in <code>*_test.sl</code> so they never ship. <code>add feature</code> writes the same slice under a new name and inserts it at the <code>// zokor:</code> markers in <code>src/platform/app/app.sl</code> and <code>src/main.sl</code>; it refuses a name that exists or that the generated code uses, and writes nothing then. The project&#x27;s own <code>AGENTS.md</code> gives an agent these rules in a few lines.</p>
-<p>A new project pins <code>zokor</code> at <code>v0.2.0</code>, which is not tagged yet: until it is, pass <code>--zokor-git</code> and <code>--zokor-tag</code> for the commit you build against. The templates are real files under <code>cmd/zokor/templates/</code>, embedded by <code>make templates</code>; <code>tests/scaffold.sh</code> (part of <code>make check</code>) generates both kinds of project against this checkout and runs their tests.</p></section>
+<p>Each folder is a package with its tests beside it, and imports run one way: <code>server -&gt; service -&gt; domain</code>, with <code>store</code> implementing the service&#x27;s ports and <code>platform/app</code> wiring them together. The sample feature is a notes API (create, get, list), with fakes in <code>*_test.sl</code> so they never ship. <code>add feature</code> writes the same slice under a new name and inserts it at the <code>// zokor:</code> markers in <code>src/platform/app/app.sl</code> and <code>src/main.sl</code>; it refuses a name that exists or that the generated code uses, and writes nothing then. The project&#x27;s own <code>AGENTS.md</code> gives an agent these rules in a few lines.</p></section>
 <section class="readme-section"><h2 id="install">Install<a class="anchor" href="#install" aria-label="Link to this section">#</a></h2><p>In a new project (<code>slangc new app</code> writes the <code>name</code> and <code>version</code> lines), add the pin to <code>slang.project</code>. The whole file:</p>
 <div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="">name app
 version <span class="tok-number">0.1.0</span>
 
 pkg zokor git https:<span class="tok-comment">//github.com/dolphlabs/zokor tag v0.2.0 dir zokor</span></code></pre></div>
-<p><code>v0.2.0</code> is the next release and is not tagged yet. Until it is, pin <code>tag v0.1.0 dir src</code>: the package lived in <code>src/</code> before the rename.</p>
+<p><code>v0.1.0</code> and older lived in <code>src/</code>: pin those with <code>dir src</code>.</p>
 <p>Then fetch it, and import it as <code>import &quot;zokor&quot;;</code>:</p>
 <div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="">slangc get</code></pre></div>
 <p><code>dir zokor</code> points the pin at the package inside the repository, so the repository can hold its examples, docs and tests without shipping them into your build.</p></section>

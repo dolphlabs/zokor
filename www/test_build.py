@@ -112,6 +112,21 @@ class SearchMetadataTests(unittest.TestCase):
                 exists = route in self.files or (ROOT / "docs" / route).is_file()
                 self.assertTrue(exists, "%s -> %s (%s)" % (path, target, route))
 
+    def test_section_links_land_on_the_guide_page_that_holds_them(self):
+        ids = {path: set(re.findall(r'id="([^"]+)"', source))
+               for path, source in self.pages.items()}
+        checked = 0
+        for path, source in self.pages.items():
+            if not path.startswith("guide/"):
+                continue
+            for href in re.findall(r'href="([^"]*guide/[a-z]+#[^"]+)"', source):
+                page, _, fragment = href.rpartition("/")[2].partition("#")
+                target = "guide/%s.html" % page
+                self.assertIn(fragment, ids.get(target, set()),
+                              "%s -> %s" % (path, href))
+                checked += 1
+        self.assertGreater(checked, 0)
+
     def test_machine_readable_alternates_are_available_but_not_indexed(self):
         headers = self.files["_headers"]
         for rule in ("/*.md", "/*.txt", "/*.json"):

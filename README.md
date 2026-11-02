@@ -1198,8 +1198,8 @@ not survive a restart and are not shared between instances.
 
 ## Migrations
 
-`make cli` builds `bin/zokor`. Run `bin/zokor migrate [directory]` with
-`DATABASE_URL` configured; the default directory is `migrations`. Files
+Run `zokor migrate [directory]` (see [The zokor command](#the-zokor-command))
+with `DATABASE_URL` configured; the default directory is `migrations`. Files
 are numbered forward-only SQL, for example `001_create_users.sql`.
 Versions must be positive and unique; descriptions use ASCII letters,
 digits, underscores or hyphens. Files are ordered numerically.
@@ -1510,16 +1510,23 @@ slang's `dev` branch until its next release.
 
 ## Starting a service
 
-`zokor new` writes a service that compiles and passes its tests as it
-stands, laid out so a person or an agent changing one feature reads one
-directory:
+Install the `zokor` command (see [The zokor command](#the-zokor-command)),
+then:
 
 ```
-make cli                      # builds bin/zokor
-bin/zokor new billing         # or: --db pg for Postgres
-cd billing && slangc get && make test && make run
-bin/zokor add feature orders  # a new slice, wired in (--entity to name its type)
-bin/zokor add route orders POST /:id/cancel cancel_order
+zokor new billing             # a small service: startup, config, a health check
+cd billing && slangc get && make test
+make dev                      # rebuilds and restarts on every save
+```
+
+For the full layout, with a sample feature split into layers, start with
+`zokor newcomp` instead, and grow it a slice at a time:
+
+```
+zokor newcomp billing --db pg # --db memory (the default) or pg for Postgres
+cd billing && slangc get && make test
+zokor add feature orders      # a new slice, wired in (--entity to name its type)
+zokor add route orders POST /:id/cancel cancel_order
 ```
 
 `add route` registers the route under the feature's prefix (here
@@ -1531,16 +1538,15 @@ mounted and authenticated.
 layout: imports go `server -> service -> domain`, only `store/` and
 `platform/db` import `pg`, `domain` and `service` do no I/O, SQL is never
 built by concatenating a value, configuration is read only in
-`platform/config`, every public use case takes a `tenant_id`, every
-`server.sl` is behind `require_tenant` (or says `// zokor:public`), and every
-package has tests. It prints `file:line: rule: message`, or one JSON
-object per line with `--json`, and exits 1 on any problem.
+`platform/config`, and every package has tests. It prints
+`file:line: rule: message`, or one JSON object per line with `--json`, and
+exits 1 on any problem.
 
 ```
 src/main.sl            startup only: config, state, mount, serve
 src/platform/config/   every setting, read once
 src/platform/app/      App: the state handlers get as c.state
-src/platform/auth/     who the caller is (API keys -> tenant)
+src/platform/auth/     who the caller is
 src/platform/db/       the Postgres pool (--db pg)
 src/<feature>/
   domain/    types and rules; pure: no I/O, no zokor
@@ -1552,19 +1558,96 @@ migrations/  NNN_<feature>.sql (--db pg), applied by `zokor migrate`
 
 Each folder is a package with its tests beside it, and imports run one
 way: `server -> service -> domain`, with `store` implementing the
-service's ports and `platform/app` wiring them together. The example
-feature is a tenant-scoped notes API (create, get, list) behind
-`X-Api-Key`, with fakes in `*_test.sl` so they never ship. `add feature`
-writes the same slice under a new name and inserts it at the `// zokor:`
-markers in `src/platform/app/app.sl` and `src/main.sl`; it refuses a name
-that exists or that the generated code uses, and writes nothing then. The
-project's own `AGENTS.md` gives an agent these rules in a few lines.
+service's ports and `platform/app` wiring them together. The sample
+feature is a notes API (create, get, list), with fakes in `*_test.sl` so
+they never ship. `add feature` writes the same slice under a new name and
+inserts it at the `// zokor:` markers in `src/platform/app/app.sl` and
+`src/main.sl`; it refuses a name that exists or that the generated code
+uses, and writes nothing then. The project's own `AGENTS.md` gives an
+agent these rules in a few lines.
 
-A new project pins `zokor` at `v0.2.0`, which is not tagged yet: until it
-is, pass `--zokor-git` and `--zokor-tag` for the commit you build against.
-The templates are real files under `cmd/zokor/templates/`, embedded by
-`make templates`; `tests/scaffold.sh` (part of `make check`) generates
-both kinds of project against this checkout and runs their tests.
+## The zokor command
+
+`zokor` is a separate tool,
+[zokor_cli](https://github.com/dolphlabs/zokor_cli). It needs slang 0.2.4
+or later, git and make; with slang 0.2.5 or later, watch mode uses slang's
+development builds, which rebuild several times faster.
+
+```
+curl -fsSL https://raw.githubusercontent.com/dolphlabs/zokor_cli/main/install.sh | sh
+```
+
+This builds the latest release with your `slangc` and installs it as
+`~/.local/bin/zokor`. `PREFIX` puts it somewhere else, and
+`ZOKOR_CLI_VERSION=v0.2.2` picks a release. From a checkout of zokor_cli,
+`make install PREFIX=~/.local` does the same. `zokor version` prints the
+CLI's version and the zokor release new projects pin.
+
+```
+zokor version               this CLI, and the zokor release new projects pin
+zokor new <name>            a small service: startup, config, a health check
+zokor newcomp <name>        the full layout, with a sample feature
+                            [--db memory|pg]
+zokor add feature <name>    a new slice, wired in [--entity <singular>]
+zokor add route <feature> <METHOD> <path> <handler>
+zokor check [--json]        the layout rules, run from the service's root
+zokor start                 build into bin/app and run it in the foreground
+zokor watch [--release]     rebuild and restart on every save
+zokor migrate [directory]   apply migrations (default: migrations)
+```
+
+`new` and `newcomp` also take `--zokor-git URL` and `--zokor-tag TAG` to
+pin a zokor other than the release the CLI was built against. A generated
+project's `Makefile` wraps the common ones: `make dev` is `zokor watch`,
+`make check` is `zokor check` plus the tests and a build, and `make run`
+builds and runs without the CLI.
+
+`add feature` and `add route` need a project made by `newcomp`: they
+insert the new code at its `// zokor:` markers, and a `new` project has
+none. Both run from the service's root, and `add feature` refuses a name
+that already exists.
+
+### Checking a service
+
+`zokor check` always enforces the layout, imports, pure `domain` and
+`service`, `pg` only in `store/` and `platform/db`, literal SQL,
+configuration read once, and tests beside every package. Two rules are
+opt-in, one per line of a `zokor.rules` file at the service's root:
+
+```
+tenant                  # every public use case in service/ takes tenant_id
+auth require_session    # every server.sl calls this guard (default
+                        # require_tenant) or says // zokor:public
+```
+
+### Running and watching
+
+`zokor start` finds `src/main.sl` (or `main.sl`), builds it into
+`bin/app` and runs it in the foreground. `zokor watch`, the same as
+`zokor start --watch`, keeps it running while you edit:
+
+- It compiles beside the running server, into `.zokor/watch/app.next`,
+  and swaps only when the build succeeds. A compile error is printed and
+  the previous server keeps serving.
+- A restart sends `SIGTERM` to the server's process group and kills it
+  if it has not exited after two seconds, then starts the new build.
+- A save during a build cancels that build and starts another, so the
+  server never runs code older than your last save.
+- If the server crashes, the watcher waits for the next save instead of
+  restarting it in a loop.
+- Builds are unoptimized and compile about ten times faster;
+  `--release` builds optimized.
+
+Both take `--entry <path>`, `--bin <path>`, `--verbose`, and arguments
+for the service after `--`, as in `zokor watch -- --port 9000`.
+`--debounce <ms>` (default 50) sets how long `watch` waits for a burst of
+saves to settle.
+
+### Migrations from the command line
+
+`zokor migrate [directory]` applies a service's migrations with
+`DATABASE_URL` from the environment; see [Migrations](#migrations) for
+the file rules and limits.
 
 ## Install
 
@@ -1578,8 +1661,7 @@ version 0.1.0
 pkg zokor git https://github.com/dolphlabs/zokor tag v0.2.0 dir zokor
 ```
 
-`v0.2.0` is the next release and is not tagged yet. Until it is, pin
-`tag v0.1.0 dir src`: the package lived in `src/` before the rename.
+`v0.1.0` and older lived in `src/`: pin those with `dir src`.
 
 Then fetch it, and import it as `import "zokor";`:
 
@@ -1668,8 +1750,7 @@ fails when the committed site is stale.
 ## Not yet
 
 The full list, ordered and checkable, is [todo.md](todo.md). The remaining
-work is the `v0.2.0` release after slang ships the required compiler and
-package features, the measured performance gap described in
+work is the measured performance gap described in
 [docs/benchmarks.md](docs/benchmarks.md), and the MongoDB adapter, which is
 currently deferred. The HTTP, realtime, migrations, metrics, tracing,
 pagination and OpenAPI work listed earlier in this README is implemented.

@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zokor CLI | Scaffold, Check, Watch &amp; Migrate</title>
+<meta name="description" content="Install and use the zokor command: scaffold services and features, check the layout, rebuild on save, and apply migrations.">
+<meta name="author" content="Dolphlabs">
+<meta property="og:site_name" content="Zokor">
+<meta property="og:title" content="Zokor CLI | Scaffold, Check, Watch &amp; Migrate">
+<meta property="og:description" content="Install and use the zokor command: scaffold services and features, check the layout, rebuild on save, and apply migrations.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://zokor.dolphlabs.com/guide/cli">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Zokor CLI | Scaffold, Check, Watch &amp; Migrate">
+<meta name="twitter:description" content="Install and use the zokor command: scaffold services and features, check the layout, rebuild on save, and apply migrations.">
+<link rel="canonical" href="https://zokor.dolphlabs.com/guide/cli">
+<link rel="alternate" type="text/markdown" href="../guide/cli.md" title="Markdown">
+<link rel="alternate" type="text/plain" href="../llms.txt" title="llms.txt">
+<link rel="stylesheet" href="../style.css">
+<link rel="icon" type="image/png" sizes="64x64" href="../assets/zokor-icon-64.png">
+<meta property="og:image" content="https://zokor.dolphlabs.com/assets/zokor-card-1200x630.jpg"><meta property="og:image:alt" content="Zokor, a backend framework for Slang"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta name="twitter:image" content="https://zokor.dolphlabs.com/assets/zokor-card-1200x630.jpg"><meta name="twitter:image:alt" content="Zokor, a backend framework for Slang">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <a class="brand" href="../">
+    <img src="../assets/zokor-header-256.png" width="40" height="40" alt="">
+    <span>zokor</span>
+  </a>
+  <button id="navtoggle" class="navtoggle" type="button" aria-label="Toggle navigation"
+          aria-expanded="false" aria-controls="mainnav">
+    <span></span><span></span><span></span>
+  </button>
+  <nav class="mainnav" id="mainnav" aria-label="Main navigation"><a href="../">Home</a><a href="../guide/start" class="active" aria-current="page">Start</a><a href="../api/">API</a><a href="../examples/">Examples</a></nav>
+  <div class="tools">
+    <label class="search-label" for="search">Search</label>
+    <input id="search" type="search" placeholder="Search docs…" autocomplete="off"
+           aria-label="Search documentation" aria-controls="results">
+    <button id="theme" type="button" aria-label="Toggle color theme">◐</button>
+  </div>
+</header>
+<div id="navscrim" class="navscrim" hidden></div>
+<div id="results" class="results" role="listbox" aria-label="Search results" hidden></div>
+<nav class="subnav" aria-label="Guide pages"><a href="../guide/start">Start</a><a href="../guide/cli" aria-current="page">CLI</a><a href="../guide/http">HTTP</a><a href="../guide/data">Data</a><a href="../guide/operations">Operations</a><a href="../guide/realtime">Realtime</a><a href="../guide/architecture">Architecture</a></nav>
+<main id="main">
+
+<div class="page">
+  <article class="content">
+<header class="page-head"><p class="page-kicker">Zokor documentation</p><h1>The zokor command</h1><p class="tagline">Install and use the zokor command: scaffold services and features, check the layout, rebuild on save, and apply migrations.</p><p class="agentline"><a href="../guide/cli.md">Markdown</a> · <a href="../llms.txt">llms.txt</a> · <a href="../api.json">api.json</a></p></header>
+<section class="readme-section"><h2 id="the-zokor-command">The zokor command<a class="anchor" href="#the-zokor-command" aria-label="Link to this section">#</a></h2><p><code>zokor</code> is a separate tool, <a href="https://github.com/dolphlabs/zokor_cli" rel="noopener">zokor_cli</a>. It needs slang 0.2.4 or later, git and make; with slang 0.2.5 or later, watch mode uses slang&#x27;s development builds, which rebuild several times faster.</p>
+<div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="">curl -fsSL https:<span class="tok-comment">//raw.githubusercontent.com/dolphlabs/zokor_cli/main/install.sh | sh</span></code></pre></div>
+<p>This builds the latest release with your <code>slangc</code> and installs it as <code>~/.local/bin/zokor</code>. <code>PREFIX</code> puts it somewhere else, and <code>ZOKOR_CLI_VERSION=v0.2.2</code> picks a release. From a checkout of zokor_cli, <code>make install PREFIX=~/.local</code> does the same. <code>zokor version</code> prints the CLI&#x27;s version and the zokor release new projects pin.</p>
+<div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="">zokor version               this CLI, and the zokor release new projects pin
+zokor new &lt;name&gt;            a small service: startup, config, a health check
+zokor newcomp &lt;name&gt;        the full layout, with a sample feature
+                            [--db memory|pg]
+zokor add feature &lt;name&gt;    a new slice, wired <span class="tok-keyword">in</span> [--entity &lt;singular&gt;]
+zokor add route &lt;feature&gt; &lt;METHOD&gt; &lt;path&gt; &lt;handler&gt;
+zokor check [--json]        the layout rules, run from the service&#x27;s root
+zokor start                 build into bin/app and run it <span class="tok-keyword">in</span> the foreground
+zokor watch [--release]     rebuild and restart on every save
+zokor migrate [directory]   apply migrations (<span class="tok-keyword">default</span>: migrations)</code></pre></div>
+<p><code>new</code> and <code>newcomp</code> also take <code>--zokor-git URL</code> and <code>--zokor-tag TAG</code> to pin a zokor other than the release the CLI was built against. A generated project&#x27;s <code>Makefile</code> wraps the common ones: <code>make dev</code> is <code>zokor watch</code>, <code>make check</code> is <code>zokor check</code> plus the tests and a build, and <code>make run</code> builds and runs without the CLI.</p>
+<p><code>add feature</code> and <code>add route</code> need a project made by <code>newcomp</code>: they insert the new code at its <code>// zokor:</code> markers, and a <code>new</code> project has none. Both run from the service&#x27;s root, and <code>add feature</code> refuses a name that already exists.</p>
+<h3 id="checking-a-service">Checking a service<a class="anchor" href="#checking-a-service" aria-label="Link to this section">#</a></h3>
+<p><code>zokor check</code> always enforces the layout, imports, pure <code>domain</code> and <code>service</code>, <code>pg</code> only in <code>store/</code> and <code>platform/db</code>, literal SQL, configuration read once, and tests beside every package. Two rules are opt-in, one per line of a <code>zokor.rules</code> file at the service&#x27;s root:</p>
+<div class="code"><div class="code-head"><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="">tenant                  # every public use <span class="tok-keyword">case</span> <span class="tok-keyword">in</span> service/ takes tenant_id
+auth require_session    # every server.sl calls this <span class="tok-keyword">guard</span> (<span class="tok-keyword">default</span>
+                        # require_tenant) or says <span class="tok-comment">// zokor:public</span></code></pre></div>
+<h3 id="running-and-watching">Running and watching<a class="anchor" href="#running-and-watching" aria-label="Link to this section">#</a></h3>
+<p><code>zokor start</code> finds <code>src/main.sl</code> (or <code>main.sl</code>), builds it into <code>bin/app</code> and runs it in the foreground. <code>zokor watch</code>, the same as <code>zokor start --watch</code>, keeps it running while you edit:</p>
+<ul><li>It compiles beside the running server, into <code>.zokor/watch/app.next</code>,<p>and swaps only when the build succeeds. A compile error is printed and the previous server keeps serving.</p></li><li>A restart sends <code>SIGTERM</code> to the server&#x27;s process group and kills it<p>if it has not exited after two seconds, then starts the new build.</p></li><li>A save during a build cancels that build and starts another, so the<p>server never runs code older than your last save.</p></li><li>If the server crashes, the watcher waits for the next save instead of<p>restarting it in a loop.</p></li><li>Builds are unoptimized and compile about ten times faster;<p><code>--release</code> builds optimized.</p></li></ul>
+<p>Both take <code>--entry &lt;path&gt;</code>, <code>--bin &lt;path&gt;</code>, <code>--verbose</code>, and arguments for the service after <code>--</code>, as in <code>zokor watch -- --port 9000</code>. <code>--debounce &lt;ms&gt;</code> (default 50) sets how long <code>watch</code> waits for a burst of saves to settle.</p>
+<h3 id="migrations-from-the-command-line">Migrations from the command line<a class="anchor" href="#migrations-from-the-command-line" aria-label="Link to this section">#</a></h3>
+<p><code>zokor migrate [directory]</code> applies a service&#x27;s migrations with <code>DATABASE_URL</code> from the environment; see <a href="../guide/data#migrations">Migrations</a> for the file rules and limits.</p></section>
+  </article>
+  <aside class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <nav id="toc"></nav>
+  </aside>
+</div>
+</main>
+<footer class="foot">
+  <div class="foot-brand"><img src="../assets/zokor-icon-64.png" width="32" height="32" alt="">
+    <span>zokor</span></div>
+  <p>Generated from <code>README.md</code>, <code>zokor/</code> and <code>examples/</code>.
+     Built and maintained by <a href="https://dolphlabs.com" rel="noopener">Dolphlabs</a>.</p>
+  <p class="foot-links"><a href="../api/">API</a> ·
+     <a href="../llms.txt">llms.txt</a> ·
+     <a href="https://github.com/dolphlabs/zokor" rel="noopener">GitHub</a></p>
+</footer>
+<script src="../app.js" defer></script>
+</body>
+</html>

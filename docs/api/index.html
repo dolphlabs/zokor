@@ -49,7 +49,7 @@
 <div class="page">
   <article class="content">
 <header class="page-head"><p class="page-kicker">Zokor documentation</p><h1>API reference</h1><p class="tagline">Browse public Zokor types, functions, and methods, with signatures and descriptions generated from the source package.</p><p class="agentline"><a href="../api/index.md">Markdown</a> · <a href="../llms.txt">llms.txt</a> · <a href="../api.json">api.json</a></p></header>
-<p>The public package surface contains 589 entries across 38 source files. This page is generated from <code>docs/api.txt</code>, which is generated from <code>zokor/</code>.</p>
+<p>The public package surface contains 593 entries across 38 source files. This page is generated from <code>docs/api.txt</code>, which is generated from <code>zokor/</code>.</p>
 <section class="api-module"><h2 id="auth-sl">auth.sl<a class="anchor" href="#auth-sl" aria-label="Link to this section">#</a></h2>
 <p class="api-module-description">Authentication helpers: bearer JWTs, Basic credentials and API keys.</p>
 <div class="api-item" id="auth-sl-gc"><code>gc struct JwtAuth { keys: [bytes], audience: str, issuer: str, leeway: int }</code></div>
@@ -210,6 +210,10 @@
 <div class="api-item" id="ids-sl-new-request-id"><code>new_request_id() -&gt; str</code><p>128 bits of randomness, hex, prefixed so it is recognisable in a log that carries other people&#x27;s ids too.</p></div>
 <div class="api-item" id="ids-sl-new-session-id"><code>new_session_id() -&gt; str</code><p>A longer one, for a session or a socket.io sid, where a collision matters more than the length does.</p></div>
 <div class="api-item" id="ids-sl-request-id-for"><code>request_id_for(headers: bytes) -&gt; str</code><p>The id a request is answered and logged under: the client&#x27;s own X-Request-Id when it is 1-64 characters of [A-Za-z0-9._-], so...</p></div>
+<div class="api-item" id="ids-sl-request-id-with"><code>request_id_with(headers: bytes, ids: RequestIds) -&gt; str</code><p>request_id_for, drawing a new id from <code>ids</code>: what the serve loop calls, once per dynamic request on a connection.</p></div>
+<div class="api-item" id="ids-sl-gc"><code>gc struct RequestIds { pool: bytes, at: int, out: bytes }</code><p>One connection&#x27;s source of request ids: the same 128 random bits and <code>req_</code> + hex as new_request_id, but drawn 32 ids at a time.</p></div>
+<div class="api-item" id="ids-sl-request-ids"><code>request_ids() -&gt; RequestIds</code></div>
+<div class="api-item" id="ids-sl-requestids-next"><code>RequestIds.next() -&gt; str</code></div>
 </section>
 <section class="api-module"><h2 id="jobs-sl">jobs.sl<a class="anchor" href="#jobs-sl" aria-label="Link to this section">#</a></h2>
 <p class="api-module-description">Background jobs: work on a schedule, and work queued to run later.</p>

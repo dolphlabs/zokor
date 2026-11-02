@@ -35,6 +35,16 @@ GUIDE_PAGES = [
         "sections": ["Starting a service", "Install", "Requirements"],
     },
     {
+        "path": "guide/cli.html",
+        "title": "The zokor command",
+        "seo_title": "Zokor CLI | Scaffold, Check, Watch & Migrate",
+        "description": (
+            "Install and use the zokor command: scaffold services and features, "
+            "check the layout, rebuild on save, and apply migrations."),
+        "nav": "CLI",
+        "sections": ["The zokor command"],
+    },
+    {
         "path": "guide/http.html",
         "title": "HTTP APIs",
         "seo_title": "Zokor HTTP APIs | Routing, Middleware & Security",
@@ -242,13 +252,22 @@ def example_anchor(relative_path):
     return "source-" + slugify(relative_path)
 
 
+# The README links its own sections with plain fragments; on the site
+# those sections live on different guide pages.
+SECTION_PAGES = {
+    slugify(section): page["path"].removesuffix(".html")
+    for page in GUIDE_PAGES for section in page["sections"]
+}
+
+
 def site_href(target, root):
     target = target.strip()
     parsed = urlsplit(target)
     if parsed.scheme or parsed.netloc:
         return target if parsed.scheme in ("http", "https", "mailto") else "#"
     if target.startswith("#"):
-        return target
+        page = SECTION_PAGES.get(target[1:])
+        return root + page + target if page else target
 
     path, marker, fragment = target.partition("#")
     path = path.removeprefix("./")
