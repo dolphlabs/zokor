@@ -12,10 +12,10 @@ to enforce, so the framework follows them first.
 
 ## Layout
 
-- `src/` **is** the package a service imports (`pkg zokor git ... dir src`).
-  Public types and their methods live directly in `src/`, because a type
+- `zokor/` **is** the package a service imports (`pkg zokor git ... dir zokor`).
+  Public types and their methods live directly in `zokor/`, because a type
   cannot be re-exported from a sub-package.
-- `src/internal/*` holds pure logic: no sockets, no clock, no
+- `zokor/internal/*` holds pure logic: no sockets, no clock, no
   environment. Everything there is directly testable and is where the
   hot paths live.
 - `examples/*` and `docs/` are not part of the package.

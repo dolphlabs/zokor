@@ -1,0 +1,2606 @@
+{
+  "package": "zokor",
+  "source": "docs/api.txt",
+  "modules": [
+    {
+      "file": "auth.sl",
+      "description": "Authentication helpers: bearer JWTs, Basic credentials and API keys.",
+      "items": [
+        {
+          "signature": "gc struct JwtAuth { keys: [bytes], audience: str, issuer: str, leeway: int }",
+          "description": ""
+        },
+        {
+          "signature": "jwt_auth(secrets: [str]) -> result[JwtAuth, str]",
+          "description": "Secrets of at least 32 bytes each, newest first."
+        },
+        {
+          "signature": "jwt_auth_from(cfg: Config) -> JwtAuth",
+          "description": "JWT_SECRETS (comma-separated, newest first), JWT_AUDIENCE, JWT_ISSUER and JWT_LEEWAY (seconds, default 30)."
+        },
+        {
+          "signature": "sign_token[T](claims: T, a: JwtAuth) -> result[str, str]",
+          "description": "A token for `claims`, signed with the newest key."
+        },
+        {
+          "signature": "token_problem(token: str, a: JwtAuth, now: int) -> str",
+          "description": "Why `token` is not acceptable at `now`, or \"\" when it is."
+        },
+        {
+          "signature": "bearer_claims[S, T](c: Ctx[S], a: JwtAuth) -> result[T, http.Response]",
+          "description": "The token's claims as your own type, once the token has passed every check; otherwise the 401 to send."
+        },
+        {
+          "signature": "gc struct BasicCredentials { user: str, password: str }",
+          "description": ""
+        },
+        {
+          "signature": "basic_credentials[S](c: Ctx[S]) -> opt[BasicCredentials]",
+          "description": "The credentials of an `Authorization: Basic` header, or none when there is no such header or it does not decode to..."
+        },
+        {
+          "signature": "basic_matches(got: BasicCredentials, user: str, password: str) -> bool",
+          "description": "Whether `got` is `user` / `password`."
+        },
+        {
+          "signature": "basic_denied[S](c: Ctx[S], realm: str) -> http.Response",
+          "description": "The 401 that asks a browser for Basic credentials for `realm`."
+        },
+        {
+          "signature": "gc struct ApiKeys { names: [str], digests: [bytes] }",
+          "description": ""
+        },
+        {
+          "signature": "api_keys(entries: [str]) -> result[ApiKeys, str]",
+          "description": "`name:key` entries; each key at least 24 bytes."
+        },
+        {
+          "signature": "api_keys_from(cfg: Config) -> ApiKeys",
+          "description": "API_KEYS: comma-separated `name:key` entries."
+        },
+        {
+          "signature": "api_key_client[S](c: Ctx[S], keys: ApiKeys) -> opt[str]",
+          "description": "The name of the client whose key is in the X-Api-Key header, or none."
+        }
+      ]
+    },
+    {
+      "file": "client.sl",
+      "description": "The client's address: who is actually on the other end of a request.",
+      "items": [
+        {
+          "signature": "gc struct TrustedProxies { nets: [int], header: str }",
+          "description": ""
+        },
+        {
+          "signature": "no_trusted_proxies() -> TrustedProxies",
+          "description": ""
+        },
+        {
+          "signature": "parse_ipv4(s: str) -> int",
+          "description": "\"a.b.c.d\" as an unsigned 32-bit value, or -1."
+        },
+        {
+          "signature": "parse_trusted_proxies(list: str) -> result[TrustedProxies, str]",
+          "description": "TRUSTED_PROXIES's value: comma-separated IPv4 addresses and CIDRs (\"10.0.0.0/8, 192.168.1.10\")."
+        },
+        {
+          "signature": "ipv4_str(v: int) -> str",
+          "description": ""
+        },
+        {
+          "signature": "TrustedProxies.trusts(ip: int) -> bool",
+          "description": ""
+        },
+        {
+          "signature": "TrustedProxies.is_empty() -> bool",
+          "description": ""
+        },
+        {
+          "signature": "peer_ip_of(rendered: str) -> str",
+          "description": "The address part of `inspect(link.peer())`, \"a.b.c.d:port\" -> \"a.b.c.d\"."
+        },
+        {
+          "signature": "client_ip_of(peer_ip: str, headers: bytes, tp: TrustedProxies) -> str",
+          "description": "Who the request came from."
+        }
+      ]
+    },
+    {
+      "file": "compression.sl",
+      "description": "Response compression: gzip through slang's `compress` (zlib), for clients that accept it, on bodies worth it.",
+      "items": [
+        {
+          "signature": "gc struct Compression { min_size: int, level: int, types: [str] }",
+          "description": ""
+        },
+        {
+          "signature": "compression() -> Compression",
+          "description": ""
+        },
+        {
+          "signature": "accepts_gzip(header: str) -> bool",
+          "description": "Whether an Accept-Encoding value allows gzip."
+        }
+      ]
+    },
+    {
+      "file": "conditional.sl",
+      "description": "Conditional requests (RFC 9110 section 13): answer \"not modified\" when the client already has the current version, and refuse...",
+      "items": [
+        {
+          "signature": "etag_of(data: bytes) -> str",
+          "description": "A strong entity tag for `data`: its length and 64-bit FNV-1a hash, quoted."
+        },
+        {
+          "signature": "with_validators(resp: http.Response, etag: str, last_modified: opt[timez.Time]) -> http.Response",
+          "description": "`resp` with ETag (when `etag` is not \"\") and Last-Modified (when known, to the second: an HTTP date has no fraction)."
+        },
+        {
+          "signature": "not_modified(etag: str, last_modified: opt[timez.Time]) -> http.Response",
+          "description": "The 304 for a read whose validators matched: no body, and the validators the 200 would have carried."
+        },
+        {
+          "signature": "preconditions[S](c: Ctx[S], etag: str, last_modified: opt[timez.Time]) -> opt[http.Response]",
+          "description": "What a conditional request's headers decide, before the handler does its work: some(304) or some(412) to send as is, none to..."
+        }
+      ]
+    },
+    {
+      "file": "config.sl",
+      "description": "Configuration: read once, validated once, then held as a value.",
+      "items": [
+        {
+          "signature": "gc struct Problem { key: str, reason: str, shown: str }",
+          "description": ""
+        },
+        {
+          "signature": "gc struct Config { values: map[str]str, problems: [Problem], source: str, profile: str, sources: [str] }",
+          "description": ""
+        },
+        {
+          "signature": "gc struct ConfigLoad { profile: str, directory: str, max_file_bytes: int }",
+          "description": "Profile selection and file limits, chosen before startup loading."
+        },
+        {
+          "signature": "config_load() -> ConfigLoad",
+          "description": ""
+        },
+        {
+          "signature": "config_from_values(values: map[str]str) -> Config",
+          "description": "Own a copy of supplied values, with no process-state reads: useful for fakes."
+        },
+        {
+          "signature": "default_env_path() -> str { return \".env\"; } // Base .env, then .env.<profile>, then one environment snapshot. pub fn load_config() -> Config { return load_config_with(config_load()); } // Explicit dev/test/prod overrides ZOKOR_PROFILE for file selection. pub fn load_config_profile(profile: str) -> Config",
+          "description": ""
+        },
+        {
+          "signature": "load_config_with(options: ConfigLoad) -> Config",
+          "description": ""
+        },
+        {
+          "signature": "load_config_from(path: str) -> Config { return load_config_file(path, config_load().max_file_bytes); } pub fn load_config_file(path: str, max_file_bytes: int) -> Config",
+          "description": "Load one explicit file, then apply the captured environment; no profile overlay."
+        },
+        {
+          "signature": "get(c: Config, key: str) -> opt[str]",
+          "description": ""
+        },
+        {
+          "signature": "has_key(c: Config, key: str) -> bool",
+          "description": ""
+        },
+        {
+          "signature": "str_or(c: Config, key: str, fallback: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "int_or(c: Config, key: str, fallback: int) -> int",
+          "description": ""
+        },
+        {
+          "signature": "bool_or(c: Config, key: str, fallback: bool) -> bool",
+          "description": ""
+        },
+        {
+          "signature": "duration_or(c: Config, key: str, fallback_ns: int) -> int",
+          "description": "A duration in nanoseconds, the unit every slang timeout takes."
+        },
+        {
+          "signature": "require(c: Config, key: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "require_int(c: Config, key: str) -> int",
+          "description": ""
+        },
+        {
+          "signature": "require_range(c: Config, key: str, lo: int, hi: int) -> int",
+          "description": ""
+        },
+        {
+          "signature": "require_port(c: Config, key: str) -> int",
+          "description": ""
+        },
+        {
+          "signature": "require_bool(c: Config, key: str) -> bool",
+          "description": ""
+        },
+        {
+          "signature": "require_float(c: Config, key: str) -> float",
+          "description": ""
+        },
+        {
+          "signature": "require_email(c: Config, key: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "require_url(c: Config, key: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "require_dsn(c: Config, key: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "require_host(c: Config, key: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "require_ipv4(c: Config, key: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "require_uuid(c: Config, key: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "require_one_of(c: Config, key: str, allowed: [str]) -> str",
+          "description": ""
+        },
+        {
+          "signature": "require_duration(c: Config, key: str) -> int",
+          "description": ""
+        },
+        {
+          "signature": "require_min_len(c: Config, key: str, n: int) -> str",
+          "description": ""
+        },
+        {
+          "signature": "require_max_len(c: Config, key: str, n: int) -> str",
+          "description": ""
+        },
+        {
+          "signature": "optional_one_of(c: Config, key: str, allowed: [str], fallback: str) -> str",
+          "description": "An optional value that still has to be valid WHEN it is set: the common case of a feature that is off until configured."
+        },
+        {
+          "signature": "optional_url(c: Config, key: str, fallback: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "optional_dsn(c: Config, key: str, fallback: str) -> str",
+          "description": "Same shape as optional_url, for a connection string rather than an HTTP one: `is_dsn` accepts any scheme with a host..."
+        },
+        {
+          "signature": "problems(c: Config) -> [Problem]",
+          "description": ""
+        },
+        {
+          "signature": "is_valid(c: Config) -> bool",
+          "description": ""
+        },
+        {
+          "signature": "check(c: Config) -> result[bool, str]",
+          "description": "Every problem, one per line, named and explained."
+        }
+      ]
+    },
+    {
+      "file": "cookies.sl",
+      "description": "Cookies.",
+      "items": [
+        {
+          "signature": "enum SameSite { LAX, STRICT, NONE }",
+          "description": ""
+        },
+        {
+          "signature": "gc struct Cookie { name: str, value: str, path: str, domain: str, max_age: int, expires: opt[timez.Time], secure: bool, http_only: bool, same_site: SameSite, partitioned: bool }",
+          "description": ""
+        },
+        {
+          "signature": "new_cookie(name: str, value: str) -> Cookie",
+          "description": ""
+        },
+        {
+          "signature": "cookie_problem(c: Cookie) -> str",
+          "description": "What is wrong with `c`, or \"\"."
+        },
+        {
+          "signature": "cookie_string(c: Cookie) -> str",
+          "description": "The Set-Cookie value for `c`, unchecked: callers check first."
+        },
+        {
+          "signature": "set_cookie(resp: http.Response, c: Cookie) -> result[http.Response, str]",
+          "description": "`resp` with a Set-Cookie header for `c`, or why `c` cannot be sent."
+        },
+        {
+          "signature": "clear_cookie(resp: http.Response, name: str, path: str, domain: str) -> result[http.Response, str]",
+          "description": "Tells the browser to delete `name`."
+        },
+        {
+          "signature": "parse_cookies(header: str) -> map[str]str",
+          "description": "Every well-formed name=value pair in a Cookie header, in order; a pair without `=`, with a bad name or with bytes a cookie..."
+        },
+        {
+          "signature": "gc struct CookieKeys { keys: [bytes] }",
+          "description": ""
+        },
+        {
+          "signature": "cookie_keys(keys: [str]) -> result[CookieKeys, str]",
+          "description": "Keys of at least 32 bytes each, newest first."
+        },
+        {
+          "signature": "cookie_keys_from(cfg: Config) -> CookieKeys",
+          "description": "COOKIE_KEYS, comma-separated, newest first."
+        },
+        {
+          "signature": "constant_time_equal(a: bytes, b: bytes) -> bool",
+          "description": "Compares in time that depends only on the lengths, so a forged signature cannot be found a byte at a time by timing the answer."
+        },
+        {
+          "signature": "signed_cookie(name: str, value: str, keys: CookieKeys) -> result[Cookie, str]",
+          "description": "A cookie whose value is `value.signature`."
+        },
+        {
+          "signature": "signed_value[S](c: Ctx[S], name: str, keys: CookieKeys) -> opt[str]",
+          "description": "The value of signed cookie `name` when its signature matches any key, none when it is missing, unsigned or forged."
+        },
+        {
+          "signature": "verify_signed(name: str, raw: str, keys: CookieKeys) -> opt[str]",
+          "description": ""
+        }
+      ]
+    },
+    {
+      "file": "cors.sl",
+      "description": "CORS.",
+      "items": [
+        {
+          "signature": "gc struct CorsPolicy { origins: [str], methods: [str], headers: [str], expose: [str], credentials: bool, max_age: int }",
+          "description": ""
+        },
+        {
+          "signature": "no_cors() -> CorsPolicy",
+          "description": "Off: no origins."
+        },
+        {
+          "signature": "cors_policy(origins: [str]) -> CorsPolicy",
+          "description": "The defaults, for these origins."
+        },
+        {
+          "signature": "cors_problem(p: CorsPolicy) -> str",
+          "description": "What is wrong with `p`, or \"\" when it is usable."
+        },
+        {
+          "signature": "cors_from(cfg: Config) -> CorsPolicy",
+          "description": "CORS_ORIGINS (comma-separated), CORS_METHODS, CORS_HEADERS, CORS_EXPOSE (comma-separated, replacing the defaults),..."
+        },
+        {
+          "signature": "gc struct Cors { on: bool, any: bool, credentials: bool, origins: [str], allow_methods: str, allow_headers: str, allow_headers_lower: [str], expose: str, max_age: str }",
+          "description": "What the router keeps: the policy, and the header values built once."
+        },
+        {
+          "signature": "cors_off() -> Cors",
+          "description": ""
+        },
+        {
+          "signature": "Cors.allows(origin: str) -> bool",
+          "description": "Whether `origin` (an Origin header's value) is allowed."
+        },
+        {
+          "signature": "Cors.apply(resp: http.Response, origin: str) -> http.Response",
+          "description": "The headers for an ordinary response to a request with this Origin (\"\" when it had none)."
+        },
+        {
+          "signature": "Cors.preflight(origin: str) -> http.Response",
+          "description": "The answer to a preflight from `origin`."
+        },
+        {
+          "signature": "is_preflight(method: str, raw_headers: bytes) -> bool",
+          "description": "Whether a request is a CORS preflight: OPTIONS, with an Origin and the method the real request will use."
+        }
+      ]
+    },
+    {
+      "file": "errors.sl",
+      "description": "Failure, as one shape.",
+      "items": [
+        {
+          "signature": "gc struct Code { name: str, status: i32, message: str }",
+          "description": ""
+        },
+        {
+          "signature": "gc struct FieldError { field: str, reason: str }",
+          "description": ""
+        },
+        {
+          "signature": "gc struct ErrorView { code: str, message: str, status: i32, request_id: str, fields: [FieldError], trace_id: str }",
+          "description": "Everything the renderer is given."
+        },
+        {
+          "signature": "gc struct Registry { codes: map[str]Code, render: fn(ErrorView) -> http.Response, trace_id: str }",
+          "description": ""
+        },
+        {
+          "signature": "new_registry() -> Registry",
+          "description": "Every HTTP failure status, under the name a handler will reach for."
+        },
+        {
+          "signature": "set_renderer(r: Registry, f: fn(ErrorView) -> http.Response) -> int",
+          "description": "Replace the shape every failure is rendered in."
+        },
+        {
+          "signature": "register(r: Registry, name: str, status: i32, message: str) -> int",
+          "description": ""
+        },
+        {
+          "signature": "lookup(r: Registry, name: str) -> opt[Code]",
+          "description": ""
+        },
+        {
+          "signature": "status_of(r: Registry, name: str) -> i32",
+          "description": "A code nobody registered is a bug in the service, not a client error: it answers 500 and says which name was missing, so the..."
+        },
+        {
+          "signature": "message_of(r: Registry, name: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "code_names(r: Registry) -> [str]",
+          "description": ""
+        },
+        {
+          "signature": "respond(r: Registry, code: str, request_id: str) -> http.Response",
+          "description": "The registered wording."
+        },
+        {
+          "signature": "respond_with(r: Registry, code: str, detail: str, request_id: str) -> http.Response",
+          "description": "The registered code, with wording for this one occurrence (\"no such organisation 'acme'\")."
+        },
+        {
+          "signature": "respond_fields(r: Registry, code: str, fields: [FieldError], request_id: str) -> http.Response",
+          "description": ""
+        },
+        {
+          "signature": "field(name: str, reason: str) -> FieldError",
+          "description": ""
+        },
+        {
+          "signature": "default_render(v: ErrorView) -> http.Response",
+          "description": "zokor's own shape, and the one a service gets until it says otherwise."
+        },
+        {
+          "signature": "quote(s: str) -> str",
+          "description": "A JSON string, escaped."
+        },
+        {
+          "signature": "quote_into(sb: builder.Str, s: str) -> builder.Str",
+          "description": "The same, appended to a builder."
+        },
+        {
+          "signature": "status_text(status: i32) -> str",
+          "description": ""
+        }
+      ]
+    },
+    {
+      "file": "files.sl",
+      "description": "Static files: a directory served under a path prefix, safely.",
+      "items": [
+        {
+          "signature": "gc struct FileMount { prefix: str, root: str, index: str, max_age: int, immutable: bool, max_size: int }",
+          "description": ""
+        },
+        {
+          "signature": "files_at(prefix: str, dir: str) -> result[FileMount, str]",
+          "description": "A mount of `dir` under `prefix`."
+        },
+        {
+          "signature": "content_type_for(name: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "parse_range(header: str, size: int) -> [int]",
+          "description": "One byte range of a file of `size`: [first, last] inclusive; [-1, -1] when the header is not one usable range (several,..."
+        }
+      ]
+    },
+    {
+      "file": "health.sl",
+      "description": "Health and readiness.",
+      "items": [
+        {
+          "signature": "gc struct ReadyCheck[S] { name: str, check: fn(S) -> result[int, str], lock: mutex, started: int, finished: int, passed: bool, reported: str }",
+          "description": ""
+        },
+        {
+          "signature": "gc struct Readiness[S] { live_path: str, ready_path: str, checks: [ReadyCheck[S]], timeout: int, logger: Logger }",
+          "description": ""
+        },
+        {
+          "signature": "default_ready_timeout() -> int",
+          "description": "0.9s: inside Kubernetes' default 1s probe timeout, so a slow dependency is answered as a 503 naming it rather than as a probe..."
+        },
+        {
+          "signature": "check_name_ok(name: str) -> bool",
+          "description": "A check name is 1-64 of [A-Za-z0-9_.-]: it is written into the JSON body and to stderr as is."
+        }
+      ]
+    },
+    {
+      "file": "idempotency.sl",
+      "description": "Idempotency keys (the IETF Idempotency-Key header): a client retrying a POST or PATCH after a timeout gets the first answer...",
+      "items": [
+        {
+          "signature": "gc struct Idempotency { ttl: int, lock_ttl: int, max_body: int, scope_local: str, required: bool, shards: [IdemShard], remote: opt[redis.Pool] }",
+          "description": ""
+        },
+        {
+          "signature": "idempotency_in_memory() -> Idempotency",
+          "description": "Answers kept in this process: right for one instance."
+        },
+        {
+          "signature": "idempotency_redis(p: redis.Pool) -> Idempotency",
+          "description": "Answers kept in Redis, shared by every instance behind the balancer."
+        }
+      ]
+    },
+    {
+      "file": "ids.sl",
+      "description": "Identifiers.",
+      "items": [
+        {
+          "signature": "new_request_id() -> str",
+          "description": "128 bits of randomness, hex, prefixed so it is recognisable in a log that carries other people's ids too."
+        },
+        {
+          "signature": "new_session_id() -> str",
+          "description": "A longer one, for a session or a socket.io sid, where a collision matters more than the length does."
+        },
+        {
+          "signature": "request_id_for(headers: bytes) -> str",
+          "description": "The id a request is answered and logged under: the client's own X-Request-Id when it is 1-64 characters of [A-Za-z0-9._-], so..."
+        },
+        {
+          "signature": "request_id_with(headers: bytes, ids: RequestIds) -> str",
+          "description": "request_id_for, drawing a new id from `ids`: what the serve loop calls, once per dynamic request on a connection."
+        },
+        {
+          "signature": "gc struct RequestIds { pool: bytes, at: int, out: bytes }",
+          "description": "One connection's source of request ids: the same 128 random bits and `req_` + hex as new_request_id, but drawn 32 ids at a time."
+        },
+        {
+          "signature": "request_ids() -> RequestIds",
+          "description": ""
+        },
+        {
+          "signature": "RequestIds.next() -> str",
+          "description": ""
+        }
+      ]
+    },
+    {
+      "file": "jobs.sl",
+      "description": "Background jobs: work on a schedule, and work queued to run later.",
+      "items": [
+        {
+          "signature": "gc struct JobCtx[S] { state: S, name: str, payload: str, attempt: int, due: timez.Time, deadline: until }",
+          "description": "What a run gets: the service's state, which run this is, and the deadline to pass to everything that can block."
+        },
+        {
+          "signature": "gc struct Jobs[S] { state: S, zone: timez.Zone, clock: timez.Clock, logger: Logger, default_timeout: int, scheduled: [ScheduledJob[S]], kinds: [JobKind[S]], queue: [QueuedJob], lock: mutex, in_flight: int, stopping: bool, failures: int }",
+          "description": ""
+        },
+        {
+          "signature": "new_jobs[S](state: S) -> Jobs[S]",
+          "description": ""
+        },
+        {
+          "signature": "job_backoff(attempt: int) -> int",
+          "description": "The wait before try `attempt + 1`: 1 s, 2 s, 4 s ..."
+        },
+        {
+          "signature": "Jobs.every(name: str, spec: str, run: fn(JobCtx[S]) -> result[int, str], timeout: int) -> result[int, str]",
+          "description": "Runs `run` on the cron schedule `spec` (see timez.parse_cron), each run given `timeout` nanoseconds as its deadline."
+        },
+        {
+          "signature": "Jobs.handle(kind: str, run: fn(JobCtx[S]) -> result[int, str], attempts: int) -> result[int, str]",
+          "description": "Registers what runs a queued job of `kind`, and how many tries it gets (at least 1)."
+        },
+        {
+          "signature": "Jobs.enqueue(kind: str, payload: str, at: timez.Time) -> result[int, str]",
+          "description": "Queues one run of `kind` with `payload`, due at `at` (now or in the past runs at the next tick)."
+        },
+        {
+          "signature": "Jobs.queued() -> int",
+          "description": "Queued runs not yet started."
+        },
+        {
+          "signature": "Jobs.running() -> int",
+          "description": "Runs started and not yet finished."
+        },
+        {
+          "signature": "Jobs.tick(now: timez.Time) -> int",
+          "description": "Starts every run due at `now` -- scheduled turns and queued jobs -- each in its own task, and returns how many it started."
+        },
+        {
+          "signature": "Jobs.start() -> int",
+          "description": "Starts the scheduler: a task that ticks at each due time, and at least every quarter second so a stop or SIGTERM is seen quickly."
+        },
+        {
+          "signature": "Jobs.stop() -> int",
+          "description": "Stops starting runs."
+        },
+        {
+          "signature": "Jobs.wait_runs(timeout: int) -> bool",
+          "description": "Waits until no run is in progress, or `timeout` nanoseconds pass; true when none is."
+        }
+      ]
+    },
+    {
+      "file": "json.sl",
+      "description": "JSON, for the shapes you know and the ones you do not.",
+      "items": [
+        {
+          "signature": "enum JsonKind { Null, Bool, Number, String, Array, Object }",
+          "description": ""
+        },
+        {
+          "signature": "gc struct Json { kind: JsonKind, bool_val: bool, raw: str, text: str, items: [Json], keys: [str], values: [Json] }",
+          "description": ""
+        },
+        {
+          "signature": "jnull() -> Json",
+          "description": ""
+        },
+        {
+          "signature": "jbool(v: bool) -> Json",
+          "description": ""
+        },
+        {
+          "signature": "jint(v: int) -> Json",
+          "description": ""
+        },
+        {
+          "signature": "jfloat(v: float) -> Json",
+          "description": ""
+        },
+        {
+          "signature": "jstr(v: str) -> Json",
+          "description": ""
+        },
+        {
+          "signature": "jobj() -> Json",
+          "description": ""
+        },
+        {
+          "signature": "jarr() -> Json",
+          "description": ""
+        },
+        {
+          "signature": "user_json(id: str) -> bytes",
+          "description": ""
+        },
+        {
+          "signature": "user_json_bytes(id: bytes) -> bytes",
+          "description": "user_json_bytes: the id as BYTES (already sliced out of a path)."
+        },
+        {
+          "signature": "message_json(message: str) -> bytes",
+          "description": ""
+        },
+        {
+          "signature": "Json.set(key: str, v: Json) -> Json",
+          "description": "Sets a key, replacing it if present, and returns the object so calls chain."
+        },
+        {
+          "signature": "Json.set_str(key: str, v: str) -> Json",
+          "description": ""
+        },
+        {
+          "signature": "Json.set_int(key: str, v: int) -> Json",
+          "description": ""
+        },
+        {
+          "signature": "Json.set_float(key: str, v: float) -> Json",
+          "description": ""
+        },
+        {
+          "signature": "Json.set_bool(key: str, v: bool) -> Json",
+          "description": ""
+        },
+        {
+          "signature": "Json.set_opt_str(key: str, v: opt[str]) -> Json",
+          "description": "Only when the value is there: the difference between \"absent\" and \"null\" belongs to the caller, not to the encoder."
+        },
+        {
+          "signature": "Json.add(v: Json) -> Json",
+          "description": ""
+        },
+        {
+          "signature": "Json.add_str(v: str) -> Json",
+          "description": ""
+        },
+        {
+          "signature": "Json.add_int(v: int) -> Json",
+          "description": ""
+        },
+        {
+          "signature": "Json.get(key: str) -> Json",
+          "description": "A missing key, or an index that is not there, gives Null rather than an error -- so a chain of lookups never has to be guarded..."
+        },
+        {
+          "signature": "Json.at(i: int) -> Json",
+          "description": ""
+        },
+        {
+          "signature": "Json.path(p: str) -> Json",
+          "description": "\"user.address.city\", \"items.0.name\": one call instead of five."
+        },
+        {
+          "signature": "Json.has_key(key: str) -> bool",
+          "description": "Present, even if its value is null -- which is how a PATCH tells \"set this to nothing\" from \"leave it alone\"."
+        },
+        {
+          "signature": "Json.is_null() -> bool",
+          "description": ""
+        },
+        {
+          "signature": "Json.is_object() -> bool",
+          "description": ""
+        },
+        {
+          "signature": "Json.is_array() -> bool",
+          "description": ""
+        },
+        {
+          "signature": "Json.is_string() -> bool",
+          "description": ""
+        },
+        {
+          "signature": "Json.is_number() -> bool",
+          "description": ""
+        },
+        {
+          "signature": "Json.is_bool() -> bool",
+          "description": ""
+        },
+        {
+          "signature": "Json.size() -> int",
+          "description": "Items in an array, keys in an object, bytes in a string."
+        },
+        {
+          "signature": "Json.keys_of() -> [str]",
+          "description": ""
+        },
+        {
+          "signature": "Json.items_of() -> [Json]",
+          "description": ""
+        },
+        {
+          "signature": "Json.str_or(fallback: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "Json.int_or(fallback: int) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Json.float_or(fallback: float) -> float",
+          "description": ""
+        },
+        {
+          "signature": "Json.bool_or(fallback: bool) -> bool",
+          "description": ""
+        },
+        {
+          "signature": "Json.render() -> str",
+          "description": "The JSON text of this value."
+        },
+        {
+          "signature": "Json.render_bytes() -> bytes",
+          "description": "Renders straight into a Bytes builder: no two-element parts list, no join, no str in between."
+        },
+        {
+          "signature": "parse(text: str) -> result[Json, str]",
+          "description": ""
+        },
+        {
+          "signature": "snake_keys(text: str) -> str",
+          "description": "slang has no struct tags, so a wire name is a field name."
+        },
+        {
+          "signature": "camel_keys(text: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "to_snake_case(s: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "to_camel(s: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "parse_body(content_type: str, body: bytes) -> result[Json, FormError]",
+          "description": "The body as a value you can walk, with the failure already carrying a registered code."
+        },
+        {
+          "signature": "decode_failed(reg: Registry, why: str, request_id: str) -> http.Response",
+          "description": "The failure of slang's own `json.decode`, mapped into the envelope with the offending field named where the message carries..."
+        },
+        {
+          "signature": "gc struct Checker { fields: [FieldError] }",
+          "description": "Decoding says a field is a string; it does not say the string is an email, or between 3 and 40 characters, or one of four words."
+        },
+        {
+          "signature": "checker() -> Checker",
+          "description": ""
+        },
+        {
+          "signature": "Checker.failed() -> bool",
+          "description": ""
+        },
+        {
+          "signature": "Checker.note(field: str, reason: str) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Checker.req_str(j: Json, key: str, min: int, max: int) -> str",
+          "description": "A required string, with a length range."
+        },
+        {
+          "signature": "Checker.opt_str(j: Json, key: str, max: int, fallback: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "Checker.req_int(j: Json, key: str, min: int, max: int) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Checker.opt_int(j: Json, key: str, min: int, max: int, fallback: int) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Checker.req_bool(j: Json, key: str) -> bool",
+          "description": ""
+        },
+        {
+          "signature": "Checker.req_email(j: Json, key: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "Checker.req_url(j: Json, key: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "Checker.req_uuid(j: Json, key: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "Checker.req_one_of(j: Json, key: str, allowed: [str]) -> str",
+          "description": ""
+        },
+        {
+          "signature": "Checker.req_strs(j: Json, key: str, max_items: int) -> [str]",
+          "description": "A list of strings, with a cap on how many: the shape of \"tags\", \"recipients\", \"ids\"."
+        },
+        {
+          "signature": "Checker.req_obj(j: Json, key: str) -> Json",
+          "description": "A nested object, so a checker can walk into it and report \"address.city\" rather than \"address\"."
+        },
+        {
+          "signature": "Checker.under(prefix: str, other: Checker) -> int",
+          "description": "Everything found so far, re-reported under a prefix: for a nested object checked by its own function."
+        }
+      ]
+    },
+    {
+      "file": "log.sl",
+      "description": "Logging.",
+      "items": [
+        {
+          "signature": "enum LogLevel { DEBUG, LOG, WARN, ERROR, OFF }",
+          "description": ""
+        },
+        {
+          "signature": "level_rank(l: LogLevel) -> int",
+          "description": ""
+        },
+        {
+          "signature": "level_name(l: LogLevel) -> str",
+          "description": ""
+        },
+        {
+          "signature": "parse_level(s: str) -> opt[LogLevel]",
+          "description": ""
+        },
+        {
+          "signature": "gc struct LogEvent { time: int, level: LogLevel, context: str, message: str, request: bool, method: str, route: str, path: str, status: int, duration_ns: int, size: int, request_id: str, client_ip: str, trace_id: str, ack: opt[chan[int]] }",
+          "description": ""
+        },
+        {
+          "signature": "gc struct Logger { events: opt[chan[LogEvent]], level: LogLevel, requests: bool, console: bool, json: bool, color: bool, capacity: int, lock: mutex, dropped: int, no_ack: opt[chan[int]] }",
+          "description": ""
+        },
+        {
+          "signature": "default_log_capacity() -> int",
+          "description": "How many events may wait for the writer: enough to absorb a burst of a few thousand requests between two wake-ups."
+        },
+        {
+          "signature": "no_logger() -> Logger",
+          "description": "Logs nothing."
+        },
+        {
+          "signature": "console_logger(json: bool, color: bool, level: LogLevel, requests: bool) -> Logger",
+          "description": "zokor's own writer, to stdout, configured but not started: `start` (which listen_and_serve_with calls) makes the channel and..."
+        },
+        {
+          "signature": "channel_logger(ch: chan[LogEvent], level: LogLevel, requests: bool) -> Logger",
+          "description": "A logger whose events go to `ch`, drained by the caller's own task."
+        },
+        {
+          "signature": "default_logger() -> Logger",
+          "description": "The default: pretty and coloured on a terminal, JSON otherwise, level LOG, request lines on."
+        },
+        {
+          "signature": "logger_from(cfg: Config) -> Logger",
+          "description": "LOG_FORMAT, LOG_LEVEL, LOG_REQUESTS and NO_COLOR over the default."
+        },
+        {
+          "signature": "Logger.start()",
+          "description": "Starts the console writer if this is an unstarted console logger; otherwise does nothing."
+        },
+        {
+          "signature": "Logger.own_tasks() -> int",
+          "description": "Tasks this logger runs for itself: 1 once the console writer is started."
+        },
+        {
+          "signature": "Logger.enabled(l: LogLevel) -> bool",
+          "description": "Whether an event at `l` would be sent at all: lets a caller skip building one."
+        },
+        {
+          "signature": "Logger.emit(ev: LogEvent)",
+          "description": "Offers `ev` without waiting: dropped and counted when the channel is full or below the level."
+        },
+        {
+          "signature": "Logger.record_request(method: str, route: str, raw_path: str, status: int, duration_ns: int, size: int, request_id: str, client_ip: str)",
+          "description": "The serve loop's call: one request's record, if requests are logged at its level."
+        },
+        {
+          "signature": "Logger.debug(context: str, message: str)",
+          "description": ""
+        },
+        {
+          "signature": "Logger.log(context: str, message: str)",
+          "description": ""
+        },
+        {
+          "signature": "Logger.warn(context: str, message: str)",
+          "description": ""
+        },
+        {
+          "signature": "Logger.error(context: str, message: str)",
+          "description": ""
+        },
+        {
+          "signature": "Logger.take_dropped() -> int",
+          "description": "Events dropped and not yet reported; resets the count."
+        },
+        {
+          "signature": "Logger.flush(timeout_ns: int)",
+          "description": "Waits until everything emitted before this call is written, or `timeout_ns` passes."
+        },
+        {
+          "signature": "request_event(method: str, route: str, raw_path: str, status: int, duration_ns: int, size: int, request_id: str, client_ip: str) -> LogEvent",
+          "description": "A request's record."
+        },
+        {
+          "signature": "logs_requests(lg: Logger, status: int) -> bool",
+          "description": "Whether the serve loop should build a request record at all."
+        },
+        {
+          "signature": "safe_path(raw: str) -> str",
+          "description": "A client-supplied path made safe to print: the query dropped, at most 64 bytes kept, and every byte outside printable ASCII --..."
+        },
+        {
+          "signature": "utc_parts(unix_ns: int) -> [int]",
+          "description": "Unix nanoseconds as UTC civil time: [year, month, day, hour, minute, second, millisecond]."
+        },
+        {
+          "signature": "gc struct LogFormat { pid: str, three: [str], plain: [str], sec: int, stamp_t: str, stamp_sp: str, quoted: map[str]str }",
+          "description": "Formatting state, made once and reused for every line: tables of the numbers a line needs (so a status, a size or a..."
+        },
+        {
+          "signature": "new_log_format(pid: int) -> LogFormat",
+          "description": ""
+        },
+        {
+          "signature": "LogFormat.stamp(unix_ns: int, t: bool) -> str",
+          "description": "\"2026-10-12T18:47:01.123Z\" (t) or \"2026-10-12 18:47:01.123Z\"."
+        },
+        {
+          "signature": "LogFormat.json_into(sb: builder.Str, ev: LogEvent) -> builder.Str",
+          "description": "One JSON object and a newline, appended to `sb`."
+        },
+        {
+          "signature": "LogFormat.pretty_into(sb: builder.Str, ev: LogEvent, color: bool, since_ns: int) -> builder.Str",
+          "description": "The NestJS layout and a newline, appended to `sb`:   [zokor] <pid>  - <utc time>     LOG [Context] message +3.21ms The..."
+        },
+        {
+          "signature": "LogFormat.json(ev: LogEvent) -> str",
+          "description": "The same as single strings, without the newline: for a consumer that wants one line at a time."
+        },
+        {
+          "signature": "LogFormat.pretty(ev: LogEvent, color: bool, since_ns: int) -> str",
+          "description": ""
+        }
+      ]
+    },
+    {
+      "file": "metrics.sl",
+      "description": "Opt-in Prometheus metrics with bounded request series and custom scalars.",
+      "items": [
+        {
+          "signature": "gc struct MetricsConfig { path: str, max_series: int, max_custom: int, buckets_ns: [int] }",
+          "description": ""
+        },
+        {
+          "signature": "metrics_config() -> MetricsConfig",
+          "description": ""
+        },
+        {
+          "signature": "enum MetricKind { Counter, Gauge }",
+          "description": ""
+        },
+        {
+          "signature": "gc struct Metric { name: str, help: str, kind: MetricKind, lock: mutex, value: int }",
+          "description": ""
+        },
+        {
+          "signature": "gc struct Metrics { path: str, max_series: int, max_custom: int, bounds: [int], lock: mutex, active: int, dropped: int, routes: map[str]int, series_index: map[int]int, series: [RequestSeries], custom: [Metric] }",
+          "description": ""
+        },
+        {
+          "signature": "new_metrics(cfg: MetricsConfig) -> result[Metrics, str]",
+          "description": "Copies configuration so later caller mutations cannot change bucket shapes."
+        },
+        {
+          "signature": "Metrics.enter()",
+          "description": ""
+        },
+        {
+          "signature": "Metrics.leave(method: str, route: str, status: int, ns: int)",
+          "description": "One completion for each enter, including a panic or failed socket write."
+        },
+        {
+          "signature": "Metrics.counter(name: str, help: str) -> result[Metric, str]",
+          "description": ""
+        },
+        {
+          "signature": "Metrics.gauge(name: str, help: str) -> result[Metric, str]",
+          "description": ""
+        },
+        {
+          "signature": "Metric.add(delta: int) -> result[bool, str]",
+          "description": "Counters only increase; gauges can add a signed delta."
+        },
+        {
+          "signature": "Metric.set(value: int) -> result[bool, str]",
+          "description": ""
+        },
+        {
+          "signature": "Metric.read() -> int",
+          "description": ""
+        },
+        {
+          "signature": "metrics_text(m: Metrics) -> str",
+          "description": "A consistent snapshot is copied under the lock; text formatting happens after unlocking so scrapes do not hold up request..."
+        }
+      ]
+    },
+    {
+      "file": "migrations.sl",
+      "description": "Forward-only SQL migrations: immutable history and an atomic pending batch.",
+      "items": [
+        {
+          "signature": "gc struct Migration { version: int, name: str, sql: str, checksum: str }",
+          "description": ""
+        },
+        {
+          "signature": "gc struct MigrationLimits { max_files: int, max_file_bytes: int, max_total_bytes: int }",
+          "description": "Limits for reading files, chosen by the caller before startup."
+        },
+        {
+          "signature": "migration_limits() -> MigrationLimits",
+          "description": ""
+        },
+        {
+          "signature": "migration_checksum(sql: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "new_migration(version: int, name: str, sql: str) -> Migration",
+          "description": ""
+        },
+        {
+          "signature": "load_migrations(dir: str, limits: MigrationLimits) -> result[[Migration], str]",
+          "description": "Load N_description.sql files, sort numerically, and reject duplicates."
+        },
+        {
+          "signature": "migrate(p: pg.Pool, ms: [Migration], deadline: until) -> result[int, str]",
+          "description": "Validate all historical files, then apply the pending batch in one transaction under a database-wide advisory lock."
+        }
+      ]
+    },
+    {
+      "file": "negotiation.sl",
+      "description": "Startup-compiled representations and bounded RFC 9110 Accept negotiation.",
+      "items": [
+        {
+          "signature": "gc struct AcceptLimits { max_bytes: int, max_ranges: int, max_params: int, max_offers: int, max_offer_bytes: int }",
+          "description": ""
+        },
+        {
+          "signature": "accept_limits() -> AcceptLimits",
+          "description": ""
+        },
+        {
+          "signature": "gc struct Negotiator { offers: [str], types: [str], subtypes: [str], params: [[str]], max_bytes: int, max_ranges: int, max_params: int }",
+          "description": "Treat the compiled vectors as immutable after startup."
+        },
+        {
+          "signature": "new_negotiator(offers: [str], limits: AcceptLimits) -> result[Negotiator, str]",
+          "description": "Offer order breaks otherwise equal preferences."
+        },
+        {
+          "signature": "Negotiator.choose(header: opt[str]) -> result[opt[str], str]",
+          "description": "none means no acceptable offer; err means malformed Accept."
+        },
+        {
+          "signature": "negotiate[S](c: Ctx[S], n: Negotiator) -> result[str, http.Response]",
+          "description": "A selected media type, or a registered 400/406 response."
+        }
+      ]
+    },
+    {
+      "file": "openapi.sl",
+      "description": "Startup OpenAPI generation from registered routes and explicit wire schemas.",
+      "items": [
+        {
+          "signature": "gc struct OpenApiLimits { max_routes: int, max_schemas: int, max_schema_bytes: int, max_total_schema_bytes: int, max_schema_depth: int, max_document_bytes: int, max_collection_entries: int, max_metadata_bytes: int }",
+          "description": "Resource limits for startup metadata and the generated document."
+        },
+        {
+          "signature": "openapi_limits() -> OpenApiLimits",
+          "description": ""
+        },
+        {
+          "signature": "gc struct ApiParameter { name: str, location: str, schema: str, required: bool, description: str }",
+          "description": "schema is a registered DTO name or a primitive JSON Schema type."
+        },
+        {
+          "signature": "gc struct ApiResponse { status: i32, description: str, schema: str, media_type: str }",
+          "description": "An empty schema declares a response without a body."
+        },
+        {
+          "signature": "gc struct ApiOperation { method: Method, pattern: str, operation_id: str, summary: str, description: str, tags: [str], parameters: [ApiParameter], request_schema: str, request_media_type: str, request_required: bool, responses: [ApiResponse], errors: [str] }",
+          "description": "Metadata cannot create routes: method/pattern must occur in routes_list."
+        },
+        {
+          "signature": "gc struct OpenApi { title: str, version: str, description: str, server_urls: [str], schemas: map[str]str, operations: [ApiOperation], omitted: [str], error_schema: str, error_media_type: str, limits: OpenApiLimits }",
+          "description": "Configure before generation."
+        },
+        {
+          "signature": "new_openapi(title: str, version: str) -> OpenApi",
+          "description": ""
+        },
+        {
+          "signature": "api_operation(method: Method, pattern: str) -> ApiOperation",
+          "description": ""
+        },
+        {
+          "signature": "api_parameter(name: str, location: str, schema: str) -> ApiParameter",
+          "description": ""
+        },
+        {
+          "signature": "api_response(status: i32, schema: str) -> ApiResponse",
+          "description": ""
+        },
+        {
+          "signature": "OpenApi.schema(name: str, definition: str) -> int",
+          "description": "A JSON Schema definition, parsed within limits at generation."
+        },
+        {
+          "signature": "OpenApi.operation(op: ApiOperation) -> int",
+          "description": ""
+        },
+        {
+          "signature": "OpenApi.omit(method: Method, pattern: str) -> int",
+          "description": "Explicitly exclude an unsupported or private route from this document."
+        },
+        {
+          "signature": "api_default_error_schema() -> str",
+          "description": "Embed this definition when the application's renderer uses the default envelope."
+        },
+        {
+          "signature": "api_ref(name: str) -> str",
+          "description": "A self-contained reference, or an inline primitive schema."
+        },
+        {
+          "signature": "openapi_document(routes: [str], reg: Registry, api: OpenApi) -> result[str, str]",
+          "description": "Generate at startup; returns every detected metadata problem together."
+        }
+      ]
+    },
+    {
+      "file": "pagination.sl",
+      "description": "Pagination: offset pages and keyset (cursor) pages, one envelope for both, so a client reads every list the same way:",
+      "items": [
+        {
+          "signature": "struct Page { limit: int, offset: int, cursor: str, by_cursor: bool }",
+          "description": "What the request asked for, checked."
+        },
+        {
+          "signature": "Page.fetch() -> int",
+          "description": "How many rows to ask the database for: one more than the page, so the response knows whether there is a next page without a count."
+        },
+        {
+          "signature": "page_of[S](c: Ctx[S], default_limit: int, max_limit: int) -> result[Page, http.Response]",
+          "description": "The page `c` asks for: `limit` (default `default_limit`, at most `max_limit`), and either `offset` or `cursor`."
+        },
+        {
+          "signature": "encode_cursor(parts: [str]) -> str",
+          "description": "The opaque cursor for a row whose sort key is `parts`."
+        },
+        {
+          "signature": "decode_cursor(cursor: str) -> result[[str], str]",
+          "description": "The key parts of a cursor, err when it is not one encode_cursor made."
+        },
+        {
+          "signature": "cursor_parts(p: Page) -> [str]",
+          "description": "The key parts of the cursor `p` came with ([] on the first page)."
+        },
+        {
+          "signature": "offset_page[S, T](c: Ctx[S], p: Page, rows: [T], total: opt[int]) -> http.Response",
+          "description": "An offset page of `rows` -- up to p.fetch() of them; one past the limit means there is a next page -- in the envelope, with Link."
+        },
+        {
+          "signature": "cursor_page[S, T](c: Ctx[S], p: Page, rows: [T], key: fn(T) -> [str]) -> http.Response",
+          "description": "A keyset page of `rows` -- up to p.fetch(); one past the limit means there is a next page, whose cursor is `key` of the last..."
+        }
+      ]
+    },
+    {
+      "file": "postgres.sl",
+      "description": "Postgres, wired to zokor's config, results and error envelope.",
+      "items": [
+        {
+          "signature": "pg_from_config(cfg: Config) -> result[pg.Pool, str]",
+          "description": "DATABASE_URL (postgres://user:pass@host:port/db?sslmode=require) and DB_POOL_SIZE (default 10)."
+        },
+        {
+          "signature": "has_postgres(cfg: Config) -> bool",
+          "description": ""
+        },
+        {
+          "signature": "pg_close(p: pg.Pool)",
+          "description": ""
+        },
+        {
+          "signature": "row_json(rows: pg.Rows, r: int) -> str",
+          "description": "Row `r` as a JSON object keyed by column name."
+        },
+        {
+          "signature": "rows_as[T](rows: pg.Rows) -> result[[T], str]",
+          "description": "Every row as a T, matched by column name without intermediate JSON text."
+        },
+        {
+          "signature": "query_all[T](p: pg.Pool, sql: str, args: [pg.Arg], deadline: until) -> result[[T], str]",
+          "description": "Runs `sql` with `args` on a pooled connection and returns every row as a T."
+        },
+        {
+          "signature": "query_one[T](p: pg.Pool, sql: str, args: [pg.Arg], deadline: until) -> result[opt[T], str]",
+          "description": "The first row as a T, none when the query returned no row."
+        },
+        {
+          "signature": "conn_query_all[T](c: pg.Conn, sql: str, args: [pg.Arg], deadline: until) -> result[[T], str]",
+          "description": "The same on a connection you hold -- inside a transaction body."
+        },
+        {
+          "signature": "transaction[A, R](p: pg.Pool, arg: A, body: fn(pg.Conn, A) -> result[R, str], deadline: until) -> result[R, str]",
+          "description": "Runs `body(conn, arg)` inside BEGIN ..."
+        },
+        {
+          "signature": "is_unique_violation(e: str) -> bool",
+          "description": ""
+        },
+        {
+          "signature": "db_failure(reg: Registry, e: str, request_id: str) -> http.Response",
+          "description": "A database error as the answer to send, in the service's envelope."
+        }
+      ]
+    },
+    {
+      "file": "ratelimit.sl",
+      "description": "Rate limiting.",
+      "items": [
+        {
+          "signature": "gc struct RateShard { hits: map[str][int], lock: mutex, since_sweep: int }",
+          "description": ""
+        },
+        {
+          "signature": "gc struct RateLimiter { limit: int, window: int, shards: [RateShard], sweep_every: int }",
+          "description": ""
+        },
+        {
+          "signature": "new_rate_limiter(limit: int, window_ns: int) -> RateLimiter",
+          "description": "At most `limit` requests per client in any `window_ns` nanoseconds (1000000000 is one second)."
+        },
+        {
+          "signature": "retry_after_secs(wait_ns: int) -> int",
+          "description": "Whole seconds until `wait_ns` has passed, never below 1: a Retry-After of 0 invites an immediate retry that will be refused."
+        },
+        {
+          "signature": "struct RateCheck { wait: int, remaining: int, reset: int }",
+          "description": "One check's answer, for the RateLimit-* headers."
+        },
+        {
+          "signature": "RateLimiter.take_at(key: str, now: int) -> int",
+          "description": "Counts one request for `key` at `now` (time.mono nanoseconds)."
+        },
+        {
+          "signature": "RateLimiter.check_at(key: str, now: int) -> RateCheck",
+          "description": "take_at, with what is left: what the RateLimit-* headers report."
+        },
+        {
+          "signature": "RateLimiter.take(key: str) -> int",
+          "description": "The same, now."
+        },
+        {
+          "signature": "RateLimiter.tracked() -> int",
+          "description": "How many client keys are being tracked."
+        },
+        {
+          "signature": "rate_limit[S](c: Ctx[S], l: RateLimiter, key: str) -> opt[http.Response]",
+          "description": "The body of a rate-limiting `before`: `none` to continue, or the registered `rate_limited` failure (429 unless re-registered)..."
+        },
+        {
+          "signature": "rate_limit_client[S](c: Ctx[S], l: RateLimiter) -> opt[http.Response]",
+          "description": "rate_limit keyed on the client's address: the socket's peer, or, behind a proxy listed in TRUSTED_PROXIES, the address that..."
+        }
+      ]
+    },
+    {
+      "file": "redirect.sl",
+      "description": "Checked redirects for variable destinations; redirect remains the raw constructor.",
+      "items": [
+        {
+          "signature": "gc struct RedirectRules { max_location_bytes: int, allow_external: bool }",
+          "description": ""
+        },
+        {
+          "signature": "redirect_rules() -> RedirectRules",
+          "description": "Relative references by default."
+        },
+        {
+          "signature": "redirect_checked(status: i32, location: str, rules: RedirectRules) -> result[http.Response, str]",
+          "description": "Validate status and destination together without including destination secrets in errors."
+        },
+        {
+          "signature": "redirect_to(location: str) -> result[http.Response, str]",
+          "description": "A checked 303 for the usual POST/redirect/GET flow, using relative references."
+        }
+      ]
+    },
+    {
+      "file": "redis.sl",
+      "description": "Redis, wired to zokor's config system.",
+      "items": [
+        {
+          "signature": "redis_from_config(cfg: Config) -> result[redis.Pool, str]",
+          "description": "REDIS_URL, read the same way every other optional dependency in this package is: config.optional_dsn, so a malformed value (a..."
+        },
+        {
+          "signature": "has_redis(cfg: Config) -> bool",
+          "description": "true iff REDIS_URL is set -- for a service that wants to know whether to wire Redis-backed features in at all before trying to..."
+        },
+        {
+          "signature": "redis_close(p: redis.Pool)",
+          "description": "Closes every idle connection and marks the pool closed; an in-flight acquire finishes normally, and the next one fails with..."
+        }
+      ]
+    },
+    {
+      "file": "respond.sl",
+      "description": "Success responses.",
+      "items": [
+        {
+          "signature": "json_response(status: i32, body: str) -> http.Response",
+          "description": ""
+        },
+        {
+          "signature": "json_response_bytes(status: i32, body: bytes) -> http.Response",
+          "description": "`json_response` with a BYTES body: same shape, no `to_bytes` copy."
+        },
+        {
+          "signature": "ok_json(body: str) -> http.Response",
+          "description": "`ok` is a slang builtin (the result constructor), so the 200 helper is named for what it sends."
+        },
+        {
+          "signature": "ok_json_bytes(body: bytes) -> http.Response",
+          "description": "`ok_json` with a BYTES body: the `render_bytes` path -- no str, no `to_bytes`, no copy between the renderer and the socket."
+        },
+        {
+          "signature": "created(body: str, location: str) -> http.Response",
+          "description": ""
+        },
+        {
+          "signature": "created_bytes(body: bytes, location: str) -> http.Response",
+          "description": ""
+        },
+        {
+          "signature": "accepted(body: str) -> http.Response",
+          "description": ""
+        },
+        {
+          "signature": "accepted_bytes(body: bytes) -> http.Response",
+          "description": "`accepted` with a BYTES body: same shape, no `to_bytes` copy."
+        },
+        {
+          "signature": "no_content() -> http.Response",
+          "description": ""
+        },
+        {
+          "signature": "text(status: i32, body: str) -> http.Response",
+          "description": ""
+        },
+        {
+          "signature": "text_bytes(status: i32, body: bytes) -> http.Response",
+          "description": "`text` with a BYTES body: same shape, no `to_bytes` copy."
+        },
+        {
+          "signature": "html(status: i32, body: str) -> http.Response",
+          "description": ""
+        },
+        {
+          "signature": "html_bytes(status: i32, body: bytes) -> http.Response",
+          "description": "`html` with a BYTES body: same shape, no `to_bytes` copy."
+        },
+        {
+          "signature": "bytes_of(status: i32, content_type: str, body: bytes) -> http.Response",
+          "description": ""
+        },
+        {
+          "signature": "redirect(status: i32, location: str) -> http.Response",
+          "description": "303 after a POST, 307/308 to preserve the method, 301/302 for the older shapes."
+        },
+        {
+          "signature": "with_header(r: http.Response, name: str, value: str) -> http.Response",
+          "description": ""
+        },
+        {
+          "signature": "no_store(r: http.Response) -> http.Response",
+          "description": "Cache-Control in the two forms a service actually needs."
+        },
+        {
+          "signature": "cache_for(r: http.Response, seconds: int) -> http.Response",
+          "description": ""
+        }
+      ]
+    },
+    {
+      "file": "router.sl",
+      "description": "The router: a request goes in, a response comes out, and the application's own state comes with it.",
+      "items": [
+        {
+          "signature": "enum Method { GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, TRACE, CONNECT }",
+          "description": "The HTTP methods, as a closed set."
+        },
+        {
+          "signature": "gc struct Ctx[S] { state: S, req: http.Request, params: opt[map[str]str], param1_name: str, param1_value: str, route: str, request_id: str, client_ip: str, out: opt[[str]], locals: opt[map[str]str], errors: Registry, upgrade: opt[Socket] }",
+          "description": ""
+        },
+        {
+          "signature": "struct Served { resp: http.Response, route: str, upgrade: opt[Socket] }",
+          "description": "A response and the route pattern that produced it, for the request log."
+        },
+        {
+          "signature": "gc struct Route[S] { method: Method, pattern: str, befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], segs: [str], names: [str], wild: int, fkind: int, fpath: str, handler: fn(Ctx[S]) -> http.Response, has_static: bool, static_status: i32, static_ctype: str, static_body: bytes, static_rendered: bytes, static_hit: opt[http.StaticBody], static_close_hit: opt[http.StaticBody], no_map: opt[map[str]str], ws: int }",
+          "description": ""
+        },
+        {
+          "signature": "gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security, sanitize: SanitizeMode, auto_etag: bool, rindex: [RNode], static_paths: map[str]int, idem: opt[Idempotency], gzip: opt[Compression], mounts: [FileMount], no_lines: opt[[str]], observations: opt[Metrics], tracer: opt[Tracer], no_tracer: opt[Tracer], request_locals: opt[map[str]str], sockets: [WsRoute[S]], no_socket: opt[Socket] }",
+          "description": "A `before` runs ahead of the handler and may end the request by returning a response; `none` carries on."
+        },
+        {
+          "signature": "new_router[S](state: S) -> Router[S]",
+          "description": "An application builds its router from its state alone; everything else starts empty or at the default a correct server should..."
+        },
+        {
+          "signature": "new_group[S](r: Router[S], prefix: str) -> Group[S]",
+          "description": "The function-call equivalent of `r.group(prefix)`, for a service that wants its setup to read as a list of constructors rather..."
+        },
+        {
+          "signature": "Router.handle(method: Method, pattern: str, h: fn(Ctx[S]) -> http.Response) -> int",
+          "description": "Every method goes through here, including the ones with their own helper below, so a pattern is split exactly once and the..."
+        },
+        {
+          "signature": "Router.handle_with(method: Method, pattern: str, h: fn(Ctx[S]) -> http.Response, befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response]) -> int",
+          "description": "The one registration path: a pattern is split exactly once, and the rules about `:params` and `*rest` live here alone."
+        },
+        {
+          "signature": "Router.static_bytes(p: str, status: i32, content_type: str, body: bytes, h: fn(Ctx[S]) -> http.Response) -> int",
+          "description": "The full set of HTTP methods, so no service has to fall back to `handle` with a string for anything standard."
+        },
+        {
+          "signature": "Router.websocket(p: str, open: fn(Ctx[S]) -> http.Response, w: WsRoute[S]) -> int",
+          "description": "A WebSocket route (ws_serve.sl)."
+        },
+        {
+          "signature": "Router.socketio(p: str, open: fn(Ctx[S]) -> http.Response, s: SioRoute[S]) -> int",
+          "description": "A Socket.IO route (sio_serve.sl), usually at \"/socket.io/\"."
+        },
+        {
+          "signature": "Router.get(p: str, h: fn(Ctx[S]) -> http.Response) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Router.head(p: str, h: fn(Ctx[S]) -> http.Response) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Router.post(p: str, h: fn(Ctx[S]) -> http.Response) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Router.put(p: str, h: fn(Ctx[S]) -> http.Response) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Router.patch(p: str, h: fn(Ctx[S]) -> http.Response) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Router.delete(p: str, h: fn(Ctx[S]) -> http.Response) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Router.options(p: str, h: fn(Ctx[S]) -> http.Response) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Router.trace(p: str, h: fn(Ctx[S]) -> http.Response) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Router.connect(p: str, h: fn(Ctx[S]) -> http.Response) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Router.any(methods: [Method], p: str, h: fn(Ctx[S]) -> http.Response) -> int",
+          "description": "One handler for several methods on one pattern."
+        },
+        {
+          "signature": "Router.group(prefix: str) -> Group[S]",
+          "description": "A prefix with its own middleware."
+        },
+        {
+          "signature": "Router.guarded(method: Method, pattern: str, h: fn(Ctx[S]) -> http.Response, befores: [fn(Ctx[S]) -> opt[http.Response]]) -> int",
+          "description": "Middleware for one route, which is the other half of the same need: `r.guarded(Method.DELETE, \"/orgs/:id\", drop,..."
+        },
+        {
+          "signature": "Router.before(f: fn(Ctx[S]) -> opt[http.Response]) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Router.after(f: fn(Ctx[S], http.Response) -> http.Response) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Router.etags() -> int",
+          "description": "Tags every 200 answer to a GET or HEAD with a strong ETag -- a hash of the body it sends -- and answers a matching..."
+        },
+        {
+          "signature": "Router.idempotency(store: Idempotency) -> int",
+          "description": "Answers a retried POST or PATCH that carries an Idempotency-Key with the first answer, from `store` (see idempotency.sl)."
+        },
+        {
+          "signature": "Router.compress(z: Compression) -> int",
+          "description": "Gzips answers worth it for clients that accept it (see compression.sl)."
+        },
+        {
+          "signature": "Router.files(m: FileMount) -> int",
+          "description": "Serves the directory of `m` under its prefix (see files.sl): a GET or HEAD no route claims."
+        },
+        {
+          "signature": "Router.security_headers(h: SecurityHeaders) -> int",
+          "description": "Replaces the security headers (see security.sl); no_security_headers() turns them off."
+        },
+        {
+          "signature": "Router.mongo_sanitize(mode: SanitizeMode) -> int",
+          "description": "Turns the operator-injection guard on (REJECT, STRIP) or off; see sanitize.sl."
+        },
+        {
+          "signature": "Router.cors(p: CorsPolicy) -> int",
+          "description": "Turns CORS on with `p` (see cors.sl)."
+        },
+        {
+          "signature": "Router.health() -> int",
+          "description": "Answers GET /healthz (liveness) and GET /readyz (the checks below)."
+        },
+        {
+          "signature": "Router.health_at(live_path: str, ready_path: str) -> int",
+          "description": "The same at paths of the service's choosing."
+        },
+        {
+          "signature": "Router.ready_check(name: str, f: fn(S) -> result[int, str]) -> int",
+          "description": "Registers a dependency /readyz waits on."
+        },
+        {
+          "signature": "Router.ready_timeout(ns: int) -> int",
+          "description": "How long /readyz waits for its checks, in nanoseconds; below 1ms is raised to 1ms."
+        },
+        {
+          "signature": "Router.routes_list() -> [str]",
+          "description": "\"METHOD /pattern\" per route, in registration order: for a boot log, for `zokor check`, and for a test that pins down the..."
+        },
+        {
+          "signature": "Router.metrics(m: Metrics) -> int",
+          "description": "Opt-in Prometheus endpoint; a service's explicit route still wins."
+        },
+        {
+          "signature": "Router.tracing(driver: Tracer) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Router.allowed(p: str) -> [Method]",
+          "description": "The methods registered for a path, for `Allow` on a 405 and for an automatic OPTIONS."
+        },
+        {
+          "signature": "Router.serve(req: http.Request) -> http.Response",
+          "description": "Dispatch: befores, the handler, then afters -- and the afters run even when a before ended the request, so a logging or header..."
+        },
+        {
+          "signature": "Router.match_static(f: http.WireFrame) -> opt[http.StaticBody]",
+          "description": "Frame dispatch: route on the ALREADY-PARSED method/path strs, with no raw bytes, no offsets, no segs list, no params map..."
+        },
+        {
+          "signature": "Router.serve_static(f: http.WireFrame) -> result[http.StaticBody, http.Response]",
+          "description": ""
+        },
+        {
+          "signature": "Router.serve_frame(f: http.WireFrame, request_id: str) -> http.Response",
+          "description": "serve() stays for callers that already hold a Request (tests, middleware fixtures); serve_conn uses this via serve_static."
+        },
+        {
+          "signature": "Router.serve_frame_for(f: http.WireFrame, request_id: str, client_ip: str) -> http.Response",
+          "description": "serve_frame, with the client's address for Ctx.client_ip."
+        },
+        {
+          "signature": "Router.serve_frame_routed(f: http.WireFrame, request_id: str, client_ip: str) -> Served",
+          "description": "What the serve loop calls: the response, and the route pattern that answered it for the request log (\"\" when none did)."
+        },
+        {
+          "signature": "Router.serve_id(req: http.Request, request_id: str) -> http.Response",
+          "description": ""
+        },
+        {
+          "signature": "Router.serve_id_for(req: http.Request, request_id: str, client_ip: str) -> http.Response",
+          "description": ""
+        },
+        {
+          "signature": "Router.serve_id_routed(req: http.Request, request_id: str, client_ip: str) -> Served",
+          "description": ""
+        },
+        {
+          "signature": "Router.fail(c: Ctx[S], code: str) -> http.Response",
+          "description": "The registry's codes, rendered with this request's id."
+        },
+        {
+          "signature": "Router.fail_with(c: Ctx[S], code: str, detail: str) -> http.Response",
+          "description": ""
+        },
+        {
+          "signature": "Router.fail_fields(c: Ctx[S], code: str, fields: [FieldError]) -> http.Response",
+          "description": ""
+        },
+        {
+          "signature": "join_methods(ms: [Method]) -> str",
+          "description": ""
+        },
+        {
+          "signature": "gc struct Group[S] { router: Router[S], prefix: str, befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response] }",
+          "description": "A prefix and the middleware that goes with it."
+        },
+        {
+          "signature": "Group.group(prefix: str) -> Group[S]",
+          "description": "A group inside this one: the prefixes join and the middleware accumulates."
+        },
+        {
+          "signature": "Group.before(f: fn(Ctx[S]) -> opt[http.Response]) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Group.after(f: fn(Ctx[S], http.Response) -> http.Response) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Group.handle(method: Method, pattern: str, h: fn(Ctx[S]) -> http.Response) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Group.websocket(p: str, open: fn(Ctx[S]) -> http.Response, w: WsRoute[S]) -> int",
+          "description": "r.websocket, under the group's prefix and with its hooks."
+        },
+        {
+          "signature": "Group.get(p: str, h: fn(Ctx[S]) -> http.Response) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Group.head(p: str, h: fn(Ctx[S]) -> http.Response) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Group.post(p: str, h: fn(Ctx[S]) -> http.Response) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Group.put(p: str, h: fn(Ctx[S]) -> http.Response) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Group.patch(p: str, h: fn(Ctx[S]) -> http.Response) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Group.delete(p: str, h: fn(Ctx[S]) -> http.Response) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Group.options(p: str, h: fn(Ctx[S]) -> http.Response) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Ctx.trace() -> TraceContext",
+          "description": "Empty identifiers when tracing is off."
+        },
+        {
+          "signature": "Ctx.trace_request(req: httpc.Request) -> result[httpc.Request, str]",
+          "description": ""
+        },
+        {
+          "signature": "Ctx.logger(log: Logger) -> TraceLogger",
+          "description": ""
+        },
+        {
+          "signature": "Ctx.param(name: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "Ctx.param_int(name: str, fallback: int) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Ctx.header(name: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "Ctx.add_header(name: str, value: str) -> int",
+          "description": "Adds a header to whatever response this request ends with: the handler's, or a `before`'s short-circuit, or an error."
+        },
+        {
+          "signature": "Ctx.cookie(name: str) -> str",
+          "description": "The value of cookie `name`, \"\" when the request carried none."
+        },
+        {
+          "signature": "Ctx.cookies() -> map[str]str",
+          "description": "Every cookie the request carried."
+        },
+        {
+          "signature": "Ctx.set_local(key: str, v: str) -> int",
+          "description": "What a `before` resolved, read by the handler: the user a token belongs to, the tenant a subdomain names, the plan a customer..."
+        },
+        {
+          "signature": "Ctx.socket() -> Socket",
+          "description": "The socket a WebSocket route's handshake is opening: put it in a hub, set its locals."
+        },
+        {
+          "signature": "Ctx.accept_ws() -> http.Response",
+          "description": "The 101 that accepts the upgrade."
+        },
+        {
+          "signature": "Ctx.local(key: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "Ctx.has_local(key: str) -> bool",
+          "description": ""
+        },
+        {
+          "signature": "Ctx.body_str() -> str",
+          "description": ""
+        },
+        {
+          "signature": "Ctx.body_bytes() -> bytes",
+          "description": ""
+        },
+        {
+          "signature": "Ctx.method() -> Method",
+          "description": "The verb as a checked value."
+        },
+        {
+          "signature": "Ctx.method_str() -> str",
+          "description": "The verb exactly as the client sent it, for logs."
+        },
+        {
+          "signature": "Ctx.path() -> str",
+          "description": ""
+        },
+        {
+          "signature": "Ctx.query(name: str) -> str",
+          "description": "One query parameter, percent-decoded, or \"\"."
+        },
+        {
+          "signature": "Ctx.query_int(name: str, fallback: int) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Ctx.bearer() -> str",
+          "description": "The bearer token without its scheme, or \"\"."
+        },
+        {
+          "signature": "Ctx.content_type() -> str",
+          "description": ""
+        },
+        {
+          "signature": "Ctx.json_body() -> result[Json, FormError]",
+          "description": "The body as a JSON value, for a shape you have not declared."
+        },
+        {
+          "signature": "Ctx.form(rules: UploadRules) -> result[Form, FormError]",
+          "description": "The multipart form this request carries, under the caller's rules."
+        },
+        {
+          "signature": "Ctx.upload(rules: UploadRules) -> result[Form, FormError]",
+          "description": "The same, refused unless the request is a POST/PUT/PATCH: a body on a GET is a client doing something strange."
+        },
+        {
+          "signature": "Ctx.wants_close() -> bool",
+          "description": ""
+        },
+        {
+          "signature": "dto[S, T](c: Ctx[S]) -> result[T, http.Response]",
+          "description": "The body decoded into a declared shape, in one call: the wire's camelCase keys become the struct's snake_case fields (slang's..."
+        },
+        {
+          "signature": "query_as[S, T](c: Ctx[S]) -> result[T, http.Response]",
+          "description": "The query string bound into a declared shape, in one call, with the same field-level errors a bad body gets --      let r:..."
+        }
+      ]
+    },
+    {
+      "file": "sanitize.sl",
+      "description": "Operator injection: the NoSQL half of input sanitisation.",
+      "items": [
+        {
+          "signature": "enum SanitizeMode { OFF, REJECT, STRIP }",
+          "description": ""
+        },
+        {
+          "signature": "sanitize_from(cfg: Config) -> SanitizeMode",
+          "description": "MONGO_SANITIZE: off (default), reject or strip."
+        },
+        {
+          "signature": "operator_key(k: str) -> bool",
+          "description": "A key MongoDB would read as an operator or a path."
+        },
+        {
+          "signature": "find_operator_key(j: Json) -> str",
+          "description": "The first operator key in `j`, as a path (\"filter.$where\", \"items[2].$gt\"), or \"\" when there is none."
+        },
+        {
+          "signature": "strip_operator_keys(j: Json) -> int",
+          "description": "Removes every operator key in `j`, at any depth, in place; returns how many were removed."
+        },
+        {
+          "signature": "sanitize_request(req: http.Request, mode: SanitizeMode) -> str",
+          "description": "What the guard says about `req` under `mode`: \"\" to carry on (after stripping in place, in STRIP mode), or the offending key's..."
+        }
+      ]
+    },
+    {
+      "file": "security.sl",
+      "description": "Security headers.",
+      "items": [
+        {
+          "signature": "gc struct SecurityHeaders { csp: str, hsts_max_age: int, hsts_subdomains: bool, hsts_preload: bool, nosniff: bool, frame_options: str, referrer_policy: str, coop: str, corp: str }",
+          "description": ""
+        },
+        {
+          "signature": "default_security_headers() -> SecurityHeaders",
+          "description": ""
+        },
+        {
+          "signature": "no_security_headers() -> SecurityHeaders",
+          "description": ""
+        },
+        {
+          "signature": "security_problem(h: SecurityHeaders) -> str",
+          "description": "What is wrong with `h`, or \"\"."
+        },
+        {
+          "signature": "security_lines(h: SecurityHeaders) -> [str]",
+          "description": "The header lines, \"name: value\", in a fixed order."
+        },
+        {
+          "signature": "security_from(cfg: Config) -> SecurityHeaders",
+          "description": "SECURITY_HEADERS (false turns all of them off), CONTENT_SECURITY_POLICY (\"off\" for none), HSTS_MAX_AGE (seconds, 0 = off),..."
+        },
+        {
+          "signature": "gc struct Security { lines: [str], prefixes: [str] }",
+          "description": "What the router keeps: the lines, and each line's lowercase name for the \"a handler set its own\" check."
+        },
+        {
+          "signature": "security_compile(h: SecurityHeaders) -> Security",
+          "description": ""
+        },
+        {
+          "signature": "Security.apply(resp: http.Response) -> http.Response",
+          "description": "`resp` with every line it does not already carry."
+        },
+        {
+          "signature": "static_render_with(status: i32, content_type: str, lines: [str], body: bytes, keep_alive: bool) -> bytes",
+          "description": "A static route's bytes: status line, content type, the security lines, length, connection, the date line, body."
+        }
+      ]
+    },
+    {
+      "file": "serve.sl",
+      "description": "The server edge: the accept loop that turns a Router into a running server.",
+      "items": [
+        {
+          "signature": "gc struct ServerConfig { idle_timeout: int, header_timeout: int, body_timeout: int, write_timeout: int, max_request_bytes: int, max_requests_per_conn: int, shutdown_timeout: int, request_ids: bool, trusted_proxies: TrustedProxies, logger: Logger, max_connections: int, tls: TlsSettings }",
+          "description": "Four deadlines, not one, because \"how long should this wait\" has different honest answers depending on what a connection is..."
+        },
+        {
+          "signature": "gc struct TlsSettings { on: bool, cert_file: str, key_file: str, client_ca_file: str, handshake_timeout: int }",
+          "description": "A certificate chain and its private key, as PEM files, read once when the server starts: a missing or mismatched pair stops it..."
+        },
+        {
+          "signature": "no_tls() -> TlsSettings",
+          "description": ""
+        },
+        {
+          "signature": "tls_files(cert_file: str, key_file: str) -> TlsSettings",
+          "description": "HTTPS from these two PEM files, with every other setting at its default."
+        },
+        {
+          "signature": "default_server_config() -> ServerConfig",
+          "description": "Safe rather than infinite, per the todo item this answers."
+        },
+        {
+          "signature": "server_config_from(cfg: Config) -> ServerConfig",
+          "description": "The same defaults, overridable per field from config: IDLE_TIMEOUT, READ_HEADER_TIMEOUT, READ_BODY_TIMEOUT, WRITE_TIMEOUT,..."
+        },
+        {
+          "signature": "serve_conn[S](r: Router[S], c: link, sc: ServerConfig)",
+          "description": "One connection, until the client goes away or asks to close."
+        },
+        {
+          "signature": "gc struct ConnGate { lock: mutex, open: int, max: int, refused: int, reported_at: int }",
+          "description": "The server-wide connection count, shared by every acceptor."
+        },
+        {
+          "signature": "new_conn_gate(max: int) -> ConnGate",
+          "description": ""
+        },
+        {
+          "signature": "ConnGate.enter() -> bool",
+          "description": "Takes a slot for a new connection; false (and counted as refused) when every slot is taken."
+        },
+        {
+          "signature": "ConnGate.leave()",
+          "description": ""
+        },
+        {
+          "signature": "ConnGate.open_now() -> int",
+          "description": ""
+        },
+        {
+          "signature": "ConnGate.refusals_to_report(now: int) -> int",
+          "description": "The refusals to report, at most once per second of `now`: 0 when there are none or the last report was under a second ago."
+        },
+        {
+          "signature": "serve_tls_conn[S](r: Router[S], c: link, sc: ServerConfig, ctx: rawptr)",
+          "description": "serve_conn over TLS: the handshake first, under its own deadline, then the same loop."
+        },
+        {
+          "signature": "accept_backoff(prev_ns: int) -> int",
+          "description": "The pause after a failed accept: 5ms, doubling to 1s while it keeps failing."
+        },
+        {
+          "signature": "listen_and_serve[S](r: Router[S], port: int) -> result[int, str]",
+          "description": "Bind, then accept until the process is asked to stop."
+        },
+        {
+          "signature": "listen_and_serve_with[S](r: Router[S], port: int, sc: ServerConfig) -> result[int, str]",
+          "description": "Same, with timeouts, limits, and the shutdown drain window under the caller's control -- built from config with..."
+        }
+      ]
+    },
+    {
+      "file": "sio_serve.sl",
+      "description": "Socket.IO routes, served: Engine.IO v4 and Socket.IO v5 (what socket.io-client 3 and 4 speak), on both of its transports.",
+      "items": [
+        {
+          "signature": "gc struct SioRoute[S] { settings: SioSettings, event: fn(S, Socket, SioEvent), connect: opt[fn(S, Socket, str, str) -> result[bool, str]], disconnect: opt[fn(S, Socket, str, str)], sessions: SioSessions }",
+          "description": ""
+        },
+        {
+          "signature": "sio_route[S](event: fn(S, Socket, SioEvent)) -> SioRoute[S]",
+          "description": ""
+        },
+        {
+          "signature": "SioRoute.on_connect(f: fn(S, Socket, str, str) -> result[bool, str]) -> SioRoute[S]",
+          "description": ""
+        },
+        {
+          "signature": "SioRoute.on_disconnect(f: fn(S, Socket, str, str)) -> SioRoute[S]",
+          "description": ""
+        }
+      ]
+    },
+    {
+      "file": "socket.sl",
+      "description": "A live connection the serve loop holds open after an upgrade, and the hub that lets one connection's handler reach the others.",
+      "items": [
+        {
+          "signature": "gc struct Socket { id: str, route: str, protocol: str, client_ip: str, locals: map[str]str, lock: mutex, out: chan[Out], open: bool, ended: str, close_code: int, close_reason: str, hubs: [Hub], namespaces: map[str]bool, handler: int, handshake: http.Response, sio: bool, accepted: bool }",
+          "description": ""
+        },
+        {
+          "signature": "Socket.send_text(s: str) -> bool",
+          "description": "Queues a text message."
+        },
+        {
+          "signature": "Socket.send_binary(b: bytes) -> bool",
+          "description": ""
+        },
+        {
+          "signature": "Socket.emit(namespace: str, name: str, args_json: str) -> bool",
+          "description": "Socket.IO: `emit(name, ...args)` on a namespace (\"/\" by default)."
+        },
+        {
+          "signature": "Socket.emit_with_ack(namespace: str, name: str, args_json: str, id: int) -> bool",
+          "description": "The same, asking the client to acknowledge: its answer arrives as an Ack event carrying `id`."
+        },
+        {
+          "signature": "Socket.ack(namespace: str, id: int, args_json: str) -> bool",
+          "description": "The answer to a client event that asked for one (SioEvent.ack >= 0)."
+        },
+        {
+          "signature": "Socket.emit_binary(namespace: str, name: str, args_json: str, data: [bytes]) -> bool",
+          "description": "emit with binary attachments: `args_json` is the other arguments, as for emit, and each of `data` follows them as a binary..."
+        },
+        {
+          "signature": "Socket.disconnect_ns(namespace: str) -> bool",
+          "description": "Disconnects the client from one namespace; the session stays."
+        },
+        {
+          "signature": "Socket.close(code: int, reason: str) -> bool",
+          "description": "Starts the closing handshake with `code` (1000 normal, 1001 going away, 1008 policy, 4000-4999 the application's own) and..."
+        },
+        {
+          "signature": "Socket.is_open() -> bool",
+          "description": ""
+        },
+        {
+          "signature": "Socket.local(key: str) -> str",
+          "description": "A value the handshake's hooks set on the request, \"\" when none did."
+        },
+        {
+          "signature": "Socket.set_local(key: str, v: str) -> int",
+          "description": ""
+        },
+        {
+          "signature": "gc struct Hub { id: str, lock: mutex, sockets: map[str]Socket, rooms: map[str]map[str]bool }",
+          "description": "Sockets by id, and rooms of them: what a chat, a live dashboard or a notification fan-out needs to reach more than the one..."
+        },
+        {
+          "signature": "new_hub() -> Hub",
+          "description": ""
+        },
+        {
+          "signature": "Hub.add(s: Socket) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Hub.remove(s: Socket) -> int",
+          "description": "Takes the socket out of the hub and every room in it."
+        },
+        {
+          "signature": "Hub.join_room(s: Socket, room: str) -> int",
+          "description": "Puts the socket in a room (adding it to the hub first if needed)."
+        },
+        {
+          "signature": "Hub.leave_room(s: Socket, room: str) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Hub.count() -> int",
+          "description": ""
+        },
+        {
+          "signature": "Hub.room_size(room: str) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Hub.get(id: str) -> opt[Socket]",
+          "description": "The socket with this id, if it is in the hub."
+        },
+        {
+          "signature": "Hub.broadcast(text: str, except: str) -> int",
+          "description": "Text to every WebSocket in the hub but `except` (an id, or \"\")."
+        },
+        {
+          "signature": "Hub.broadcast_binary(b: bytes, except: str) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Hub.to_room(room: str, text: str, except: str) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Hub.to_room_binary(room: str, b: bytes, except: str) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Hub.emit_all(namespace: str, name: str, args_json: str, except: str) -> int",
+          "description": "Socket.IO: one event to every Socket.IO session in the hub, encoded once."
+        },
+        {
+          "signature": "Hub.emit_to_room(room: str, namespace: str, name: str, args_json: str, except: str) -> int",
+          "description": ""
+        },
+        {
+          "signature": "Hub.emit_binary_to_room(room: str, namespace: str, name: str, args_json: str, data: [bytes], except: str) -> int",
+          "description": "emit_binary to every Socket.IO session in a room (\"\" for the hub)."
+        }
+      ]
+    },
+    {
+      "file": "testkit.sl",
+      "description": "Building a request, and reading a response.",
+      "items": [
+        {
+          "signature": "gc struct TestRequest { method: Method, path: str, headers: map[str]str, body: bytes }",
+          "description": ""
+        },
+        {
+          "signature": "request(method: Method, path: str) -> TestRequest",
+          "description": ""
+        },
+        {
+          "signature": "get_request(path: str) -> TestRequest",
+          "description": ""
+        },
+        {
+          "signature": "TestRequest.header(name: str, value: str) -> TestRequest",
+          "description": ""
+        },
+        {
+          "signature": "TestRequest.bearer(token: str) -> TestRequest",
+          "description": ""
+        },
+        {
+          "signature": "TestRequest.basic(credentials: str) -> TestRequest",
+          "description": ""
+        },
+        {
+          "signature": "TestRequest.content_type(ct: str) -> TestRequest",
+          "description": ""
+        },
+        {
+          "signature": "TestRequest.body_str(body: str) -> TestRequest",
+          "description": ""
+        },
+        {
+          "signature": "TestRequest.body_bytes(body: bytes) -> TestRequest",
+          "description": ""
+        },
+        {
+          "signature": "TestRequest.json_body(body: str) -> TestRequest",
+          "description": "Sets the content type too, because a body without one is a body a real client would not send."
+        },
+        {
+          "signature": "TestRequest.json(body: Json) -> TestRequest",
+          "description": ""
+        },
+        {
+          "signature": "TestRequest.multipart(boundary: str, fields: map[str]str, files: [Upload]) -> TestRequest",
+          "description": "A multipart body, built from the parts given: each file is `name:filename:content-type:content`, each field `name:value`."
+        },
+        {
+          "signature": "TestRequest.build() -> http.Request",
+          "description": "Not fallible: a header that fails http.request()'s validation (CR or LF in a name or value, a colon in a name) here is a bug..."
+        },
+        {
+          "signature": "upload_part(field: str, filename: str, content_type: str, content: str) -> Upload",
+          "description": "One part for `multipart`, without going near a real encoder."
+        },
+        {
+          "signature": "resp_status(r: http.Response) -> int",
+          "description": "`status_of` is taken by the registry, so responses read as `resp_status`, `resp_text`, `resp_header`, `resp_json`."
+        },
+        {
+          "signature": "resp_text(r: http.Response) -> str",
+          "description": ""
+        },
+        {
+          "signature": "resp_header(r: http.Response, name: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "resp_json(r: http.Response) -> Json",
+          "description": "The body as JSON, or Null when it is not JSON at all -- so an assertion reads `json_of(resp).get(\"id\")` without a guard."
+        },
+        {
+          "signature": "resp_error_code(r: http.Response) -> str",
+          "description": "The error code in zokor's envelope: \"not_found\", \"validation_failed\"."
+        },
+        {
+          "signature": "resp_error_fields(r: http.Response) -> [str]",
+          "description": "The field names an error envelope complains about, in order, so a test asserts on the shape rather than on an exact string."
+        }
+      ]
+    },
+    {
+      "file": "tokens.sl",
+      "description": "Opaque bearer tokens.",
+      "items": [
+        {
+          "signature": "gc struct TokenStore { subjects: map[str]str, expires: map[str]int, ttl: int, lock: mutex, since_sweep: int }",
+          "description": ""
+        },
+        {
+          "signature": "new_token_store(ttl_ns: int) -> TokenStore",
+          "description": "`ttl_ns` is how long a token stays valid after it is issued, in nanoseconds; 0 means until it is revoked."
+        },
+        {
+          "signature": "new_token() -> result[str, str]",
+          "description": "32 random bytes as 64 lowercase hex characters."
+        },
+        {
+          "signature": "TokenStore.issue(subject: str) -> result[str, str]",
+          "description": "A new token for `subject`."
+        },
+        {
+          "signature": "TokenStore.issue_at(subject: str, now: int) -> result[str, str]",
+          "description": ""
+        },
+        {
+          "signature": "TokenStore.lookup(token: str) -> opt[str]",
+          "description": "The subject a live token was issued to; none for an unknown, revoked or expired token (an expired one is dropped on the way)."
+        },
+        {
+          "signature": "TokenStore.lookup_at(token: str, now: int) -> opt[str]",
+          "description": ""
+        },
+        {
+          "signature": "TokenStore.revoke(token: str) -> bool",
+          "description": "Ends one token (logout)."
+        },
+        {
+          "signature": "TokenStore.revoke_subject(subject: str) -> int",
+          "description": "Ends every token issued to `subject` (\"log out everywhere\", a password change)."
+        },
+        {
+          "signature": "TokenStore.count() -> int",
+          "description": "How many tokens are held (expired ones count until swept)."
+        },
+        {
+          "signature": "bearer_subject[S](c: Ctx[S], store: TokenStore) -> opt[str]",
+          "description": "The subject behind the request's `Authorization: Bearer <token>`, or none when the header is missing or the token is not live."
+        }
+      ]
+    },
+    {
+      "file": "tracing.sl",
+      "description": "Request-scoped W3C context, carried explicitly across tasks and calls.",
+      "items": [
+        {
+          "signature": "gc struct TraceConfig { max_parent_bytes: int, max_state_bytes: int, max_state_members: int }",
+          "description": "Startup limits for incoming W3C headers."
+        },
+        {
+          "signature": "gc struct Tracer { max_parent_bytes: int, max_state_bytes: int, max_state_members: int }",
+          "description": "Validated, immutable startup tracing settings."
+        },
+        {
+          "signature": "struct TraceContext { trace_id: str, parent_id: str, span_id: str, sampled: bool, state: str }",
+          "description": "Explicit request context; pass this value when spawning background work."
+        },
+        {
+          "signature": "trace_config() -> TraceConfig",
+          "description": "Default limits: 256 parent bytes, 512 state bytes, 32 state members."
+        },
+        {
+          "signature": "new_tracer(cfg: TraceConfig) -> result[Tracer, str]",
+          "description": "Validate all startup limits together and copy them."
+        },
+        {
+          "signature": "trace_context(t: Tracer, headers: bytes) -> result[TraceContext, str]",
+          "description": "Invalid, absent or duplicate parents start a new trace."
+        },
+        {
+          "signature": "trace_header(ctx: TraceContext) -> result[str, str]",
+          "description": "A validated version-00 header; reserved flags are always zero."
+        },
+        {
+          "signature": "trace_request(ctx: TraceContext, req: httpc.Request) -> result[httpc.Request, str]",
+          "description": "Copy the request and its headers; never mutate a shared caller request."
+        },
+        {
+          "signature": "trace_registry(reg: Registry, ctx: TraceContext) -> Registry",
+          "description": "Bind a registry by copying its startup references, never changing the shared registry as concurrent requests arrive with..."
+        },
+        {
+          "signature": "struct TraceLogger { logger: Logger, trace_id: str, request_id: str }",
+          "description": "A request binding over a shared Logger, without changing its configuration."
+        },
+        {
+          "signature": "traced_logger(log: Logger, ctx: TraceContext) -> TraceLogger",
+          "description": "Bind application records to a validated trace id."
+        }
+      ]
+    },
+    {
+      "file": "upload.sl",
+      "description": "File uploads.",
+      "items": [
+        {
+          "signature": "gc struct UploadRules { limits: multipart.Limits, allowed_types: [str], allowed_extensions: [str], require_content_type: bool }",
+          "description": ""
+        },
+        {
+          "signature": "gc struct Upload { field: str, filename: str, raw_filename: str, content_type: str, data: bytes }",
+          "description": ""
+        },
+        {
+          "signature": "gc struct Form { values: map[str]str, files: [Upload] }",
+          "description": ""
+        },
+        {
+          "signature": "gc struct FormError { code: str, detail: str }",
+          "description": "The reason a form was refused: a registered error code, and a sentence naming what was wrong."
+        },
+        {
+          "signature": "default_uploads() -> UploadRules",
+          "description": ""
+        },
+        {
+          "signature": "uploads_allowing(types: [str]) -> UploadRules",
+          "description": ""
+        },
+        {
+          "signature": "with_max_file_bytes(r: UploadRules, n: int) -> UploadRules",
+          "description": ""
+        },
+        {
+          "signature": "with_max_total_bytes(r: UploadRules, n: int) -> UploadRules",
+          "description": ""
+        },
+        {
+          "signature": "with_max_files(r: UploadRules, n: int) -> UploadRules",
+          "description": ""
+        },
+        {
+          "signature": "with_extensions(r: UploadRules, exts: [str]) -> UploadRules",
+          "description": ""
+        },
+        {
+          "signature": "parse_form(content_type: str, body: bytes, rules: UploadRules) -> result[Form, FormError]",
+          "description": ""
+        },
+        {
+          "signature": "value(f: Form, name: str) -> str",
+          "description": ""
+        },
+        {
+          "signature": "has_value(f: Form, name: str) -> bool",
+          "description": ""
+        },
+        {
+          "signature": "file(f: Form, field: str) -> opt[Upload]",
+          "description": "The first file posted under a field name, which is the usual case."
+        },
+        {
+          "signature": "files_for(f: Form, field: str) -> [Upload]",
+          "description": "Every file under one field name: `<input multiple>` posts repeats."
+        },
+        {
+          "signature": "total_bytes(f: Form) -> int",
+          "description": ""
+        },
+        {
+          "signature": "safe_filename(raw: str) -> str",
+          "description": "A client's filename, made safe to use as ONE path segment."
+        },
+        {
+          "signature": "extension_of(filename: str) -> str",
+          "description": "\".png\" for \"a.png\", lowercased; \"\" when there is no extension."
+        },
+        {
+          "signature": "media_type_of(header: str) -> str",
+          "description": "The media type without its parameters: \"image/png\" from \"image/png; charset=binary\"."
+        }
+      ]
+    },
+    {
+      "file": "ws.sl",
+      "description": "WebSocket, and Socket.IO on top of it.",
+      "items": [
+        {
+          "signature": "gc struct WsRules { max_frame_bytes: int, max_message_bytes: int, protocols: [str], ping_interval: int, pong_timeout: int, max_queue: int, close_timeout: int }",
+          "description": ""
+        },
+        {
+          "signature": "default_ws() -> WsRules",
+          "description": ""
+        },
+        {
+          "signature": "ws_allowing(protocols: [str]) -> WsRules",
+          "description": ""
+        },
+        {
+          "signature": "enum Incoming { Text, Binary, Ping, Pong, Close }",
+          "description": ""
+        },
+        {
+          "signature": "gc struct Message { kind: Incoming, text: str, data: bytes, code: int, reason: str }",
+          "description": ""
+        },
+        {
+          "signature": "gc struct Conn { rules: WsRules, inbox: builder.Bytes, have: int, need: int, partial: builder.Bytes, partial_op: ws.Op, fragmenting: bool, outbox: bytes, closed: bool, sid: str }",
+          "description": ""
+        },
+        {
+          "signature": "new_conn(rules: WsRules) -> Conn",
+          "description": ""
+        },
+        {
+          "signature": "is_upgrade(req: http.Request) -> bool",
+          "description": "Is this request asking to become a WebSocket? Cheap enough to call on every request, so a route can serve both."
+        },
+        {
+          "signature": "upgrade(req: http.Request, rules: WsRules) -> result[http.Response, str]",
+          "description": "The 101 to send back, or the failure to report."
+        },
+        {
+          "signature": "receive(c: Conn, chunk: bytes) -> result[[Message], str]",
+          "description": "Feeds bytes in and takes whole messages out."
+        },
+        {
+          "signature": "pending(c: Conn) -> bytes",
+          "description": "Bytes the connection owes the peer (pongs, the close echo), taken out: call it after `receive` and write whatever it returns."
+        },
+        {
+          "signature": "is_closed(c: Conn) -> bool",
+          "description": ""
+        },
+        {
+          "signature": "text_frame(s: str) -> bytes",
+          "description": ""
+        },
+        {
+          "signature": "binary_frame(b: bytes) -> bytes",
+          "description": ""
+        },
+        {
+          "signature": "ping_frame(payload: bytes) -> bytes",
+          "description": ""
+        },
+        {
+          "signature": "pong_frame(payload: bytes) -> bytes",
+          "description": ""
+        },
+        {
+          "signature": "close_frame(code: int, reason: str) -> bytes",
+          "description": ""
+        },
+        {
+          "signature": "close_because(c: Conn, why: str) -> bytes",
+          "description": "The close a protocol error calls for: 1002, with the reason, and the connection marked shut so nothing else is sent."
+        },
+        {
+          "signature": "gc struct SioSettings { ping_interval_ms: int, ping_timeout_ms: int, max_payload: int, max_polling_sessions: int, max_attachments: int }",
+          "description": ""
+        },
+        {
+          "signature": "default_sio() -> SioSettings",
+          "description": ""
+        },
+        {
+          "signature": "enum SioKind { Open, Connect, Event, Ack, Ping, Disconnect, Other }",
+          "description": ""
+        },
+        {
+          "signature": "gc struct SioEvent { kind: SioKind, namespace: str, name: str, args_json: str, ack: int, attachments: [bytes], expecting: int }",
+          "description": ""
+        },
+        {
+          "signature": "sio_open(c: Conn, sid: str, s: SioSettings) -> bytes",
+          "description": "The first thing a socket.io connection needs: its session id and the keepalive timings, as a text frame."
+        },
+        {
+          "signature": "sio_receive(c: Conn, m: Message) -> result[SioEvent, str]",
+          "description": "Turns one WebSocket text message into a socket.io event."
+        },
+        {
+          "signature": "sio_connect_ok(c: Conn, namespace: str) -> bytes",
+          "description": "The answer to a CONNECT."
+        },
+        {
+          "signature": "sio_connect_error(namespace: str, why: str) -> bytes",
+          "description": ""
+        },
+        {
+          "signature": "sio_emit(namespace: str, name: str, args_json: str) -> bytes",
+          "description": "`emit(name, args)`."
+        },
+        {
+          "signature": "sio_emit_with_ack(namespace: str, name: str, args_json: str, id: int) -> bytes",
+          "description": ""
+        },
+        {
+          "signature": "sio_ack(namespace: str, id: int, args_json: str) -> bytes",
+          "description": "The reply to an event that carried an ack id."
+        },
+        {
+          "signature": "sio_disconnect(namespace: str) -> bytes",
+          "description": ""
+        }
+      ]
+    },
+    {
+      "file": "ws_serve.sl",
+      "description": "WebSocket routes, served: the handshake goes through the router like any request -- its `before`s run, so authentication and...",
+      "items": [
+        {
+          "signature": "gc struct WsRoute[S] { rules: WsRules, message: opt[fn(S, Socket, Message)], closed: opt[fn(S, Socket, int, str)], sio: opt[SioRoute[S]] }",
+          "description": ""
+        },
+        {
+          "signature": "ws_route[S](rules: WsRules, message: fn(S, Socket, Message)) -> WsRoute[S]",
+          "description": "The message handler is the one a route cannot do without; on_close is optional."
+        },
+        {
+          "signature": "WsRoute.on_close(f: fn(S, Socket, int, str)) -> WsRoute[S]",
+          "description": "Called once when the connection ends, however it ended, with the code and reason: the peer's, the ones this side closed with,..."
+        }
+      ]
+    },
+    {
+      "file": "internal/multipart (reached as UploadRules.limits)",
+      "description": "",
+      "items": [
+        {
+          "signature": "gc struct Limits { max_parts: int, max_files: int, max_file_bytes: int, max_field_bytes: int, max_total_bytes: int, max_headers_bytes: int, max_filename_bytes: int }",
+          "description": ""
+        }
+      ]
+    }
+  ]
+}

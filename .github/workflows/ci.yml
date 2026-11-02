@@ -1,0 +1,151 @@
+# CI: zokor's suite, both examples, every program in the agent guide, and
+# the API reference's freshness, all against slangc built from slang `dev`.
+#
+# The guide (docs/llms-small.txt) is what an agent copies verbatim, so a
+# block in it that no longer compiles teaches every reader the wrong
+# thing; docs/check_snippets.sh extracts each ```slang block and builds
+# and runs it against this checkout. README blocks are fragments of a
+# service (no imports, no main), not programs, so they are not extracted.
+#
+# slang `dev`, not a release: zokor tracks the compiler it is developed
+# against, and a break here is something to report upstream early.
+#
+# Every platform slang's own CI covers: Linux x86_64, Linux arm64 and
+# macOS on Apple Silicon. slang's runtime has platform-specific code
+# (assembly trampolines, kqueue vs epoll, GCC vs clang), so a server
+# framework that only ever ran on one of them would meet its first
+# arm64 or macOS bug in a user's hands.
+
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check (${{ matrix.name }})
+    strategy:
+      fail-fast: false        # one platform failing must not hide the others
+      matrix:
+        include:
+          - name: linux-x86_64
+            runner: ubuntu-24.04
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+          - name: macos-arm64
+            runner: macos-14
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out slang (dev)
+        uses: actions/checkout@v4
+        with:
+          repository: dolphlabs/slang
+          ref: dev
+          path: .slang
+
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libssl-dev libsqlite3-dev \
+            zlib1g-dev git curl
+
+      # slangc finds Homebrew's keg-only OpenSSL itself, as slang's CI
+      # relies on; sqlite3 and zlib ship with macOS.
+      - name: Install build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install pkg-config openssl@3
+
+      - name: Toolchain
+        run: |
+          uname -sm
+          cc --version | head -1
+
+      # GCC 14 makes incompatible-pointer-types an error and slang's C
+      # does not build clean under it yet; demote it so a newer runner
+      # image does not turn into a red build for a reason that is not ours.
+      - name: Build slangc
+        run: |
+          make -C .slang slangc CC="cc -Wno-error=incompatible-pointer-types"
+          echo "SLANGC=$GITHUB_WORKSPACE/.slang/slangc" >> "$GITHUB_ENV"
+          .slang/slangc --version || true
+          git -C .slang log -1 --format='slang dev at %h %s'
+
+      # zokor pins dolphlabs/jwt (slang.project); fetch it into the cache
+      # the lock names before anything compiles.
+      - name: Fetch packages
+        run: $SLANGC get
+
+      # The Postgres helpers' live tests (zokor/postgres_test.sl) need a
+      # database; they skip, and say so, when ZOKOR_TEST_DATABASE_URL is
+      # unset. Linux runners have Docker; macOS runners do not, so the
+      # live tests run on both Linux jobs and skip on macOS.
+      - name: Start Postgres (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          docker run -d --name pg -e POSTGRES_PASSWORD=zokor -e POSTGRES_DB=zokor_test \
+            -p 5432:5432 postgres:16
+          for i in $(seq 1 60); do
+            docker exec pg pg_isready -U postgres -d zokor_test >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker exec pg pg_isready -U postgres -d zokor_test
+          echo "ZOKOR_TEST_DATABASE_URL=postgres://postgres:zokor@127.0.0.1:5432/zokor_test" >> "$GITHUB_ENV"
+
+      # Verbose, so a crash names the last test that passed; kept, so the
+      # runner a crash happened in can be downloaded and its
+      # `(image+0x...)` pc resolved with addr2line or atos.
+      - name: Tests
+        timeout-minutes: 10
+        env:
+          TMPDIR: ${{ runner.temp }}/slangtest
+        run: |
+          mkdir -p "$TMPDIR"
+          make test SLANGC="$SLANGC" TESTFLAGS="-v --keep"
+
+      - name: Keep the test runners of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-runners-${{ matrix.name }}
+          path: ${{ runner.temp }}/slangtest
+          retention-days: 14
+
+      - name: Examples
+        timeout-minutes: 5
+        run: |
+          make example SLANGC="$SLANGC"
+          make example-chat SLANGC="$SLANGC"
+          make example-ports SLANGC="$SLANGC"
+
+      # The scaffold's --db pg project migrates a database of its own:
+      # zokor_test already holds zokor's own migration history.
+      - name: Scaffold database (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          docker exec pg createdb -U postgres scaffold_test
+          echo "SCAFFOLD_TEST_DATABASE_URL=postgres://postgres:zokor@127.0.0.1:5432/scaffold_test" >> "$GITHUB_ENV"
+
+      - name: CLI builds and runs
+        timeout-minutes: 15
+        run: make cli-test SLANGC="$SLANGC"
+
+      - name: cmd/zokor/templates.sl is up to date
+        run: make templates-check
+
+      - name: Guide programs compile and run
+        timeout-minutes: 10
+        run: make snippets SLANGC="$SLANGC"
+
+      - name: docs/api.txt is up to date
+        run: make api-check

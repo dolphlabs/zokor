@@ -1,0 +1,1 @@
+jwt sha256:461da723122f9d7569c45cab1e57575ff94d0bea7b974db7a95f0ad20ae1fa4a git https://github.com/dolphlabs/jwt.git tag v0.1.0 dir src/jwt

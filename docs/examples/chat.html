@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zokor Example: WebSocket and Socket.IO Chat</title>
+<meta name="description" content="A Slang chat service using Zokor, with WebSocket and Socket.IO clients connected to the same room.">
+<meta name="author" content="Dolphlabs">
+<meta property="og:site_name" content="Zokor">
+<meta property="og:title" content="Zokor Example: WebSocket and Socket.IO Chat">
+<meta property="og:description" content="A Slang chat service using Zokor, with WebSocket and Socket.IO clients connected to the same room.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://zokor.dolphlabs.com/examples/chat">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Zokor Example: WebSocket and Socket.IO Chat">
+<meta name="twitter:description" content="A Slang chat service using Zokor, with WebSocket and Socket.IO clients connected to the same room.">
+<link rel="canonical" href="https://zokor.dolphlabs.com/examples/chat">
+<link rel="alternate" type="text/markdown" href="../examples/chat.md" title="Markdown">
+<link rel="alternate" type="text/plain" href="../llms.txt" title="llms.txt">
+<link rel="stylesheet" href="../style.css">
+<link rel="icon" type="image/png" sizes="64x64" href="../assets/zokor-icon-64.png">
+<meta property="og:image" content="https://zokor.dolphlabs.com/assets/zokor-card-1200x630.jpg"><meta property="og:image:alt" content="Zokor, a backend framework for Slang"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta name="twitter:image" content="https://zokor.dolphlabs.com/assets/zokor-card-1200x630.jpg"><meta name="twitter:image:alt" content="Zokor, a backend framework for Slang">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <a class="brand" href="../">
+    <img src="../assets/zokor-header-256.png" width="40" height="40" alt="">
+    <span>zokor</span>
+  </a>
+  <button id="navtoggle" class="navtoggle" type="button" aria-label="Toggle navigation"
+          aria-expanded="false" aria-controls="mainnav">
+    <span></span><span></span><span></span>
+  </button>
+  <nav class="mainnav" id="mainnav" aria-label="Main navigation"><a href="../">Home</a><a href="../guide/start">Start</a><a href="../api/">API</a><a href="../examples/">Examples</a></nav>
+  <div class="tools">
+    <label class="search-label" for="search">Search</label>
+    <input id="search" type="search" placeholder="Search docs…" autocomplete="off"
+           aria-label="Search documentation" aria-controls="results">
+    <button id="theme" type="button" aria-label="Toggle color theme">◐</button>
+  </div>
+</header>
+<div id="navscrim" class="navscrim" hidden></div>
+<div id="results" class="results" role="listbox" aria-label="Search results" hidden></div>
+
+<main id="main">
+
+<div class="page">
+  <article class="content">
+<header class="page-head"><p class="page-kicker">Zokor documentation</p><h1>Chat service</h1><p class="tagline">A Slang chat service using Zokor, with WebSocket and Socket.IO clients connected to the same room.</p><p class="agentline"><a href="../examples/chat.md">Markdown</a> · <a href="../llms.txt">llms.txt</a> · <a href="../api.json">api.json</a></p></header>
+<p class="example-intro">A chat service: the same room for WebSocket clients and socket.io clients, on one server.</p>
+<p class="run-command">Run it from the repository root: <code>make example-chat</code></p>
+<section class="example-file" id="source-examples-chat-main-sl"><h2>examples/chat/main.sl<a class="anchor" href="#source-examples-chat-main-sl" aria-label="Link to this file">#</a></h2><div class="code"><div class="code-head"><span class="code-label">examples/chat/main.sl</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-slang"><span class="tok-comment">// A chat service: the same room for WebSocket clients and socket.io</span>
+<span class="tok-comment">// clients, on one server.</span>
+<span class="tok-comment">//</span>
+<span class="tok-comment">//     slangc examples/chat/main.sl --run            the scripted demo below</span>
+<span class="tok-comment">//     slangc examples/chat/main.sl --run -- serve   a real server on :8080</span>
+<span class="tok-comment">//</span>
+<span class="tok-comment">// With `serve`, point a browser at it:</span>
+<span class="tok-comment">//</span>
+<span class="tok-comment">//     const ws = new WebSocket(&quot;ws://localhost:8080/ws?name=ada&quot;, &quot;chat&quot;);</span>
+<span class="tok-comment">//     ws.onmessage = (m) =&gt; console.log(m.data);</span>
+<span class="tok-comment">//     ws.send(&quot;hello&quot;);</span>
+<span class="tok-comment">//</span>
+<span class="tok-comment">//     const socket = io(&quot;http://localhost:8080&quot;, { query: { name: &quot;leo&quot; } });</span>
+<span class="tok-comment">//     socket.on(&quot;chat message&quot;, (m) =&gt; console.log(m));</span>
+<span class="tok-comment">//     socket.emit(&quot;chat message&quot;, &quot;hi&quot;, (reply) =&gt; console.log(reply));</span>
+<span class="tok-comment">//</span>
+<span class="tok-comment">// Read &quot;the service&quot;: that is everything a real one writes. The demo after</span>
+<span class="tok-comment">// it is a stand-in browser -- real connections to a real server on a free</span>
+<span class="tok-comment">// port -- so `make example-chat` shows the exchange without one.</span>
+<span class="tok-keyword">import</span> <span class="tok-string">&quot;http&quot;</span>;
+<span class="tok-keyword">import</span> <span class="tok-string">&quot;proc&quot;</span>;
+<span class="tok-keyword">import</span> <span class="tok-string">&quot;time&quot;</span>;
+<span class="tok-keyword">import</span> <span class="tok-string">&quot;../../zokor&quot;</span> <span class="tok-keyword">as</span> zokor;
+
+<span class="tok-comment">// ---------------------------------------------------------------- //</span>
+<span class="tok-comment">// the service                                                        //</span>
+<span class="tok-comment">// ---------------------------------------------------------------- //</span>
+
+<span class="tok-keyword">gc</span> <span class="tok-keyword">struct</span> App {
+    name: <span class="tok-type">str</span>,
+    <span class="tok-comment">// everyone in the chat, WebSocket and socket.io alike</span>
+    hub: zokor.Hub,
+    history: [<span class="tok-type">str</span>],
+    lock: <span class="tok-type">mutex</span>,
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">remember</span>(app: App, line: <span class="tok-type">str</span>) {
+    <span class="tok-builtin">mutex_lock</span>(app.lock);
+    <span class="tok-builtin">push</span>(app.history, line);
+    <span class="tok-builtin">mutex_unlock</span>(app.lock);
+}
+
+<span class="tok-comment">// The handshake, for both kinds of client. Every `before` has run by now</span>
+<span class="tok-comment">// (an auth hook would have set c.local(&quot;user&quot;)); this one only wants a name.</span>
+<span class="tok-keyword">fn</span> <span class="tok-function">arrive</span>(c: zokor.Ctx[App]) -&gt; http.Response {
+    <span class="tok-keyword">let</span> name = c.<span class="tok-function">query</span>(<span class="tok-string">&quot;name&quot;</span>);
+    <span class="tok-keyword">if</span> name == <span class="tok-string">&quot;&quot;</span> {
+        <span class="tok-keyword">return</span> zokor.<span class="tok-function">respond_with</span>(c.errors, <span class="tok-string">&quot;unauthorized&quot;</span>, <span class="tok-string">&quot;say who you are: ?name=&quot;</span>,
+                                  c.request_id);
+    }
+    <span class="tok-keyword">let</span> s = c.<span class="tok-function">socket</span>();
+    s.<span class="tok-function">set_local</span>(<span class="tok-string">&quot;name&quot;</span>, name);
+    c.state.hub.<span class="tok-function">join_room</span>(s, <span class="tok-string">&quot;chat&quot;</span>);
+    <span class="tok-keyword">return</span> c.<span class="tok-function">accept_ws</span>();
+}
+
+<span class="tok-comment">// WebSocket clients: every text message goes to the room.</span>
+<span class="tok-keyword">fn</span> <span class="tok-function">on_text</span>(app: App, s: zokor.Socket, m: zokor.Message) {
+    <span class="tok-keyword">if</span> m.kind != zokor.Incoming.Text {
+        s.<span class="tok-function">send_text</span>(<span class="tok-string">&quot;only text, please&quot;</span>);
+        <span class="tok-keyword">return</span>;
+    }
+    <span class="tok-keyword">if</span> m.text == <span class="tok-string">&quot;/history&quot;</span> {
+        <span class="tok-builtin">mutex_lock</span>(app.lock);
+        <span class="tok-keyword">let</span> h = <span class="tok-function">join_lines</span>(app.history);
+        <span class="tok-builtin">mutex_unlock</span>(app.lock);
+        s.<span class="tok-function">send_text</span>(h);
+        <span class="tok-keyword">return</span>;
+    }
+    <span class="tok-keyword">let</span> line = s.<span class="tok-function">local</span>(<span class="tok-string">&quot;name&quot;</span>) + <span class="tok-string">&quot;: &quot;</span> + m.text;
+    <span class="tok-function">remember</span>(app, line);
+    <span class="tok-comment">// to WebSocket clients as text, to socket.io clients as an event</span>
+    app.hub.<span class="tok-function">to_room</span>(<span class="tok-string">&quot;chat&quot;</span>, line, s.id);
+    app.hub.<span class="tok-function">emit_to_room</span>(<span class="tok-string">&quot;chat&quot;</span>, <span class="tok-string">&quot;/&quot;</span>, <span class="tok-string">&quot;chat message&quot;</span>, zokor.<span class="tok-function">jstr</span>(line).<span class="tok-function">render</span>(), s.id);
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">on_ws_close</span>(app: App, s: zokor.Socket, code: <span class="tok-type">int</span>, reason: <span class="tok-type">str</span>) {
+    <span class="tok-function">remember</span>(app, s.<span class="tok-function">local</span>(<span class="tok-string">&quot;name&quot;</span>) + <span class="tok-string">&quot; left (&quot;</span> + <span class="tok-builtin">to_str</span>(code) + <span class="tok-string">&quot;)&quot;</span>);
+}
+
+<span class="tok-comment">// socket.io clients.</span>
+<span class="tok-keyword">fn</span> <span class="tok-function">on_event</span>(app: App, s: zokor.Socket, e: zokor.SioEvent) {
+    <span class="tok-keyword">if</span> e.kind != zokor.SioKind.Event {
+        <span class="tok-keyword">return</span>;
+    }
+    <span class="tok-keyword">if</span> e.name == <span class="tok-string">&quot;chat message&quot;</span> {
+        <span class="tok-function">remember</span>(app, s.<span class="tok-function">local</span>(<span class="tok-string">&quot;name&quot;</span>) + <span class="tok-string">&quot; said &quot;</span> + e.args_json);
+        app.hub.<span class="tok-function">emit_to_room</span>(<span class="tok-string">&quot;chat&quot;</span>, e.namespace, <span class="tok-string">&quot;chat message&quot;</span>, e.args_json, s.id);
+        <span class="tok-keyword">let</span> said = <span class="tok-string">&quot;&quot;</span>;
+        <span class="tok-keyword">let</span> pr = zokor.<span class="tok-function">parse</span>(e.args_json);
+        <span class="tok-keyword">if</span> <span class="tok-keyword">let</span> args = pr {
+            said = args.<span class="tok-function">at</span>(<span class="tok-number">0</span>).<span class="tok-function">str_or</span>(<span class="tok-string">&quot;&quot;</span>);
+        }
+        app.hub.<span class="tok-function">to_room</span>(<span class="tok-string">&quot;chat&quot;</span>, s.<span class="tok-function">local</span>(<span class="tok-string">&quot;name&quot;</span>) + <span class="tok-string">&quot;: &quot;</span> + said, s.id);
+        <span class="tok-keyword">if</span> e.ack &gt;= <span class="tok-number">0</span> {
+            <span class="tok-comment">// the client used socket.emit(..., callback)</span>
+            s.<span class="tok-function">ack</span>(e.namespace, e.ack, <span class="tok-string">&quot;[\&quot;delivered\&quot;]&quot;</span>);
+        }
+        <span class="tok-keyword">return</span>;
+    }
+    s.<span class="tok-function">emit</span>(e.namespace, <span class="tok-string">&quot;error&quot;</span>, <span class="tok-string">&quot;\&quot;unknown event: &quot;</span> + e.name + <span class="tok-string">&quot;\&quot;&quot;</span>);
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">on_sio_leave</span>(app: App, s: zokor.Socket, ns: <span class="tok-type">str</span>, why: <span class="tok-type">str</span>) {
+    <span class="tok-function">remember</span>(app, s.<span class="tok-function">local</span>(<span class="tok-string">&quot;name&quot;</span>) + <span class="tok-string">&quot; left &quot;</span> + ns + <span class="tok-string">&quot; (&quot;</span> + why + <span class="tok-string">&quot;)&quot;</span>);
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">chat_router</span>(app: App) -&gt; zokor.Router[App] {
+    <span class="tok-keyword">let</span> r = zokor.<span class="tok-function">new_router</span>(app);
+    r.<span class="tok-function">websocket</span>(<span class="tok-string">&quot;/ws&quot;</span>, arrive,
+                zokor.<span class="tok-function">ws_route</span>(zokor.<span class="tok-function">ws_allowing</span>([<span class="tok-string">&quot;chat&quot;</span>]), on_text).<span class="tok-function">on_close</span>(on_ws_close));
+    r.<span class="tok-function">socketio</span>(<span class="tok-string">&quot;/socket.io/&quot;</span>, arrive,
+               zokor.<span class="tok-function">sio_route</span>(on_event).<span class="tok-function">on_disconnect</span>(on_sio_leave));
+    <span class="tok-keyword">return</span> r;
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">join_lines</span>(xs: [<span class="tok-type">str</span>]) -&gt; <span class="tok-type">str</span> {
+    <span class="tok-keyword">let</span> out = <span class="tok-string">&quot;&quot;</span>;
+    <span class="tok-keyword">let</span> i = <span class="tok-number">0</span>;
+    <span class="tok-keyword">while</span> i &lt; <span class="tok-builtin">len</span>(xs) {
+        <span class="tok-keyword">if</span> i &gt; <span class="tok-number">0</span> {
+            out = out + <span class="tok-string">&quot; | &quot;</span>;
+        }
+        out = out + xs[i];
+        i = i + <span class="tok-number">1</span>;
+    }
+    <span class="tok-keyword">return</span> out;
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">new_app</span>() -&gt; App {
+    <span class="tok-keyword">return</span> App { name: <span class="tok-string">&quot;zokor chat&quot;</span>, hub: zokor.<span class="tok-function">new_hub</span>(), history: [], lock: <span class="tok-builtin">make_mutex</span>() };
+}
+
+<span class="tok-comment">// ---------------------------------------------------------------- //</span>
+<span class="tok-comment">// the demo: a stand-in browser, printed                              //</span>
+<span class="tok-comment">//                                                                    //</span>
+<span class="tok-comment">// Real connections to the server above. Nothing below is part of     //</span>
+<span class="tok-comment">// zokor&#x27;s API: a browser does all of this for you.                   //</span>
+<span class="tok-comment">// ---------------------------------------------------------------- //</span>
+
+<span class="tok-keyword">import</span> <span class="tok-string">&quot;../../zokor/internal/ws&quot;</span> <span class="tok-keyword">as</span> frames;
+
+<span class="tok-keyword">fn</span> <span class="tok-function">soon</span>() -&gt; <span class="tok-type">until</span> {
+    <span class="tok-keyword">return</span> <span class="tok-builtin">until_of</span>(time.<span class="tok-function">mono</span>() + <span class="tok-number">2000000000</span>);
+}
+
+<span class="tok-comment">// A client&#x27;s frames are masked, which the server requires.</span>
+<span class="tok-keyword">fn</span> <span class="tok-function">client_frame</span>(op: <span class="tok-type">int</span>, payload: <span class="tok-type">bytes</span>) -&gt; <span class="tok-type">bytes</span> {
+    <span class="tok-keyword">let</span> n = <span class="tok-builtin">len</span>(payload);
+    <span class="tok-keyword">let</span> head: <span class="tok-type">bytes</span> = b<span class="tok-string">&quot;..&quot;</span>;
+    head[<span class="tok-number">0</span>] = <span class="tok-number">128</span> | op;
+    head[<span class="tok-number">1</span>] = <span class="tok-number">128</span> | n;
+    <span class="tok-keyword">let</span> key = b<span class="tok-string">&quot;\x2a\x07\x63\x01&quot;</span>;
+    <span class="tok-keyword">let</span> body = b<span class="tok-string">&quot;&quot;</span>;
+    <span class="tok-keyword">let</span> one: <span class="tok-type">bytes</span> = b<span class="tok-string">&quot;.&quot;</span>;
+    <span class="tok-keyword">let</span> i = <span class="tok-number">0</span>;
+    <span class="tok-keyword">while</span> i &lt; n {
+        one[<span class="tok-number">0</span>] = payload[i] ^ key[i % <span class="tok-number">4</span>];
+        body = body + one;
+        i = i + <span class="tok-number">1</span>;
+    }
+    <span class="tok-keyword">return</span> head + key + body;
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">says</span>(c: &amp;<span class="tok-keyword">mut</span> <span class="tok-keyword">link</span>, s: <span class="tok-type">str</span>) {
+    <span class="tok-keyword">let</span> _s = c.<span class="tok-function">send_bytes</span>(<span class="tok-function">client_frame</span>(<span class="tok-number">1</span>, <span class="tok-builtin">to_bytes</span>(s)), <span class="tok-function">soon</span>());
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">bye</span>(c: &amp;<span class="tok-keyword">mut</span> <span class="tok-keyword">link</span>) {
+    <span class="tok-keyword">let</span> b: <span class="tok-type">bytes</span> = b<span class="tok-string">&quot;..&quot;</span>;
+    b[<span class="tok-number">0</span>] = <span class="tok-number">3</span>;
+    b[<span class="tok-number">1</span>] = <span class="tok-number">232</span>;
+    <span class="tok-keyword">let</span> _s = c.<span class="tok-function">send_bytes</span>(<span class="tok-function">client_frame</span>(<span class="tok-number">8</span>, b), <span class="tok-function">soon</span>());
+}
+
+<span class="tok-comment">// Sends the upgrade request and returns the status line; whatever came</span>
+<span class="tok-comment">// after the response head is kept in `got`.</span>
+<span class="tok-keyword">gc</span> <span class="tok-keyword">struct</span> Inbox {
+    got: <span class="tok-type">bytes</span>,
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">open</span>(c: &amp;<span class="tok-keyword">mut</span> <span class="tok-keyword">link</span>, path: <span class="tok-type">str</span>, box: Inbox) -&gt; <span class="tok-type">str</span> {
+    <span class="tok-keyword">let</span> req = <span class="tok-string">&quot;GET &quot;</span> + path + <span class="tok-string">&quot; HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n&quot;</span> +
+              <span class="tok-string">&quot;Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\n&quot;</span> +
+              <span class="tok-string">&quot;Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n&quot;</span> +
+              <span class="tok-string">&quot;Sec-WebSocket-Protocol: chat\r\n\r\n&quot;</span>;
+    <span class="tok-keyword">let</span> _s = c.<span class="tok-function">send_bytes</span>(<span class="tok-builtin">to_bytes</span>(req), <span class="tok-function">soon</span>());
+    <span class="tok-keyword">let</span> a = <span class="tok-builtin">arena_new</span>(<span class="tok-number">4096</span>);
+    <span class="tok-keyword">let</span> w = a.<span class="tok-type">wire</span>(<span class="tok-number">4096</span>);
+    <span class="tok-keyword">let</span> got = b<span class="tok-string">&quot;&quot;</span>;
+    <span class="tok-keyword">while</span> <span class="tok-keyword">true</span> {
+        <span class="tok-keyword">let</span> rr = c.<span class="tok-function">recv</span>(w, <span class="tok-function">soon</span>());
+        <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> n = rr <span class="tok-keyword">else</span> { <span class="tok-keyword">return</span> <span class="tok-string">&quot;no answer&quot;</span>; }
+        <span class="tok-keyword">if</span> n == <span class="tok-number">0</span> { <span class="tok-keyword">return</span> <span class="tok-string">&quot;closed&quot;</span>; }
+        got = got + <span class="tok-builtin">to_bytes</span>(w[<span class="tok-number">0..n</span>]);
+        <span class="tok-keyword">let</span> i = <span class="tok-number">0</span>;
+        <span class="tok-keyword">while</span> i + <span class="tok-number">3</span> &lt; <span class="tok-builtin">len</span>(got) {
+            <span class="tok-keyword">if</span> got[i] == <span class="tok-number">13</span> &amp;&amp; got[i + <span class="tok-number">1</span>] == <span class="tok-number">10</span> &amp;&amp; got[i + <span class="tok-number">2</span>] == <span class="tok-number">13</span> &amp;&amp; got[i + <span class="tok-number">3</span>] == <span class="tok-number">10</span> {
+                box.got = got[i + <span class="tok-number">4..len</span>(got)];
+                <span class="tok-keyword">let</span> j = <span class="tok-number">0</span>;
+                <span class="tok-keyword">while</span> got[j] != <span class="tok-number">13</span> { j = j + <span class="tok-number">1</span>; }
+                <span class="tok-keyword">return</span> <span class="tok-builtin">to_str</span>(got[<span class="tok-number">0..j</span>]);
+            }
+            i = i + <span class="tok-number">1</span>;
+        }
+    }
+    <span class="tok-keyword">return</span> <span class="tok-string">&quot;no answer&quot;</span>;
+}
+
+<span class="tok-comment">// The next frame from the server, printed as a browser would see it.</span>
+<span class="tok-keyword">fn</span> <span class="tok-function">hears</span>(label: <span class="tok-type">str</span>, c: &amp;<span class="tok-keyword">mut</span> <span class="tok-keyword">link</span>, box: Inbox) {
+    <span class="tok-keyword">let</span> a = <span class="tok-builtin">arena_new</span>(<span class="tok-number">4096</span>);
+    <span class="tok-keyword">let</span> w = a.<span class="tok-type">wire</span>(<span class="tok-number">4096</span>);
+    <span class="tok-keyword">while</span> <span class="tok-keyword">true</span> {
+        <span class="tok-keyword">let</span> dr = frames.<span class="tok-function">decode</span>(box.got, <span class="tok-number">0</span>, <span class="tok-number">1048576</span>, <span class="tok-keyword">false</span>);
+        <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> d = dr <span class="tok-keyword">else</span> { <span class="tok-builtin">println</span>(label + <span class="tok-string">&quot; &lt;- (undecodable)&quot;</span>); <span class="tok-keyword">return</span>; }
+        <span class="tok-keyword">if</span> d.kind == frames.Decoded.Frame {
+            <span class="tok-keyword">let</span> f = d.frame;
+            box.got = box.got[f.size..<span class="tok-builtin">len</span>(box.got)];
+            <span class="tok-keyword">if</span> f.op == frames.Op.Text {
+                <span class="tok-builtin">println</span>(label + <span class="tok-string">&quot; &lt;- &quot;</span> + <span class="tok-builtin">to_str</span>(f.payload));
+            } <span class="tok-keyword">else</span> <span class="tok-keyword">if</span> f.op == frames.Op.Close {
+                <span class="tok-keyword">let</span> cr = frames.<span class="tok-function">decode_close</span>(f.payload);
+                <span class="tok-keyword">if</span> <span class="tok-keyword">let</span> body = cr {
+                    <span class="tok-builtin">println</span>(label + <span class="tok-string">&quot; &lt;- close &quot;</span> + <span class="tok-builtin">to_str</span>(body.code) + <span class="tok-string">&quot; &quot;</span> + body.reason);
+                } <span class="tok-keyword">else</span> {
+                    <span class="tok-builtin">println</span>(label + <span class="tok-string">&quot; &lt;- close&quot;</span>);
+                }
+            } <span class="tok-keyword">else</span> {
+                <span class="tok-builtin">println</span>(label + <span class="tok-string">&quot; &lt;- frame &quot;</span> + <span class="tok-builtin">to_str</span>(frames.<span class="tok-function">code_of</span>(f.op)));
+            }
+            <span class="tok-keyword">return</span>;
+        }
+        <span class="tok-keyword">let</span> rr = c.<span class="tok-function">recv</span>(w, <span class="tok-function">soon</span>());
+        <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> n = rr <span class="tok-keyword">else</span> { <span class="tok-builtin">println</span>(label + <span class="tok-string">&quot; &lt;- (nothing)&quot;</span>); <span class="tok-keyword">return</span>; }
+        <span class="tok-keyword">if</span> n == <span class="tok-number">0</span> { <span class="tok-builtin">println</span>(label + <span class="tok-string">&quot; &lt;- (connection closed)&quot;</span>); <span class="tok-keyword">return</span>; }
+        box.got = box.got + <span class="tok-builtin">to_bytes</span>(w[<span class="tok-number">0..n</span>]);
+    }
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">serve_all</span>(ln: <span class="tok-keyword">link</span>, r: zokor.Router[App]) {
+    <span class="tok-keyword">let</span> sc = zokor.<span class="tok-function">default_server_config</span>();
+    sc.logger = zokor.<span class="tok-function">no_logger</span>();
+    <span class="tok-keyword">let</span> mut_ln = ln;
+    <span class="tok-keyword">while</span> <span class="tok-keyword">true</span> {
+        <span class="tok-keyword">let</span> ar = mut_ln.<span class="tok-function">accept</span>(<span class="tok-builtin">until_never</span>());
+        <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> c = ar <span class="tok-keyword">else</span> { <span class="tok-keyword">return</span>; }
+        <span class="tok-keyword">spawn</span> zokor.<span class="tok-function">serve_conn</span>(r, c, sc);
+    }
+}
+
+<span class="tok-comment">// Waits until the server has finished with a client that left, so the</span>
+<span class="tok-comment">// history printed at the end is complete.</span>
+<span class="tok-keyword">fn</span> <span class="tok-function">settle</span>(app: App, lines: <span class="tok-type">int</span>) {
+    <span class="tok-keyword">let</span> waited = <span class="tok-number">0</span>;
+    <span class="tok-keyword">while</span> waited &lt; <span class="tok-number">200</span> {
+        <span class="tok-builtin">mutex_lock</span>(app.lock);
+        <span class="tok-keyword">let</span> n = <span class="tok-builtin">len</span>(app.history);
+        <span class="tok-builtin">mutex_unlock</span>(app.lock);
+        <span class="tok-keyword">if</span> n &gt;= lines { <span class="tok-keyword">return</span>; }
+        time.<span class="tok-function">sleep</span>(<span class="tok-number">10000000</span>);
+        waited = waited + <span class="tok-number">1</span>;
+    }
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">demo</span>() {
+    <span class="tok-keyword">let</span> app = <span class="tok-function">new_app</span>();
+    <span class="tok-keyword">let</span> r = <span class="tok-function">chat_router</span>(app);
+    <span class="tok-keyword">let</span> lr = <span class="tok-function">link_listen</span>(<span class="tok-number">0</span>);
+    <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> ln = lr <span class="tok-keyword">else</span> { <span class="tok-function">panic</span>(<span class="tok-string">&quot;cannot listen&quot;</span>); }
+    <span class="tok-keyword">let</span> port = ln.<span class="tok-function">port</span>();
+    <span class="tok-keyword">spawn</span> <span class="tok-function">serve_all</span>(ln, r);
+
+    <span class="tok-builtin">println</span>(<span class="tok-string">&quot;websocket:&quot;</span>);
+    <span class="tok-keyword">let</span> ada = <span class="tok-function">link_dial</span>(<span class="tok-string">&quot;127.0.0.1&quot;</span>, port, <span class="tok-function">soon</span>()) ?? <span class="tok-function">panic_link</span>();
+    <span class="tok-keyword">let</span> ab = Inbox { got: b<span class="tok-string">&quot;&quot;</span> };
+    <span class="tok-builtin">println</span>(<span class="tok-string">&quot;  ada  handshake -&gt; &quot;</span> + <span class="tok-function">open</span>(&amp;<span class="tok-keyword">mut</span> ada, <span class="tok-string">&quot;/ws?name=ada&quot;</span>, ab));
+    <span class="tok-keyword">let</span> bo = <span class="tok-function">link_dial</span>(<span class="tok-string">&quot;127.0.0.1&quot;</span>, port, <span class="tok-function">soon</span>()) ?? <span class="tok-function">panic_link</span>();
+    <span class="tok-keyword">let</span> bb = Inbox { got: b<span class="tok-string">&quot;&quot;</span> };
+    <span class="tok-builtin">println</span>(<span class="tok-string">&quot;  bo   handshake -&gt; &quot;</span> + <span class="tok-function">open</span>(&amp;<span class="tok-keyword">mut</span> bo, <span class="tok-string">&quot;/ws?name=bo&quot;</span>, bb));
+    <span class="tok-keyword">let</span> anon = <span class="tok-function">link_dial</span>(<span class="tok-string">&quot;127.0.0.1&quot;</span>, port, <span class="tok-function">soon</span>()) ?? <span class="tok-function">panic_link</span>();
+    <span class="tok-keyword">let</span> nb = Inbox { got: b<span class="tok-string">&quot;&quot;</span> };
+    <span class="tok-builtin">println</span>(<span class="tok-string">&quot;  anon handshake -&gt; &quot;</span> + <span class="tok-function">open</span>(&amp;<span class="tok-keyword">mut</span> anon, <span class="tok-string">&quot;/ws&quot;</span>, nb));
+    <span class="tok-function">says</span>(&amp;<span class="tok-keyword">mut</span> ada, <span class="tok-string">&quot;hello&quot;</span>);
+    <span class="tok-function">hears</span>(<span class="tok-string">&quot;  bo  &quot;</span>, &amp;<span class="tok-keyword">mut</span> bo, bb);
+    <span class="tok-function">says</span>(&amp;<span class="tok-keyword">mut</span> bo, <span class="tok-string">&quot;hi ada&quot;</span>);
+    <span class="tok-function">hears</span>(<span class="tok-string">&quot;  ada &quot;</span>, &amp;<span class="tok-keyword">mut</span> ada, ab);
+    <span class="tok-builtin">println</span>(<span class="tok-string">&quot;&quot;</span>);
+
+    <span class="tok-builtin">println</span>(<span class="tok-string">&quot;socket.io:&quot;</span>);
+    <span class="tok-keyword">let</span> leo = <span class="tok-function">link_dial</span>(<span class="tok-string">&quot;127.0.0.1&quot;</span>, port, <span class="tok-function">soon</span>()) ?? <span class="tok-function">panic_link</span>();
+    <span class="tok-keyword">let</span> lb = Inbox { got: b<span class="tok-string">&quot;&quot;</span> };
+    <span class="tok-builtin">println</span>(<span class="tok-string">&quot;  leo  handshake -&gt; &quot;</span> +
+            <span class="tok-function">open</span>(&amp;<span class="tok-keyword">mut</span> leo, <span class="tok-string">&quot;/socket.io/?EIO=4&amp;transport=websocket&amp;name=leo&quot;</span>, lb));
+    <span class="tok-comment">// the session id is random; the rest of the open packet is not</span>
+    <span class="tok-keyword">let</span> a = <span class="tok-builtin">arena_new</span>(<span class="tok-number">4096</span>);
+    <span class="tok-keyword">let</span> w = a.<span class="tok-type">wire</span>(<span class="tok-number">4096</span>);
+    <span class="tok-keyword">let</span> opened = <span class="tok-keyword">false</span>;
+    <span class="tok-keyword">while</span> !opened {
+        <span class="tok-keyword">let</span> dr = frames.<span class="tok-function">decode</span>(lb.got, <span class="tok-number">0</span>, <span class="tok-number">1048576</span>, <span class="tok-keyword">false</span>);
+        <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> d = dr <span class="tok-keyword">else</span> { <span class="tok-keyword">break</span>; }
+        <span class="tok-keyword">if</span> d.kind == frames.Decoded.Frame {
+            <span class="tok-keyword">let</span> f = d.frame;
+            lb.got = lb.got[f.size..<span class="tok-builtin">len</span>(lb.got)];
+            <span class="tok-keyword">let</span> text = <span class="tok-builtin">to_str</span>(f.payload);
+            <span class="tok-keyword">let</span> at = <span class="tok-number">0</span>;
+            <span class="tok-keyword">let</span> tb = <span class="tok-builtin">to_bytes</span>(text);
+            <span class="tok-keyword">while</span> at &lt; <span class="tok-builtin">len</span>(tb) &amp;&amp; tb[at] != <span class="tok-number">44</span> { at = at + <span class="tok-number">1</span>; }
+            <span class="tok-builtin">println</span>(<span class="tok-string">&quot;  leo  &lt;- 0{\&quot;sid\&quot;:\&quot;...\&quot;&quot;</span> + <span class="tok-builtin">to_str</span>(tb[at..<span class="tok-builtin">len</span>(tb)]));
+            opened = <span class="tok-keyword">true</span>;
+        } <span class="tok-keyword">else</span> {
+            <span class="tok-keyword">let</span> rr = <span class="tok-function">a_recv</span>(&amp;<span class="tok-keyword">mut</span> leo, w);
+            lb.got = lb.got + rr;
+        }
+    }
+    <span class="tok-function">says</span>(&amp;<span class="tok-keyword">mut</span> leo, <span class="tok-string">&quot;40&quot;</span>);
+    <span class="tok-keyword">let</span> _ok = <span class="tok-function">skip_one</span>(&amp;<span class="tok-keyword">mut</span> leo, lb);
+    <span class="tok-builtin">println</span>(<span class="tok-string">&quot;  leo  -&gt; 40           (connected to /)&quot;</span>);
+    <span class="tok-function">says</span>(&amp;<span class="tok-keyword">mut</span> leo, <span class="tok-string">&quot;421[\&quot;chat message\&quot;,\&quot;hi from socket.io\&quot;]&quot;</span>);
+    <span class="tok-function">hears</span>(<span class="tok-string">&quot;  ada &quot;</span>, &amp;<span class="tok-keyword">mut</span> ada, ab);
+    <span class="tok-function">hears</span>(<span class="tok-string">&quot;  bo  &quot;</span>, &amp;<span class="tok-keyword">mut</span> bo, bb);
+    <span class="tok-function">hears</span>(<span class="tok-string">&quot;  leo &quot;</span>, &amp;<span class="tok-keyword">mut</span> leo, lb);
+    <span class="tok-function">says</span>(&amp;<span class="tok-keyword">mut</span> ada, <span class="tok-string">&quot;and back&quot;</span>);
+    <span class="tok-function">hears</span>(<span class="tok-string">&quot;  bo  &quot;</span>, &amp;<span class="tok-keyword">mut</span> bo, bb);
+    <span class="tok-function">hears</span>(<span class="tok-string">&quot;  leo &quot;</span>, &amp;<span class="tok-keyword">mut</span> leo, lb);
+    <span class="tok-function">says</span>(&amp;<span class="tok-keyword">mut</span> leo, <span class="tok-string">&quot;42[\&quot;whatever\&quot;]&quot;</span>);
+    <span class="tok-function">hears</span>(<span class="tok-string">&quot;  leo &quot;</span>, &amp;<span class="tok-keyword">mut</span> leo, lb);
+    <span class="tok-builtin">println</span>(<span class="tok-string">&quot;&quot;</span>);
+
+    <span class="tok-builtin">println</span>(<span class="tok-string">&quot;leaving:&quot;</span>);
+    <span class="tok-function">bye</span>(&amp;<span class="tok-keyword">mut</span> ada);
+    <span class="tok-function">hears</span>(<span class="tok-string">&quot;  ada &quot;</span>, &amp;<span class="tok-keyword">mut</span> ada, ab);
+    <span class="tok-function">settle</span>(app, <span class="tok-number">5</span>);
+    <span class="tok-function">says</span>(&amp;<span class="tok-keyword">mut</span> leo, <span class="tok-string">&quot;41&quot;</span>);
+    <span class="tok-function">settle</span>(app, <span class="tok-number">6</span>);
+    <span class="tok-function">says</span>(&amp;<span class="tok-keyword">mut</span> bo, <span class="tok-string">&quot;/history&quot;</span>);
+    <span class="tok-function">hears</span>(<span class="tok-string">&quot;  bo  &quot;</span>, &amp;<span class="tok-keyword">mut</span> bo, bb);
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">a_recv</span>(c: &amp;<span class="tok-keyword">mut</span> <span class="tok-keyword">link</span>, w: <span class="tok-type">wire</span>) -&gt; <span class="tok-type">bytes</span> {
+    <span class="tok-keyword">let</span> rr = c.<span class="tok-function">recv</span>(w, <span class="tok-function">soon</span>());
+    <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> n = rr <span class="tok-keyword">else</span> { <span class="tok-keyword">return</span> b<span class="tok-string">&quot;&quot;</span>; }
+    <span class="tok-keyword">return</span> <span class="tok-builtin">to_bytes</span>(w[<span class="tok-number">0..n</span>]);
+}
+
+<span class="tok-comment">// The CONNECT answer carries the random session id too: read past it.</span>
+<span class="tok-keyword">fn</span> <span class="tok-function">skip_one</span>(c: &amp;<span class="tok-keyword">mut</span> <span class="tok-keyword">link</span>, box: Inbox) -&gt; <span class="tok-type">bool</span> {
+    <span class="tok-keyword">let</span> a = <span class="tok-builtin">arena_new</span>(<span class="tok-number">4096</span>);
+    <span class="tok-keyword">let</span> w = a.<span class="tok-type">wire</span>(<span class="tok-number">4096</span>);
+    <span class="tok-keyword">while</span> <span class="tok-keyword">true</span> {
+        <span class="tok-keyword">let</span> dr = frames.<span class="tok-function">decode</span>(box.got, <span class="tok-number">0</span>, <span class="tok-number">1048576</span>, <span class="tok-keyword">false</span>);
+        <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> d = dr <span class="tok-keyword">else</span> { <span class="tok-keyword">return</span> <span class="tok-keyword">false</span>; }
+        <span class="tok-keyword">if</span> d.kind == frames.Decoded.Frame {
+            box.got = box.got[d.frame.size..<span class="tok-builtin">len</span>(box.got)];
+            <span class="tok-keyword">return</span> <span class="tok-keyword">true</span>;
+        }
+        <span class="tok-keyword">let</span> rr = c.<span class="tok-function">recv</span>(w, <span class="tok-function">soon</span>());
+        <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> n = rr <span class="tok-keyword">else</span> { <span class="tok-keyword">return</span> <span class="tok-keyword">false</span>; }
+        <span class="tok-keyword">if</span> n == <span class="tok-number">0</span> { <span class="tok-keyword">return</span> <span class="tok-keyword">false</span>; }
+        box.got = box.got + <span class="tok-builtin">to_bytes</span>(w[<span class="tok-number">0..n</span>]);
+    }
+    <span class="tok-keyword">return</span> <span class="tok-keyword">false</span>;
+}
+
+<span class="tok-keyword">fn</span> <span class="tok-function">panic_link</span>() -&gt; <span class="tok-keyword">link</span> {
+    <span class="tok-function">panic</span>(<span class="tok-string">&quot;cannot connect&quot;</span>);
+}
+
+<span class="tok-keyword">let</span> args = proc.<span class="tok-function">args</span>();
+<span class="tok-keyword">if</span> <span class="tok-builtin">len</span>(args) &gt; <span class="tok-number">1</span> &amp;&amp; args[<span class="tok-builtin">len</span>(args) - <span class="tok-number">1</span>] == <span class="tok-string">&quot;serve&quot;</span> {
+    <span class="tok-keyword">let</span> r = <span class="tok-function">chat_router</span>(<span class="tok-function">new_app</span>());
+    <span class="tok-keyword">let</span> sr = zokor.<span class="tok-function">listen_and_serve</span>(r, <span class="tok-number">8080</span>);
+    <span class="tok-keyword">guard</span> <span class="tok-keyword">let</span> _ok = sr <span class="tok-keyword">else</span> <span class="tok-keyword">let</span> e = <span class="tok-builtin">err_of</span>(sr) {
+        <span class="tok-builtin">println</span>(e);
+        <span class="tok-builtin">exit</span>(<span class="tok-number">1</span>);
+    }
+} <span class="tok-keyword">else</span> {
+    <span class="tok-function">demo</span>();
+}</code></pre></div></section>
+  </article>
+  <aside class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <nav id="toc"></nav>
+  </aside>
+</div>
+</main>
+<footer class="foot">
+  <div class="foot-brand"><img src="../assets/zokor-icon-64.png" width="32" height="32" alt="">
+    <span>zokor</span></div>
+  <p>Generated from <code>README.md</code>, <code>zokor/</code> and <code>examples/</code>.
+     Built and maintained by <a href="https://dolphlabs.com" rel="noopener">Dolphlabs</a>.</p>
+  <p class="foot-links"><a href="../api/">API</a> ·
+     <a href="../llms.txt">llms.txt</a> ·
+     <a href="https://github.com/dolphlabs/zokor" rel="noopener">GitHub</a></p>
+</footer>
+<script src="../app.js" defer></script>
+</body>
+</html>
