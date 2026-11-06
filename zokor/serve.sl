@@ -504,9 +504,11 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
             }
             let scope = r;
             if len(context.trace_id) > 0 { scope = trace_router(r, context); }
+            let span_at = r.span_start(context);
             let h = spawn dispatch(scope, wf, rid, client);
             let jr = join_wait(h);
             guard let routed = jr else let pe = err_of(jr) {
+                r.span_end(context, wf.method, "", 500, span_at);
                 // The handler panicked. spawn/join_wait already
                 // isolated it -- this task, and the process, are
                 // both still fine -- but the client is still owed an
@@ -547,6 +549,7 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
                 }
                 return;
             }
+            r.span_end(context, wf.method, routed.route, routed.resp.status as int, span_at);
             if let sock = routed.upgrade {
                 if routed.resp.status == 101 && wf.method == "GET" {
                     // A WebSocket route accepted: the 101, then the

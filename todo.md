@@ -201,6 +201,13 @@ library, made and merged there first.
   exposition, concurrent updates and a real blocked-handler scrape are
   tested. Default-off probe: +1 startup allocation (64 bytes), none per
   request; 974 -> 1,000.5 ns medians in ABBA x4, inside the run spread.
+- [x] **Span export** (2026-11-06, feat/span-export): OTLP/HTTP JSON to
+  any collector. `sample_ratio`, server spans named for the route pattern,
+  `exporter.start` for manual spans, `traced_send` for client spans, a bounded
+  queue that drops and counts. Verified against a real Jaeger 1.62: two services
+  gave one trace, no warnings, every parent link intact. Not done: no retry on
+  429 or 503, no protobuf, no spans from static routes, background jobs start
+  no trace, and `trace_request` alone still leaves a hole in the tree.
 - [x] **Tracing**: opt-in W3C `traceparent`/`tracestate` parsing, explicit
   request contexts and outbound request copies with child spans. Context
   survives frame fallback, static dispatch and handler panic isolation.

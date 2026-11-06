@@ -892,6 +892,13 @@ backoff (1s, 2s, 4s ... capped at 1h). In a server: `jobs.logger =
 sc.logger; jobs.start();` before `listen_and_serve`; it stops on SIGTERM.
 The queue is in memory.
 
+Spans: set `cfg.sample_ratio` on `zokor.trace_config()`, then `r.tracing(tracer);
+r.export_spans(spans);` where `spans` comes from `zokor.span_exporter_from(config)`
+(OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_SERVICE_NAME) and `spans.flush(timeout)` runs
+before exit. `c.state.spans.start(c.trace(), name)` gives a span with `attr`,
+`fail` and `finish`. `zokor.traced_send(spans, c.trace(), req, deadline)` sends an
+outbound call as a span, so the next service joins the trace.
+
 ## Serving for real
 
 ```slang

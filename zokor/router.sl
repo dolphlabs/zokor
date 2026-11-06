@@ -198,6 +198,8 @@ pub gc struct Router[S] {
     observations: opt[Metrics],
     tracer: opt[Tracer],
     no_tracer: opt[Tracer],
+    // Set by export_spans: sampled requests become server spans.
+    spans: opt[SpanExporter],
     request_locals: opt[map[str]str],
     // WebSocket and Socket.IO routes (ws_serve.sl), by Route.ws.
     sockets: [WsRoute[S]],
@@ -237,6 +239,7 @@ pub fn new_router[S](state: S) -> Router[S] {
         observations: none,
         tracer: no_tracer,
         no_tracer: no_tracer,
+        spans: none,
         request_locals: none,
         sockets: [],
         no_socket: none
@@ -712,6 +715,36 @@ impl Router[S] {
         return 0;
     }
 
+    // Sends a span for every sampled request to `e`. Needs tracing() too:
+    // that decides what is sampled.
+    pub fn export_spans(self: Router[S], e: SpanExporter) -> int {
+        self.spans = some(e);
+        return 0;
+    }
+
+    // When a span for this request would start, 0 when none will be
+    // made, so a request that is not sampled reads no extra clock.
+    fn span_start(self: Router[S], ctx: TraceContext) -> int {
+        if !ctx.sampled {
+            return 0;
+        }
+        guard let _e = self.spans else {
+            return 0;
+        }
+        return span_clock();
+    }
+
+    fn span_end(self: Router[S], ctx: TraceContext, method: str, route: str, status: int,
+                start: int) {
+        if start == 0 {
+            return;
+        }
+        guard let e = self.spans else {
+            return;
+        }
+        e.server_span(ctx, method, route, status, start);
+    }
+
     fn metrics_pattern(self: Router[S], verb: str, raw: str) -> str {
         let parsed = Method.from_str(verb);
         guard let method = parsed else { return ""; }
@@ -960,7 +993,10 @@ impl Router[S] {
             let generated = trace_context(driver, f.headers);
             guard let context = generated else { return trace_failed(self, http.wire_request(f), request_id, client_ip); }
             let scoped = trace_router(self, context);
-            return scoped.serve_frame_core(f, request_id, client_ip);
+            let start = self.span_start(context);
+            let served = scoped.serve_frame_core(f, request_id, client_ip);
+            self.span_end(context, f.method, served.route, served.resp.status as int, start);
+            return served;
         }
         // Method without from_str: the frame path already holds the
         // method str, and only the enum comparison matters below.
@@ -1116,7 +1152,10 @@ impl Router[S] {
             let generated = trace_context(driver, req.raw_headers);
             guard let context = generated else { return trace_failed(self, req, request_id, client_ip); }
             let scoped = trace_router(self, context);
-            return scoped.serve_id_core(req, request_id, client_ip);
+            let start = self.span_start(context);
+            let served = scoped.serve_id_core(req, request_id, client_ip);
+            self.span_end(context, req.method, served.route, served.resp.status as int, start);
+            return served;
         }
         let p = path.strip_query(req.path);
         let segs = path.split(p);
