@@ -837,7 +837,7 @@ Hub.emit_binary_to_room(room: str, namespace: str, name: str, args_json: str, da
 gc struct SpanExporterConfig { endpoint: str, service: str, headers: map[str]str, max_queue: int, max_batch: int, flush_every: int, timeout: int }
     How an exporter behaves.
 struct SpanStats { sent: int, dropped: int, failed: int }
-gc struct SpanExporter { url: str, service: str, headers: map[str]str, max_batch: int, flush_every: int, timeout: int, outbox: chan[str], lock: mutex, pending: int, flushing: bool, stopped: bool, sent: int, dropped: int, failed: int, logger: Logger }
+gc struct SpanExporter { url: str, service: str, headers: map[str]str, max_batch: int, flush_every: int, timeout: int, outbox: chan[str], lock: mutex, pending: int, flushing: int, stopped: bool, sent: int, dropped: int, failed: int, logger: Logger }
 gc struct Span { exporter: SpanExporter, ctx: TraceContext, data: tracewire.SpanData, done: bool }
     One span in progress.
 span_exporter_config(endpoint: str, service: str) -> SpanExporterConfig

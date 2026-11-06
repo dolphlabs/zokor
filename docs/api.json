@@ -2197,7 +2197,7 @@
           "description": ""
         },
         {
-          "signature": "gc struct SpanExporter { url: str, service: str, headers: map[str]str, max_batch: int, flush_every: int, timeout: int, outbox: chan[str], lock: mutex, pending: int, flushing: bool, stopped: bool, sent: int, dropped: int, failed: int, logger: Logger }",
+          "signature": "gc struct SpanExporter { url: str, service: str, headers: map[str]str, max_batch: int, flush_every: int, timeout: int, outbox: chan[str], lock: mutex, pending: int, flushing: int, stopped: bool, sent: int, dropped: int, failed: int, logger: Logger }",
           "description": ""
         },
         {

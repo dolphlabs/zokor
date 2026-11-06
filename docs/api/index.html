@@ -646,7 +646,7 @@
 <p class="api-module-description">Sending spans to a collector: Jaeger, Tempo, Datadog, Honeycomb, anything that takes OTLP/HTTP.</p>
 <div class="api-item" id="spans-sl-gc"><code>gc struct SpanExporterConfig { endpoint: str, service: str, headers: map[str]str, max_queue: int, max_batch: int, flush_every: int, timeout: int }</code><p>How an exporter behaves.</p></div>
 <div class="api-item" id="spans-sl-struct"><code>struct SpanStats { sent: int, dropped: int, failed: int }</code></div>
-<div class="api-item" id="spans-sl-gc-2"><code>gc struct SpanExporter { url: str, service: str, headers: map[str]str, max_batch: int, flush_every: int, timeout: int, outbox: chan[str], lock: mutex, pending: int, flushing: bool, stopped: bool, sent: int, dropped: int, failed: int, logger: Logger }</code></div>
+<div class="api-item" id="spans-sl-gc-2"><code>gc struct SpanExporter { url: str, service: str, headers: map[str]str, max_batch: int, flush_every: int, timeout: int, outbox: chan[str], lock: mutex, pending: int, flushing: int, stopped: bool, sent: int, dropped: int, failed: int, logger: Logger }</code></div>
 <div class="api-item" id="spans-sl-gc-3"><code>gc struct Span { exporter: SpanExporter, ctx: TraceContext, data: tracewire.SpanData, done: bool }</code><p>One span in progress.</p></div>
 <div class="api-item" id="spans-sl-span-exporter-config"><code>span_exporter_config(endpoint: str, service: str) -&gt; SpanExporterConfig</code><p>Defaults for this collector and service name.</p></div>
 <div class="api-item" id="spans-sl-new-span-exporter"><code>new_span_exporter(cfg: SpanExporterConfig) -&gt; result[SpanExporter, str]</code><p>Starts an exporter and its sending task.</p></div>
