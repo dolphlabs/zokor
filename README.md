@@ -106,6 +106,9 @@ declare, and every handler receives it.
 | `r.compress(compression())` | gzip for clients that accept it, on bodies worth it |
 | `r.idempotency(store)` | idempotency keys: a retried POST gets the first answer, in memory or Redis |
 | `page_of`, `offset_page`, `cursor_page` | pagination: offset or keyset pages, one envelope, `Link` headers |
+| `sessions_in_memory`, `sessions_redis`, `session_start`, `session_require` | browser logins: server-side sessions with idle and absolute limits, rotated at login, in memory or Redis |
+| `csrf_guard`, `csrf_check` | cross-site request forgery: refuses cross-origin writes from browsers, with no tokens in your pages |
+| `hash_password`, `check_password` | Argon2id password hashes, in the standard PHC format |
 | `new_jobs`, `every`, `handle`, `enqueue` | background jobs: cron schedules in a time zone, a retrying in-memory queue |
 | `preconditions`, `etag_of`, `r.etags()` | conditional requests: `304 Not Modified`, `412` on a lost update, ETag and Last-Modified |
 | `redis_from_config` | a Redis pool from `REDIS_URL`, optional by default |
@@ -885,6 +888,88 @@ fn order_key(o: Order) -> [str] { return [o.created, to_str(o.id)]; }
   repeated. A cursor is opaque base64url of the last row's sort key; a
   client can forge one, but only to read another position of a list it
   may read anyway, so authorise the list, and never put a secret in a key.
+
+## Sessions, CSRF and passwords
+
+A browser login: an Argon2id password check, then a server-side session.
+
+```slang
+fn login(c: zokor.Ctx[App]) -> http.Response {
+    // ... read email and password from the body, find the user ...
+    guard let user = found else {
+        zokor.password_decoy(password);     // an unknown email costs the same
+        return zokor.respond(c.errors, "invalid_credentials", c.request_id);
+    }
+    let cr = zokor.check_password(password, user.password_hash);
+    guard let right = cr else {
+        return zokor.respond(c.errors, "internal", c.request_id);
+    }
+    if !right {
+        return zokor.respond(c.errors, "invalid_credentials", c.request_id);
+    }
+    let sr = zokor.session_start(c, c.state.sessions, to_str(user.id));
+    guard let s = sr else {
+        return zokor.respond(c.errors, "unavailable", c.request_id);
+    }
+    let resp = zokor.ok_json("{\"csrf\":" + zokor.quote(s.csrf) + "}");
+    return zokor.session_cookie(resp, c.state.sessions, s) ?? resp;
+}
+
+fn me(c: zokor.Ctx[App]) -> http.Response {
+    let r = zokor.session_require(c, c.state.sessions);
+    guard let s = r else let denied = err_of(r) { return denied; }
+    return zokor.ok_json(zokor.quote(s.subject));
+}
+```
+
+`sessions_in_memory()` suits one instance, and every login ends with the
+process. `sessions_redis(pool)` is shared by every instance.
+
+- **What is stored.** The cookie holds a random 256-bit token and the store
+  keeps only its SHA-256, so a Redis dump or backup holds no working login.
+- **Fixation.** `session_start` always issues a new token and ends the one
+  the request came with. Call it at login and whenever privileges change.
+- **Lifetime.** `ss.idle_ttl` (2 h) since the last request and
+  `ss.absolute_ttl` (24 h) since login, which activity never extends. Both
+  are enforced on the server.
+- **Logging out.** `session_end(c, ss, resp)` ends this session and clears the
+  cookie. `ss.end_all(subject)` ends every device: use it after a password
+  change.
+- **The cookie.** `__Host-sid` by default: Secure, HttpOnly, SameSite=Lax,
+  host-only. `ss.cookie` holds its attributes. For plain http in development,
+  set `ss.cookie.name = "sid"` and `ss.cookie.secure = false`.
+- **Store failures.** `session_require` answers 503 when the store is down,
+  never 401 and never a pass. `session_of` returns `err`.
+- **Data.** `s.get`, `s.set` and `s.remove`, then `ss.save(s)`. Two requests
+  saving at once race and the last wins, so keep real data in your database.
+
+**CSRF.** A browser attaches cookies whichever site caused the request, so
+cookie-authenticated writes need a guard. It needs nothing from your pages:
+
+```slang
+fn csrf(c: zokor.Ctx[App]) -> opt[http.Response] {
+    return zokor.csrf_check(c, c.state.csrf);
+}
+r.before(csrf);
+```
+
+`csrf_guard(origins)` or `csrf_guard_from(cfg)` (`CSRF_TRUSTED_ORIGINS`) builds
+it. GET, HEAD and OPTIONS pass. Other methods pass on `Sec-Fetch-Site:
+same-origin` or `none`, or from a listed origin; a browser too old to send that
+header is judged by `Origin` against `Host`. A request with neither header is
+not a browser, so API clients keep working. Anything else is a 403
+`csrf_rejected`. Behind a proxy that rewrites `Host`, list your public origin.
+For a second layer, send `s.csrf` to your pages and check it with
+`csrf_token_ok(c, s)`, which reads `x-csrf-token`, or `s.csrf_matches(value)`
+for a form field.
+
+**Passwords.** `hash_password`, `check_password` and `password_needs_rehash`
+wrap the [`argon`](https://github.com/dolphlabs/argon) package. After a
+successful check, `password_needs_rehash(stored)` says when to store a fresh
+hash at the current cost. Argon2id needs OpenSSL 3.2 or newer: on older builds,
+including the OpenSSL 3.0 in Ubuntu 24.04, these calls return `err`, so call
+`hash_password` once at startup if a service depends on it. zokor sets no
+password policy: length rules and breached-password checks are yours.
 
 ## Background jobs
 

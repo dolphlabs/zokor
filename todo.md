@@ -63,6 +63,16 @@ library, made and merged there first.
 
 ## 2. Browser-facing APIs
 
+- [x] **Sessions, CSRF and passwords** (2026-11-06, feat/sessions):
+  `sessions_in_memory`/`sessions_redis` with the store holding only a
+  SHA-256 of the token, rotation at login, idle and absolute limits on the
+  server, `end_all`, and 503 rather than a pass when the store is down.
+  `csrf_check` follows Sec-Fetch-Site, then Origin against Host, with
+  trusted origins, plus a per-session token as a second layer.
+  `hash_password` and friends wrap the `argon` package, a new dependency.
+  Argon2id needs OpenSSL 3.2, so on Ubuntu 24.04's 3.0 these return err and
+  their tests skip: Linux CI does not exercise them. Not done: concurrent
+  saves race (last wins), and no login throttling helper beyond `rate_limit`.
 - [x] **CORS**: allowed origins, methods, headers, credentials, max-age,
   correct `Vary: Origin`, and a real preflight answer. `r.cors(policy)` /
   `cors_from(cfg)` (`CORS_*`); applied by the router, so preflights skip
