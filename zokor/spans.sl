@@ -68,7 +68,9 @@ pub gc struct SpanExporter {
     lock: mutex,
     // Spans queued or being sent: flush waits for this to reach 0.
     pending: int,
-    flushing: bool,
+    // flush() calls waiting. Held for the whole wait, not consumed by the
+    // first batch: a queue longer than max_batch takes several.
+    flushing: int,
     stopped: bool,
     sent: int,
     dropped: int,
@@ -136,7 +138,7 @@ pub fn new_span_exporter(cfg: SpanExporterConfig) -> result[SpanExporter, str] {
     let e = SpanExporter {
         url: base + "/v1/traces", service: cfg.service, headers: cfg.headers,
         max_batch: cfg.max_batch, flush_every: cfg.flush_every, timeout: cfg.timeout,
-        outbox: box, lock: make_mutex(), pending: 0, flushing: false, stopped: false,
+        outbox: box, lock: make_mutex(), pending: 0, flushing: 0, stopped: false,
         sent: 0, dropped: 0, failed: 0, logger: no_logger()
     };
     spawn span_sender(e);
@@ -249,22 +251,25 @@ impl SpanExporter {
     // finish. true when nothing was left. Call it before exit.
     pub fn flush(self: SpanExporter, timeout: int) -> bool {
         mutex_lock(self.lock);
-        self.flushing = true;
+        self.flushing = self.flushing + 1;
         mutex_unlock(self.lock);
         let end = time.mono() + timeout;
-        while true {
+        let done = false;
+        while !done && time.mono() < end {
             mutex_lock(self.lock);
-            let left = self.pending;
+            done = self.pending == 0;
             mutex_unlock(self.lock);
-            if left == 0 {
-                return true;
+            if !done {
+                time.sleep(timez.MILLISECOND);
             }
-            if time.mono() >= end {
-                return false;
-            }
-            time.sleep(timez.MILLISECOND);
         }
-        return false;
+        mutex_lock(self.lock);
+        self.flushing = self.flushing - 1;
+        if !done {
+            done = self.pending == 0;
+        }
+        mutex_unlock(self.lock);
+        return done;
     }
 
     // Stops the sending task once what is queued has gone.
@@ -284,10 +289,9 @@ impl SpanExporter {
         return s;
     }
 
-    fn take_flush(self: SpanExporter) -> bool {
+    fn flush_wanted(self: SpanExporter) -> bool {
         mutex_lock(self.lock);
-        let f = self.flushing;
-        self.flushing = false;
+        let f = self.flushing > 0;
         mutex_unlock(self.lock);
         return f;
     }
@@ -418,7 +422,9 @@ fn span_sender(e: SpanExporter) {
                 idle = true;
             }
         }
-        let flush = e.take_flush();
+        // On a flush, a partial batch goes only once the queue is empty, so
+        // it does not split what could have gone in one post.
+        let flush = idle && e.flush_wanted();
         if len(batch) > 0 && (flush || closed || len(batch) >= e.max_batch || time.mono() >= due) {
             e.post(batch);
             let fresh: [str] = [];
@@ -428,7 +434,7 @@ fn span_sender(e: SpanExporter) {
         if closed {
             return;
         }
-        if idle {
+        if idle && !flush {
             // A span in the last moment of this sleep waits this long.
             time.sleep(50 * timez.MILLISECOND);
         }

@@ -371,6 +371,31 @@ fn test_exporter_batches_up_to_max_batch() {
     assert(batches == 3);
 }
 
+// flush must cover everything queued when it was called. Clearing the
+// request at the first batch left the rest waiting for flush_every, which
+// at exit means lost: rounds, because it depended on who ran first.
+fn test_exporter_flush_sends_all_of_a_queue_longer_than_a_batch() {
+    let c = ot_collector(200);
+    let cfg = span_exporter_config(c.url, "orders");
+    cfg.max_batch = 3;
+    cfg.flush_every = timez.HOUR;
+    let r = new_span_exporter(cfg);
+    guard let e = r else { assert(false); return; }
+    let round = 0;
+    let total = 0;
+    while round < 15 {
+        let i = 0;
+        while i < 7 {
+            e.start(ot_context(true), "x").finish();
+            i = i + 1;
+        }
+        total = total + 7;
+        assert(e.flush(2 * timez.SECOND));
+        assert(e.stats().sent == total);
+        round = round + 1;
+    }
+}
+
 fn test_exporter_flush_gives_up_at_its_timeout() {
     let e = ot_exporter("http://10.255.255.1:9");
     e.start(ot_context(true), "x").finish();
