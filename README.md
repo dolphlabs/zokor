@@ -964,7 +964,7 @@ For a second layer, send `s.csrf` to your pages and check it with
 for a form field.
 
 **Passwords.** `hash_password`, `check_password` and `password_needs_rehash`
-wrap the [`argon`](https://github.com/dolphlabs/argon) package. After a
+wrap the [argon](https://github.com/dolphlabs/argon) package. After a
 successful check, `password_needs_rehash(stored)` says when to store a fresh
 hash at the current cost. Argon2id needs OpenSSL 3.2 or newer: on older builds,
 including the OpenSSL 3.0 in Ubuntu 24.04, these calls return `err`, so call
