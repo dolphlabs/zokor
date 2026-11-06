@@ -233,9 +233,9 @@ request_ids() -> RequestIds
 RequestIds.next() -> str
 
 ## jobs.sl -- Background jobs: work on a schedule, and work queued to run later.
-gc struct JobCtx[S] { state: S, name: str, payload: str, attempt: int, due: timez.Time, deadline: until }
+gc struct JobCtx[S] { state: S, name: str, payload: str, attempt: int, job_id: int, due: timez.Time, deadline: until }
     What a run gets: the service's state, which run this is, and the deadline to pass to everything that can block.
-gc struct Jobs[S] { state: S, zone: timez.Zone, clock: timez.Clock, logger: Logger, default_timeout: int, scheduled: [ScheduledJob[S]], kinds: [JobKind[S]], queue: [QueuedJob], lock: mutex, in_flight: int, stopping: bool, failures: int }
+gc struct Jobs[S] { state: S, zone: timez.Zone, clock: timez.Clock, logger: Logger, default_timeout: int, scheduled: [ScheduledJob[S]], kinds: [JobKind[S]], queue: [QueuedJob], lock: mutex, in_flight: int, stopping: bool, failures: int, store: opt[pg.Pool], max_running: int, poll_every: int, store_timeout: int, claimed: int, worker: str }
 new_jobs[S](state: S) -> Jobs[S]
 job_backoff(attempt: int) -> int
     The wait before try `attempt + 1`: 1 s, 2 s, 4 s ...
@@ -257,6 +257,20 @@ Jobs.stop() -> int
     Stops starting runs.
 Jobs.wait_runs(timeout: int) -> bool
     Waits until no run is in progress, or `timeout` nanoseconds pass; true when none is.
+Jobs.durable(db: pg.Pool) -> result[int, str]
+    Moves queued jobs to the zokor_jobs table of `db`.
+Jobs.pending(deadline: until) -> result[int, str]
+    Durable jobs not yet finished or given up on.
+Jobs.dead(deadline: until) -> result[int, str]
+    Durable jobs that ran out of attempts and wait for a person.
+Jobs.poll() -> result[int, str]
+    Claims due rows, up to the room left under max_running, and starts each in its own task.
+
+## jobs_durable.sl -- A queue of background jobs that survives restarts, in Postgres.
+jobs_schema() -> str
+    The SQL of the table a durable queue needs, for a file of its own in your migrations directory, such as...
+enqueue_tx(c: pg.Conn, kind: str, payload: str, at: timez.Time, deadline: until) -> result[int, str]
+    Queues one run of `kind` in the transaction `c` is in: it exists if that transaction commits, and never otherwise.
 
 ## json.sl -- JSON, for the shapes you know and the ones you do not.
 enum JsonKind { Null, Bool, Number, String, Array, Object }

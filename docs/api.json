@@ -617,11 +617,11 @@
       "description": "Background jobs: work on a schedule, and work queued to run later.",
       "items": [
         {
-          "signature": "gc struct JobCtx[S] { state: S, name: str, payload: str, attempt: int, due: timez.Time, deadline: until }",
+          "signature": "gc struct JobCtx[S] { state: S, name: str, payload: str, attempt: int, job_id: int, due: timez.Time, deadline: until }",
           "description": "What a run gets: the service's state, which run this is, and the deadline to pass to everything that can block."
         },
         {
-          "signature": "gc struct Jobs[S] { state: S, zone: timez.Zone, clock: timez.Clock, logger: Logger, default_timeout: int, scheduled: [ScheduledJob[S]], kinds: [JobKind[S]], queue: [QueuedJob], lock: mutex, in_flight: int, stopping: bool, failures: int }",
+          "signature": "gc struct Jobs[S] { state: S, zone: timez.Zone, clock: timez.Clock, logger: Logger, default_timeout: int, scheduled: [ScheduledJob[S]], kinds: [JobKind[S]], queue: [QueuedJob], lock: mutex, in_flight: int, stopping: bool, failures: int, store: opt[pg.Pool], max_running: int, poll_every: int, store_timeout: int, claimed: int, worker: str }",
           "description": ""
         },
         {
@@ -667,6 +667,36 @@
         {
           "signature": "Jobs.wait_runs(timeout: int) -> bool",
           "description": "Waits until no run is in progress, or `timeout` nanoseconds pass; true when none is."
+        },
+        {
+          "signature": "Jobs.durable(db: pg.Pool) -> result[int, str]",
+          "description": "Moves queued jobs to the zokor_jobs table of `db`."
+        },
+        {
+          "signature": "Jobs.pending(deadline: until) -> result[int, str]",
+          "description": "Durable jobs not yet finished or given up on."
+        },
+        {
+          "signature": "Jobs.dead(deadline: until) -> result[int, str]",
+          "description": "Durable jobs that ran out of attempts and wait for a person."
+        },
+        {
+          "signature": "Jobs.poll() -> result[int, str]",
+          "description": "Claims due rows, up to the room left under max_running, and starts each in its own task."
+        }
+      ]
+    },
+    {
+      "file": "jobs_durable.sl",
+      "description": "A queue of background jobs that survives restarts, in Postgres.",
+      "items": [
+        {
+          "signature": "jobs_schema() -> str",
+          "description": "The SQL of the table a durable queue needs, for a file of its own in your migrations directory, such as..."
+        },
+        {
+          "signature": "enqueue_tx(c: pg.Conn, kind: str, payload: str, at: timez.Time, deadline: until) -> result[int, str]",
+          "description": "Queues one run of `kind` in the transaction `c` is in: it exists if that transaction commits, and never otherwise."
         }
       ]
     },

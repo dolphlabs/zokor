@@ -353,12 +353,57 @@ was due, and a `deadline` to pass to every call that can block.
   logged and dropped.
 - **Shutdown.** On SIGTERM the scheduler stops starting runs within a
   quarter second; runs in progress get the server's shutdown drain.
-- **In memory.** Queued jobs are lost when the process stops. Work that
-  must survive a restart belongs in a table or a Redis list that a
-  scheduled job drains.
+- **In memory by default.** Queued jobs are lost when the process stops
+  unless the queue is durable, below.
 
 Tests set `jobs.clock = timez.fixed_clock(...)` and call
 `jobs.tick(instant)` and `jobs.wait_runs(timeout)`: no sleeping.
+
+### Durable jobs
+
+`jobs.durable(db)` moves the queue to a Postgres table, which survives
+restarts and deploys and is shared by every instance. Put the SQL from
+`zokor.jobs_schema()` in a migration of its own, then:
+
+```slang
+jobs.handle("welcome_email", send_welcome, 5);
+let dr = jobs.durable(db);                    // err when the table is missing
+guard let _d = dr else let e = err_of(dr) { println(e); exit(1); }
+jobs.start();
+```
+
+`enqueue` now writes a row. `enqueue_tx` writes it in your own transaction,
+so the job exists exactly if the change that caused it committed:
+
+```slang
+fn create_user(c: pg.Conn, u: NewUser) -> result[int, str] {
+    // ... insert the user with `c` ...
+    return zokor.enqueue_tx(c, "welcome_email", u.email, timez.now(), u.deadline);
+}
+
+let r = zokor.transaction(c.state.db, user, create_user, deadline);
+```
+
+- **At least once, not exactly once.** A worker that dies mid-run, or a run
+  that outlives its lease, runs again, so a job must be safe to repeat.
+  `JobCtx.job_id` is stable across tries: key the side effect on it.
+- **Many instances.** `FOR UPDATE SKIP LOCKED` gives each row to one worker,
+  and a slow worker never holds up another. Every clock is the database's.
+- **Crashes.** A claim is a lease of the longest timeout handled here plus
+  30 s. A dead worker's jobs come back when it ends. An attempt is counted
+  at the claim, so a job that kills its process cannot do so forever.
+- **Out of attempts.** The row stays, with `dead_at` and `last_error` set.
+  `jobs.dead(deadline)` counts them, and to run one again:
+  `update zokor_jobs set dead_at = null, attempt = 0, run_at = now() where id = $1`.
+- **Rolling deploys.** A row whose kind this process does not handle is left
+  for the instance that does. `enqueue_tx` cannot check the kind, so a typo
+  waits in the table: watch `jobs.pending(deadline)`.
+- **Limits.** `jobs.max_running` (16) caps runs held at once, `jobs.poll_every`
+  (1 s) sets how often the table is checked, which is the delay a new job can
+  wait, and `jobs.store_timeout` (5 s) bounds each call to it.
+- **Not covered.** Cron schedules: `every` still runs on each instance that
+  registers it, so give a schedule to one instance, or make it enqueue work
+  that a job id de-duplicates.
 
 ## Errors
 

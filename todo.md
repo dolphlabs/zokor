@@ -225,8 +225,17 @@ library, made and merged there first.
   its own task (a panic is that run's failure); an in-memory queue with
   per-kind attempts and exponential backoff (1 s doubling, capped at an
   hour); stops starting runs on SIGTERM. Tests drive it with `tick` on a
-  fixed clock. Not done: a durable queue (Redis or Postgres) -- queued
-  work is lost on restart.
+  fixed clock.
+- [x] **Durable jobs** (2026-11-06, feat/durable-jobs): `jobs.durable(db)`
+  moves the queue to a `zokor_jobs` table (`jobs_schema()`), and `enqueue_tx`
+  queues inside the caller's transaction. Claims use `FOR UPDATE SKIP
+  LOCKED` under a lease, writes after a claim are fenced on worker and
+  attempt, attempts are counted at the claim so a crash loop ends, and a job
+  out of attempts stays with `dead_at` and `last_error`. At least once.
+  Not done: `every` still runs on each instance that registers it, so a
+  cron job fires once per replica; no lease heartbeat, so a run that
+  ignores its deadline past timeout + 30 s runs twice; no LISTEN/NOTIFY, so
+  a new job waits up to `poll_every`; `retry_dead` is SQL in the README.
 - [x] **OpenAPI**: generate a startup OpenAPI 3.1.1 document from
   `routes_list`, explicit JSON wire DTO definitions and the error registry.
   Request/response/parameter metadata, local recursive schema references,
