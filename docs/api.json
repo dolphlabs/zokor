@@ -413,6 +413,28 @@
       ]
     },
     {
+      "file": "csrf.sl",
+      "description": "Cross-site request forgery.",
+      "items": [
+        {
+          "signature": "gc struct CsrfGuard { trusted: map[str]bool }",
+          "description": ""
+        },
+        {
+          "signature": "csrf_guard(origins: [str]) -> result[CsrfGuard, str]",
+          "description": "A guard that also accepts these origins, like https://app.example.com."
+        },
+        {
+          "signature": "csrf_guard_from(cfg: Config) -> CsrfGuard",
+          "description": "CSRF_TRUSTED_ORIGINS, comma separated."
+        },
+        {
+          "signature": "csrf_check[S](c: Ctx[S], g: CsrfGuard) -> opt[http.Response]",
+          "description": "For a `before`: none to go on, or the 403."
+        }
+      ]
+    },
+    {
       "file": "errors.sl",
       "description": "Failure, as one shape.",
       "items": [
@@ -1283,6 +1305,28 @@
       ]
     },
     {
+      "file": "passwords.sl",
+      "description": "Password hashing.",
+      "items": [
+        {
+          "signature": "hash_password(password: str) -> result[str, str]",
+          "description": "A new salted hash of `password`, at the default cost."
+        },
+        {
+          "signature": "check_password(password: str, stored: str) -> result[bool, str]",
+          "description": "Whether `password` matches `stored`."
+        },
+        {
+          "signature": "password_needs_rehash(stored: str) -> result[bool, str]",
+          "description": "Whether `stored` is below the current default cost: after a successful check_password, hash the password again and store that."
+        },
+        {
+          "signature": "password_decoy(password: str)",
+          "description": "The work of one check_password, for when there is no hash to check."
+        }
+      ]
+    },
+    {
       "file": "postgres.sl",
       "description": "Postgres, wired to zokor's config, results and error envelope.",
       "items": [
@@ -2037,6 +2081,76 @@
         {
           "signature": "listen_and_serve_with[S](r: Router[S], port: int, sc: ServerConfig) -> result[int, str]",
           "description": "Same, with timeouts, limits, and the shutdown drain window under the caller's control -- built from config with..."
+        }
+      ]
+    },
+    {
+      "file": "sessions.sl",
+      "description": "Browser sessions: a login that lives on the server.",
+      "items": [
+        {
+          "signature": "gc struct Session { subject: str, csrf: str, created: int, data: map[str]str, seen: int, key: str, token: str }",
+          "description": ""
+        },
+        {
+          "signature": "Session.get(key: str) -> str",
+          "description": "The value saved under `key`, \"\" when there is none."
+        },
+        {
+          "signature": "Session.set(key: str, value: str) -> int",
+          "description": "Sets a value; `sessions.save` stores it."
+        },
+        {
+          "signature": "Session.remove(key: str) -> bool",
+          "description": ""
+        },
+        {
+          "signature": "Session.csrf_matches(token: str) -> bool",
+          "description": "Whether `token` is this session's CSRF token, in constant time."
+        },
+        {
+          "signature": "gc struct Sessions { idle_ttl: int, absolute_ttl: int, cookie: Cookie, clock: timez.Clock, timeout: int, remote: opt[redis.Pool], local: map[str]LocalSession, by_subject: map[str]map[str]bool, lock: mutex, since_sweep: int }",
+          "description": ""
+        },
+        {
+          "signature": "sessions_in_memory() -> Sessions",
+          "description": "Sessions kept in this process: right for one instance, and every login ends with it."
+        },
+        {
+          "signature": "sessions_redis(p: redis.Pool) -> Sessions",
+          "description": "Sessions kept in Redis, shared by every instance behind the balancer."
+        },
+        {
+          "signature": "Sessions.save(s: Session) -> result[int, str]",
+          "description": "Stores what has changed in `s`."
+        },
+        {
+          "signature": "Sessions.end_all(subject: str) -> result[int, str]",
+          "description": "Ends every session of `subject`, on every device: after a password change, or to lock an account."
+        },
+        {
+          "signature": "session_start[S](c: Ctx[S], ss: Sessions, subject: str) -> result[Session, str]",
+          "description": "A session for `subject`, in place of any the request came with."
+        },
+        {
+          "signature": "session_cookie(resp: http.Response, ss: Sessions, s: Session) -> result[http.Response, str]",
+          "description": "Puts the cookie for a session just started on `resp`."
+        },
+        {
+          "signature": "session_of[S](c: Ctx[S], ss: Sessions) -> result[opt[Session], str]",
+          "description": "The request's session, none when it has no good one."
+        },
+        {
+          "signature": "session_require[S](c: Ctx[S], ss: Sessions) -> result[Session, http.Response]",
+          "description": "The request's session, or the response to send: 401 without one, 503 when the store is down."
+        },
+        {
+          "signature": "session_end[S](c: Ctx[S], ss: Sessions, resp: http.Response) -> result[http.Response, str]",
+          "description": "Logs the request out: ends its session and clears the cookie on `resp`."
+        },
+        {
+          "signature": "csrf_token_ok[S](c: Ctx[S], s: Session) -> bool",
+          "description": "Whether the request's x-csrf-token header is this session's token: the second layer csrf.sl describes."
         }
       ]
     },

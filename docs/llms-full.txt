@@ -96,6 +96,9 @@ declare, and every handler receives it.
 | `r.compress(compression())` | gzip for clients that accept it, on bodies worth it |
 | `r.idempotency(store)` | idempotency keys: a retried POST gets the first answer, in memory or Redis |
 | `page_of`, `offset_page`, `cursor_page` | pagination: offset or keyset pages, one envelope, `Link` headers |
+| `sessions_in_memory`, `sessions_redis`, `session_start`, `session_require` | browser logins: server-side sessions with idle and absolute limits, rotated at login, in memory or Redis |
+| `csrf_guard`, `csrf_check` | cross-site request forgery: refuses cross-origin writes from browsers, with no tokens in your pages |
+| `hash_password`, `check_password` | Argon2id password hashes, in the standard PHC format |
 | `new_jobs`, `every`, `handle`, `enqueue` | background jobs: cron schedules in a time zone, a retrying in-memory queue |
 | `preconditions`, `etag_of`, `r.etags()` | conditional requests: `304 Not Modified`, `412` on a lost update, ETag and Last-Modified |
 | `redis_from_config` | a Redis pool from `REDIS_URL`, optional by default |
@@ -1294,6 +1297,88 @@ in `ServerConfig.logger`, and drain `ch` from your own task.
 `new_log_format(pid)` gives you zokor's `json` and `pretty` formats to reuse.
 `no_logger()` turns logging off.
 
+## Sessions, CSRF and passwords
+
+A browser login: an Argon2id password check, then a server-side session.
+
+```slang
+fn login(c: zokor.Ctx[App]) -> http.Response {
+    // ... read email and password from the body, find the user ...
+    guard let user = found else {
+        zokor.password_decoy(password);     // an unknown email costs the same
+        return zokor.respond(c.errors, "invalid_credentials", c.request_id);
+    }
+    let cr = zokor.check_password(password, user.password_hash);
+    guard let right = cr else {
+        return zokor.respond(c.errors, "internal", c.request_id);
+    }
+    if !right {
+        return zokor.respond(c.errors, "invalid_credentials", c.request_id);
+    }
+    let sr = zokor.session_start(c, c.state.sessions, to_str(user.id));
+    guard let s = sr else {
+        return zokor.respond(c.errors, "unavailable", c.request_id);
+    }
+    let resp = zokor.ok_json("{\"csrf\":" + zokor.quote(s.csrf) + "}");
+    return zokor.session_cookie(resp, c.state.sessions, s) ?? resp;
+}
+
+fn me(c: zokor.Ctx[App]) -> http.Response {
+    let r = zokor.session_require(c, c.state.sessions);
+    guard let s = r else let denied = err_of(r) { return denied; }
+    return zokor.ok_json(zokor.quote(s.subject));
+}
+```
+
+`sessions_in_memory()` suits one instance, and every login ends with the
+process. `sessions_redis(pool)` is shared by every instance.
+
+- **What is stored.** The cookie holds a random 256-bit token and the store
+  keeps only its SHA-256, so a Redis dump or backup holds no working login.
+- **Fixation.** `session_start` always issues a new token and ends the one
+  the request came with. Call it at login and whenever privileges change.
+- **Lifetime.** `ss.idle_ttl` (2 h) since the last request and
+  `ss.absolute_ttl` (24 h) since login, which activity never extends. Both
+  are enforced on the server.
+- **Logging out.** `session_end(c, ss, resp)` ends this session and clears the
+  cookie. `ss.end_all(subject)` ends every device: use it after a password
+  change.
+- **The cookie.** `__Host-sid` by default: Secure, HttpOnly, SameSite=Lax,
+  host-only. `ss.cookie` holds its attributes. For plain http in development,
+  set `ss.cookie.name = "sid"` and `ss.cookie.secure = false`.
+- **Store failures.** `session_require` answers 503 when the store is down,
+  never 401 and never a pass. `session_of` returns `err`.
+- **Data.** `s.get`, `s.set` and `s.remove`, then `ss.save(s)`. Two requests
+  saving at once race and the last wins, so keep real data in your database.
+
+**CSRF.** A browser attaches cookies whichever site caused the request, so
+cookie-authenticated writes need a guard. It needs nothing from your pages:
+
+```slang
+fn csrf(c: zokor.Ctx[App]) -> opt[http.Response] {
+    return zokor.csrf_check(c, c.state.csrf);
+}
+r.before(csrf);
+```
+
+`csrf_guard(origins)` or `csrf_guard_from(cfg)` (`CSRF_TRUSTED_ORIGINS`) builds
+it. GET, HEAD and OPTIONS pass. Other methods pass on `Sec-Fetch-Site:
+same-origin` or `none`, or from a listed origin; a browser too old to send that
+header is judged by `Origin` against `Host`. A request with neither header is
+not a browser, so API clients keep working. Anything else is a 403
+`csrf_rejected`. Behind a proxy that rewrites `Host`, list your public origin.
+For a second layer, send `s.csrf` to your pages and check it with
+`csrf_token_ok(c, s)`, which reads `x-csrf-token`, or `s.csrf_matches(value)`
+for a form field.
+
+**Passwords.** `hash_password`, `check_password` and `password_needs_rehash`
+wrap the [argon](https://github.com/dolphlabs/argon) package. After a
+successful check, `password_needs_rehash(stored)` says when to store a fresh
+hash at the current cost. Argon2id needs OpenSSL 3.2 or newer: on older builds,
+including the OpenSSL 3.0 in Ubuntu 24.04, these calls return `err`, so call
+`hash_password` once at startup if a service depends on it. zokor sets no
+password policy: length rules and breached-password checks are yours.
+
 ## Background jobs
 
 Work on a schedule, and work queued to run later, on slang's tasks:
@@ -1946,6 +2031,15 @@ Cors.preflight(origin: str) -> http.Response
 is_preflight(method: str, raw_headers: bytes) -> bool
     Whether a request is a CORS preflight: OPTIONS, with an Origin and the method the real request will use.
 
+## csrf.sl -- Cross-site request forgery.
+gc struct CsrfGuard { trusted: map[str]bool }
+csrf_guard(origins: [str]) -> result[CsrfGuard, str]
+    A guard that also accepts these origins, like https://app.example.com.
+csrf_guard_from(cfg: Config) -> CsrfGuard
+    CSRF_TRUSTED_ORIGINS, comma separated.
+csrf_check[S](c: Ctx[S], g: CsrfGuard) -> opt[http.Response]
+    For a `before`: none to go on, or the 403.
+
 ## errors.sl -- Failure, as one shape.
 gc struct Code { name: str, status: i32, message: str }
 gc struct FieldError { field: str, reason: str }
@@ -2269,6 +2363,16 @@ offset_page[S, T](c: Ctx[S], p: Page, rows: [T], total: opt[int]) -> http.Respon
 cursor_page[S, T](c: Ctx[S], p: Page, rows: [T], key: fn(T) -> [str]) -> http.Response
     A keyset page of `rows` -- up to p.fetch(); one past the limit means there is a next page, whose cursor is `key` of the last...
 
+## passwords.sl -- Password hashing.
+hash_password(password: str) -> result[str, str]
+    A new salted hash of `password`, at the default cost.
+check_password(password: str, stored: str) -> result[bool, str]
+    Whether `password` matches `stored`.
+password_needs_rehash(stored: str) -> result[bool, str]
+    Whether `stored` is below the current default cost: after a successful check_password, hash the password again and store that.
+password_decoy(password: str)
+    The work of one check_password, for when there is no hash to check.
+
 ## postgres.sl -- Postgres, wired to zokor's config, results and error envelope.
 pg_from_config(cfg: Config) -> result[pg.Pool, str]
     DATABASE_URL (postgres://user:pass@host:port/db?sslmode=require) and DB_POOL_SIZE (default 10).
@@ -2569,6 +2673,37 @@ listen_and_serve[S](r: Router[S], port: int) -> result[int, str]
     Bind, then accept until the process is asked to stop.
 listen_and_serve_with[S](r: Router[S], port: int, sc: ServerConfig) -> result[int, str]
     Same, with timeouts, limits, and the shutdown drain window under the caller's control -- built from config with...
+
+## sessions.sl -- Browser sessions: a login that lives on the server.
+gc struct Session { subject: str, csrf: str, created: int, data: map[str]str, seen: int, key: str, token: str }
+Session.get(key: str) -> str
+    The value saved under `key`, "" when there is none.
+Session.set(key: str, value: str) -> int
+    Sets a value; `sessions.save` stores it.
+Session.remove(key: str) -> bool
+Session.csrf_matches(token: str) -> bool
+    Whether `token` is this session's CSRF token, in constant time.
+gc struct Sessions { idle_ttl: int, absolute_ttl: int, cookie: Cookie, clock: timez.Clock, timeout: int, remote: opt[redis.Pool], local: map[str]LocalSession, by_subject: map[str]map[str]bool, lock: mutex, since_sweep: int }
+sessions_in_memory() -> Sessions
+    Sessions kept in this process: right for one instance, and every login ends with it.
+sessions_redis(p: redis.Pool) -> Sessions
+    Sessions kept in Redis, shared by every instance behind the balancer.
+Sessions.save(s: Session) -> result[int, str]
+    Stores what has changed in `s`.
+Sessions.end_all(subject: str) -> result[int, str]
+    Ends every session of `subject`, on every device: after a password change, or to lock an account.
+session_start[S](c: Ctx[S], ss: Sessions, subject: str) -> result[Session, str]
+    A session for `subject`, in place of any the request came with.
+session_cookie(resp: http.Response, ss: Sessions, s: Session) -> result[http.Response, str]
+    Puts the cookie for a session just started on `resp`.
+session_of[S](c: Ctx[S], ss: Sessions) -> result[opt[Session], str]
+    The request's session, none when it has no good one.
+session_require[S](c: Ctx[S], ss: Sessions) -> result[Session, http.Response]
+    The request's session, or the response to send: 401 without one, 503 when the store is down.
+session_end[S](c: Ctx[S], ss: Sessions, resp: http.Response) -> result[http.Response, str]
+    Logs the request out: ends its session and clears the cookie on `resp`.
+csrf_token_ok[S](c: Ctx[S], s: Session) -> bool
+    Whether the request's x-csrf-token header is this session's token: the second layer csrf.sl describes.
 
 ## sio_serve.sl -- Socket.IO routes, served: Engine.IO v4 and Socket.IO v5 (what socket.io-client 3 and 4 speak), on both of its transports.
 gc struct SioRoute[S] { settings: SioSettings, event: fn(S, Socket, SioEvent), connect: opt[fn(S, Socket, str, str) -> result[bool, str]], disconnect: opt[fn(S, Socket, str, str)], sessions: SioSessions }

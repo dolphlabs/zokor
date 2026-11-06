@@ -49,7 +49,7 @@
 <div class="page">
   <article class="content">
 <header class="page-head"><p class="page-kicker">Zokor documentation</p><h1>API reference</h1><p class="tagline">Browse public Zokor types, functions, and methods, with signatures and descriptions generated from the source package.</p><p class="agentline"><a href="../api/index.md">Markdown</a> · <a href="../llms.txt">llms.txt</a> · <a href="../api.json">api.json</a></p></header>
-<p>The public package surface contains 593 entries across 38 source files. This page is generated from <code>docs/api.txt</code>, which is generated from <code>zokor/</code>.</p>
+<p>The public package surface contains 617 entries across 41 source files. This page is generated from <code>docs/api.txt</code>, which is generated from <code>zokor/</code>.</p>
 <section class="api-module"><h2 id="auth-sl">auth.sl<a class="anchor" href="#auth-sl" aria-label="Link to this section">#</a></h2>
 <p class="api-module-description">Authentication helpers: bearer JWTs, Basic credentials and API keys.</p>
 <div class="api-item" id="auth-sl-gc"><code>gc struct JwtAuth { keys: [bytes], audience: str, issuer: str, leeway: int }</code></div>
@@ -162,6 +162,13 @@
 <div class="api-item" id="cors-sl-cors-apply"><code>Cors.apply(resp: http.Response, origin: str) -&gt; http.Response</code><p>The headers for an ordinary response to a request with this Origin (&quot;&quot; when it had none).</p></div>
 <div class="api-item" id="cors-sl-cors-preflight"><code>Cors.preflight(origin: str) -&gt; http.Response</code><p>The answer to a preflight from <code>origin</code>.</p></div>
 <div class="api-item" id="cors-sl-is-preflight"><code>is_preflight(method: str, raw_headers: bytes) -&gt; bool</code><p>Whether a request is a CORS preflight: OPTIONS, with an Origin and the method the real request will use.</p></div>
+</section>
+<section class="api-module"><h2 id="csrf-sl">csrf.sl<a class="anchor" href="#csrf-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Cross-site request forgery.</p>
+<div class="api-item" id="csrf-sl-gc"><code>gc struct CsrfGuard { trusted: map[str]bool }</code></div>
+<div class="api-item" id="csrf-sl-csrf-guard"><code>csrf_guard(origins: [str]) -&gt; result[CsrfGuard, str]</code><p>A guard that also accepts these origins, like https://app.example.com.</p></div>
+<div class="api-item" id="csrf-sl-csrf-guard-from"><code>csrf_guard_from(cfg: Config) -&gt; CsrfGuard</code><p>CSRF_TRUSTED_ORIGINS, comma separated.</p></div>
+<div class="api-item" id="csrf-sl-csrf-check-s"><code>csrf_check[S](c: Ctx[S], g: CsrfGuard) -&gt; opt[http.Response]</code><p>For a <code>before</code>: none to go on, or the 403.</p></div>
 </section>
 <section class="api-module"><h2 id="errors-sl">errors.sl<a class="anchor" href="#errors-sl" aria-label="Link to this section">#</a></h2>
 <p class="api-module-description">Failure, as one shape.</p>
@@ -400,6 +407,13 @@
 <div class="api-item" id="pagination-sl-offset-page-s"><code>offset_page[S, T](c: Ctx[S], p: Page, rows: [T], total: opt[int]) -&gt; http.Response</code><p>An offset page of <code>rows</code> -- up to p.fetch() of them; one past the limit means there is a next page -- in the envelope, with Link.</p></div>
 <div class="api-item" id="pagination-sl-cursor-page-s"><code>cursor_page[S, T](c: Ctx[S], p: Page, rows: [T], key: fn(T) -&gt; [str]) -&gt; http.Response</code><p>A keyset page of <code>rows</code> -- up to p.fetch(); one past the limit means there is a next page, whose cursor is <code>key</code> of the last...</p></div>
 </section>
+<section class="api-module"><h2 id="passwords-sl">passwords.sl<a class="anchor" href="#passwords-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Password hashing.</p>
+<div class="api-item" id="passwords-sl-hash-password"><code>hash_password(password: str) -&gt; result[str, str]</code><p>A new salted hash of <code>password</code>, at the default cost.</p></div>
+<div class="api-item" id="passwords-sl-check-password"><code>check_password(password: str, stored: str) -&gt; result[bool, str]</code><p>Whether <code>password</code> matches <code>stored</code>.</p></div>
+<div class="api-item" id="passwords-sl-password-needs-rehash"><code>password_needs_rehash(stored: str) -&gt; result[bool, str]</code><p>Whether <code>stored</code> is below the current default cost: after a successful check_password, hash the password again and store that.</p></div>
+<div class="api-item" id="passwords-sl-password-decoy"><code>password_decoy(password: str)</code><p>The work of one check_password, for when there is no hash to check.</p></div>
+</section>
 <section class="api-module"><h2 id="postgres-sl">postgres.sl<a class="anchor" href="#postgres-sl" aria-label="Link to this section">#</a></h2>
 <p class="api-module-description">Postgres, wired to zokor&#x27;s config, results and error envelope.</p>
 <div class="api-item" id="postgres-sl-pg-from-config"><code>pg_from_config(cfg: Config) -&gt; result[pg.Pool, str]</code><p>DATABASE_URL (postgres://user:pass@host:port/db?sslmode=require) and DB_POOL_SIZE (default 10).</p></div>
@@ -602,6 +616,25 @@
 <div class="api-item" id="serve-sl-accept-backoff"><code>accept_backoff(prev_ns: int) -&gt; int</code><p>The pause after a failed accept: 5ms, doubling to 1s while it keeps failing.</p></div>
 <div class="api-item" id="serve-sl-listen-and-serve-s"><code>listen_and_serve[S](r: Router[S], port: int) -&gt; result[int, str]</code><p>Bind, then accept until the process is asked to stop.</p></div>
 <div class="api-item" id="serve-sl-listen-and-serve-with-s"><code>listen_and_serve_with[S](r: Router[S], port: int, sc: ServerConfig) -&gt; result[int, str]</code><p>Same, with timeouts, limits, and the shutdown drain window under the caller&#x27;s control -- built from config with...</p></div>
+</section>
+<section class="api-module"><h2 id="sessions-sl">sessions.sl<a class="anchor" href="#sessions-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Browser sessions: a login that lives on the server.</p>
+<div class="api-item" id="sessions-sl-gc"><code>gc struct Session { subject: str, csrf: str, created: int, data: map[str]str, seen: int, key: str, token: str }</code></div>
+<div class="api-item" id="sessions-sl-session-get"><code>Session.get(key: str) -&gt; str</code><p>The value saved under <code>key</code>, &quot;&quot; when there is none.</p></div>
+<div class="api-item" id="sessions-sl-session-set"><code>Session.set(key: str, value: str) -&gt; int</code><p>Sets a value; <code>sessions.save</code> stores it.</p></div>
+<div class="api-item" id="sessions-sl-session-remove"><code>Session.remove(key: str) -&gt; bool</code></div>
+<div class="api-item" id="sessions-sl-session-csrf-matches"><code>Session.csrf_matches(token: str) -&gt; bool</code><p>Whether <code>token</code> is this session&#x27;s CSRF token, in constant time.</p></div>
+<div class="api-item" id="sessions-sl-gc-2"><code>gc struct Sessions { idle_ttl: int, absolute_ttl: int, cookie: Cookie, clock: timez.Clock, timeout: int, remote: opt[redis.Pool], local: map[str]LocalSession, by_subject: map[str]map[str]bool, lock: mutex, since_sweep: int }</code></div>
+<div class="api-item" id="sessions-sl-sessions-in-memory"><code>sessions_in_memory() -&gt; Sessions</code><p>Sessions kept in this process: right for one instance, and every login ends with it.</p></div>
+<div class="api-item" id="sessions-sl-sessions-redis"><code>sessions_redis(p: redis.Pool) -&gt; Sessions</code><p>Sessions kept in Redis, shared by every instance behind the balancer.</p></div>
+<div class="api-item" id="sessions-sl-sessions-save"><code>Sessions.save(s: Session) -&gt; result[int, str]</code><p>Stores what has changed in <code>s</code>.</p></div>
+<div class="api-item" id="sessions-sl-sessions-end-all"><code>Sessions.end_all(subject: str) -&gt; result[int, str]</code><p>Ends every session of <code>subject</code>, on every device: after a password change, or to lock an account.</p></div>
+<div class="api-item" id="sessions-sl-session-start-s"><code>session_start[S](c: Ctx[S], ss: Sessions, subject: str) -&gt; result[Session, str]</code><p>A session for <code>subject</code>, in place of any the request came with.</p></div>
+<div class="api-item" id="sessions-sl-session-cookie"><code>session_cookie(resp: http.Response, ss: Sessions, s: Session) -&gt; result[http.Response, str]</code><p>Puts the cookie for a session just started on <code>resp</code>.</p></div>
+<div class="api-item" id="sessions-sl-session-of-s"><code>session_of[S](c: Ctx[S], ss: Sessions) -&gt; result[opt[Session], str]</code><p>The request&#x27;s session, none when it has no good one.</p></div>
+<div class="api-item" id="sessions-sl-session-require-s"><code>session_require[S](c: Ctx[S], ss: Sessions) -&gt; result[Session, http.Response]</code><p>The request&#x27;s session, or the response to send: 401 without one, 503 when the store is down.</p></div>
+<div class="api-item" id="sessions-sl-session-end-s"><code>session_end[S](c: Ctx[S], ss: Sessions, resp: http.Response) -&gt; result[http.Response, str]</code><p>Logs the request out: ends its session and clears the cookie on <code>resp</code>.</p></div>
+<div class="api-item" id="sessions-sl-csrf-token-ok-s"><code>csrf_token_ok[S](c: Ctx[S], s: Session) -&gt; bool</code><p>Whether the request&#x27;s x-csrf-token header is this session&#x27;s token: the second layer csrf.sl describes.</p></div>
 </section>
 <section class="api-module"><h2 id="sio-serve-sl">sio_serve.sl<a class="anchor" href="#sio-serve-sl" aria-label="Link to this section">#</a></h2>
 <p class="api-module-description">Socket.IO routes, served: Engine.IO v4 and Socket.IO v5 (what socket.io-client 3 and 4 speak), on both of its transports.</p>
