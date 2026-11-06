@@ -106,6 +106,7 @@ declare, and every handler receives it.
 | `r.compress(compression())` | gzip for clients that accept it, on bodies worth it |
 | `r.idempotency(store)` | idempotency keys: a retried POST gets the first answer, in memory or Redis |
 | `page_of`, `offset_page`, `cursor_page` | pagination: offset or keyset pages, one envelope, `Link` headers |
+| `rate_limiter_redis`, `token_store_redis`, `hub.share` | one limit, one token store and one set of sockets across every instance, over Redis |
 | `sessions_in_memory`, `sessions_redis`, `session_start`, `session_require` | browser logins: server-side sessions with idle and absolute limits, rotated at login, in memory or Redis |
 | `csrf_guard`, `csrf_check` | cross-site request forgery: refuses cross-origin writes from browsers, with no tokens in your pages |
 | `hash_password`, `check_password` | Argon2id password hashes, in the standard PHC format |
@@ -1324,8 +1325,28 @@ a hook that refreshes a cookie.
 `TokenStore.issue(subject)` returns a 64-hex-character token from
 `crypto.rand`; `lookup(token)` gives the subject back (expired tokens
 are dropped), `revoke(token)` logs one session out and
-`revoke_subject(subject)` all of them. Tokens live in memory: they do
-not survive a restart and are not shared between instances.
+`revoke_subject(subject)` all of them. `new_token_store` keeps tokens in
+memory: they do not survive a restart and are not shared between instances.
+
+**Across instances.** A limiter in memory counts per process, so three
+instances allow three times the limit, which quietly weakens login throttling
+as a service scales. These take the same calls and share their state in Redis:
+
+```slang
+// `name` keeps this limiter's counts apart from any other's.
+let limiter = zokor.rate_limiter_redis(pool, "login", 5, 60000000000);
+let tokens = zokor.token_store_redis(pool, 86400000000000);
+```
+
+- **The limiter** is the same sliding log, in a script Redis runs atomically
+  and on its own clock, so instances need not agree on the time. A check waits
+  `limiter.timeout` (100 ms) for Redis, then falls back to this process's own
+  count and adds to `limiter.fallbacks`: an outage weakens the limit by the
+  number of instances, rather than removing it or taking the API down.
+- **The token store** keeps only a SHA-256 of each token, so a dump of Redis
+  holds no working credential. If Redis does not answer, `lookup` finds nothing,
+  so requests are refused rather than let through, and `issue` returns `err`.
+  `count` reports this process only: 0 on Redis.
 
 ## Migrations
 
@@ -1502,8 +1523,14 @@ and never wait: a send queues the message, and the connection's writer
 task puts it on the wire. A **`Hub`** holds sockets by id and in rooms:
 `add`, `join_room`, `leave_room`, `broadcast`, `to_room`, `get`, `count`,
 `room_size`. A socket leaves every hub it was in when its connection ends.
-The hub is in-process; several instances need their own fan-out between
-them (Redis pub/sub, say).
+A hub is in-process until `hub.share(redis_url, "chat")` joins it to a Redis
+channel: every send then also reaches every other instance's sockets. Sends
+still never wait, and a send's return value counts this instance's sockets.
+Delivery between instances is at most once, as Redis pub/sub is: an instance
+reconnecting misses what was sent meanwhile, and if Redis falls behind by 1024
+messages new ones are dropped. `hub.relay_losses()` counts both. Rooms stay per
+instance, so `room_size` and `count` do not add up other instances. Anyone who
+can publish on the channel can send to your sockets.
 
 Each connection is two tasks: one reads, decodes and calls the handlers in
 order, one message at a time; the other writes. What the settings in

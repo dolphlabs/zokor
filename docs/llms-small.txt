@@ -606,6 +606,10 @@ println("ok");
 ```
 
 Tokens are 256 random bits as 64 hex chars, looked up server-side.
+On several instances use `zokor.rate_limiter_redis(pool, name, limit,
+window_ns)`, which falls back to a local count if Redis is down, and
+`zokor.token_store_redis(pool, ttl_ns)`, which refuses if it is. A `Hub` reaches
+other instances after `hub.share(redis_url, channel)`.
 `new_token_store(ttl_ns)` (0 = until revoked); `issue` returns
 `result[str, str]`; `lookup(tok) -> opt[str]`; `revoke(tok) -> bool`;
 `revoke_subject(user) -> int`. The store is mutex-guarded.
