@@ -96,6 +96,10 @@ declare, and every handler receives it.
 | `r.compress(compression())` | gzip for clients that accept it, on bodies worth it |
 | `r.idempotency(store)` | idempotency keys: a retried POST gets the first answer, in memory or Redis |
 | `page_of`, `offset_page`, `cursor_page` | pagination: offset or keyset pages, one envelope, `Link` headers |
+| `sessions_in_memory`, `sessions_redis`, `session_start`, `session_require` | browser logins: server-side sessions with idle and absolute limits, rotated at login, in memory or Redis |
+| `csrf_guard`, `csrf_check` | cross-site request forgery: refuses cross-origin writes from browsers, with no tokens in your pages |
+| `hash_password`, `check_password` | Argon2id password hashes, in the standard PHC format |
+| `new_jobs`, `every`, `handle`, `enqueue` | background jobs: cron schedules in a time zone, a retrying in-memory queue |
 | `new_jobs`, `every`, `handle`, `enqueue` | background jobs: cron schedules in a time zone, a retrying in-memory or Postgres queue |
 | `preconditions`, `etag_of`, `r.etags()` | conditional requests: `304 Not Modified`, `412` on a lost update, ETag and Last-Modified |
 | `redis_from_config` | a Redis pool from `REDIS_URL`, optional by default |
