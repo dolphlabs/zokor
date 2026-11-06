@@ -912,6 +912,13 @@ c.state.csrf)` and `csrf` is `zokor.csrf_guard([])`. Passwords:
 wrong one), and `zokor.password_decoy(p)` when the account does not exist.
 Needs OpenSSL 3.2+.
 
+Spans: set `cfg.sample_ratio` on `zokor.trace_config()`, then `r.tracing(tracer);
+r.export_spans(spans);` where `spans` comes from `zokor.span_exporter_from(config)`
+(OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_SERVICE_NAME) and `spans.flush(timeout)` runs
+before exit. `c.state.spans.start(c.trace(), name)` gives a span with `attr`,
+`fail` and `finish`. `zokor.traced_send(spans, c.trace(), req, deadline)` sends an
+outbound call as a span, so the next service joins the trace.
+
 ## Serving for real
 
 ```slang

@@ -614,7 +614,7 @@ gc struct Ctx[S] { state: S, req: http.Request, params: opt[map[str]str], param1
 struct Served { resp: http.Response, route: str, upgrade: opt[Socket] }
     A response and the route pattern that produced it, for the request log.
 gc struct Route[S] { method: Method, pattern: str, befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], segs: [str], names: [str], wild: int, fkind: int, fpath: str, handler: fn(Ctx[S]) -> http.Response, has_static: bool, static_status: i32, static_ctype: str, static_body: bytes, static_rendered: bytes, static_hit: opt[http.StaticBody], static_close_hit: opt[http.StaticBody], no_map: opt[map[str]str], ws: int }
-gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security, sanitize: SanitizeMode, auto_etag: bool, rindex: [RNode], static_paths: map[str]int, idem: opt[Idempotency], gzip: opt[Compression], mounts: [FileMount], no_lines: opt[[str]], observations: opt[Metrics], tracer: opt[Tracer], no_tracer: opt[Tracer], request_locals: opt[map[str]str], sockets: [WsRoute[S]], no_socket: opt[Socket] }
+gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security, sanitize: SanitizeMode, auto_etag: bool, rindex: [RNode], static_paths: map[str]int, idem: opt[Idempotency], gzip: opt[Compression], mounts: [FileMount], no_lines: opt[[str]], observations: opt[Metrics], tracer: opt[Tracer], no_tracer: opt[Tracer], spans: opt[SpanExporter], request_locals: opt[map[str]str], sockets: [WsRoute[S]], no_socket: opt[Socket] }
     A `before` runs ahead of the handler and may end the request by returning a response; `none` carries on.
 new_router[S](state: S) -> Router[S]
     An application builds its router from its state alone; everything else starts empty or at the default a correct server should...
@@ -674,6 +674,8 @@ Router.routes_list() -> [str]
 Router.metrics(m: Metrics) -> int
     Opt-in Prometheus endpoint; a service's explicit route still wins.
 Router.tracing(driver: Tracer) -> int
+Router.export_spans(e: SpanExporter) -> int
+    Sends a span for every sampled request to `e`.
 Router.allowed(p: str) -> [Method]
     The methods registered for a path, for `Allow` on a 405 and for an automatic OPTIONS.
 Router.serve(req: http.Request) -> http.Response
@@ -908,6 +910,37 @@ Hub.unshare() -> int
 Hub.relay_losses() -> RelayLosses
     What this hub's sharing has lost, for a metric: messages dropped because Redis could not keep up, failed to publish, or...
 
+## spans.sl -- Sending spans to a collector: Jaeger, Tempo, Datadog, Honeycomb, anything that takes OTLP/HTTP.
+gc struct SpanExporterConfig { endpoint: str, service: str, headers: map[str]str, max_queue: int, max_batch: int, flush_every: int, timeout: int }
+    How an exporter behaves.
+struct SpanStats { sent: int, dropped: int, failed: int }
+gc struct SpanExporter { url: str, service: str, headers: map[str]str, max_batch: int, flush_every: int, timeout: int, outbox: chan[str], lock: mutex, pending: int, flushing: int, stopped: bool, sent: int, dropped: int, failed: int, logger: Logger }
+gc struct Span { exporter: SpanExporter, ctx: TraceContext, data: tracewire.SpanData, done: bool }
+    One span in progress.
+span_exporter_config(endpoint: str, service: str) -> SpanExporterConfig
+    Defaults for this collector and service name.
+new_span_exporter(cfg: SpanExporterConfig) -> result[SpanExporter, str]
+    Starts an exporter and its sending task.
+span_exporter_from(cfg: Config) -> result[SpanExporter, str]
+    An exporter from the standard variables: OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_SERVICE_NAME, and OTEL_EXPORTER_OTLP_HEADERS, which...
+SpanExporter.start(ctx: TraceContext, name: str) -> Span
+    A child of `ctx`, running until finish().
+SpanExporter.flush(timeout: int) -> bool
+    Sends what is queued now, and waits up to `timeout` for it to finish.
+SpanExporter.stop()
+    Stops the sending task once what is queued has gone.
+SpanExporter.stats() -> SpanStats
+Span.attr(key: str, value: str) -> Span
+Span.attr_int(key: str, value: int) -> Span
+Span.fail(message: str) -> Span
+    Marks the span failed, for whoever is reading the trace.
+Span.context() -> TraceContext
+    This span's context: for a child of it, or for traced_send.
+Span.finish()
+    Ends the span.
+traced_send(e: SpanExporter, ctx: TraceContext, req: httpc.Request, deadline: until) -> result[httpc.Response, str]
+    httpc.send under a client span, so the service it calls joins this trace at a span that exists.
+
 ## testkit.sl -- Building a request, and reading a response.
 gc struct TestRequest { method: Method, path: str, headers: map[str]str, body: bytes }
 request(method: Method, path: str) -> TestRequest
@@ -962,9 +995,9 @@ bearer_subject[S](c: Ctx[S], store: TokenStore) -> opt[str]
     The subject behind the request's `Authorization: Bearer <token>`, or none when the header is missing or the token is not live.
 
 ## tracing.sl -- Request-scoped W3C context, carried explicitly across tasks and calls.
-gc struct TraceConfig { max_parent_bytes: int, max_state_bytes: int, max_state_members: int }
+gc struct TraceConfig { max_parent_bytes: int, max_state_bytes: int, max_state_members: int, sample_ratio: float }
     Startup limits for incoming W3C headers.
-gc struct Tracer { max_parent_bytes: int, max_state_bytes: int, max_state_members: int }
+gc struct Tracer { max_parent_bytes: int, max_state_bytes: int, max_state_members: int, sample_ratio: float }
     Validated, immutable startup tracing settings.
 struct TraceContext { trace_id: str, parent_id: str, span_id: str, sampled: bool, state: str }
     Explicit request context; pass this value when spawning background work.

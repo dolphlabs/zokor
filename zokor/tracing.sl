@@ -9,6 +9,9 @@ pub gc struct TraceConfig {
     max_parent_bytes: int,
     max_state_bytes: int,
     max_state_members: int,
+    // The share of new traces to sample, 0.0 to 1.0. A request that
+    // arrives with a parent follows its parent's decision instead.
+    sample_ratio: float,
 }
 
 // Validated, immutable startup tracing settings.
@@ -16,6 +19,7 @@ pub gc struct Tracer {
     max_parent_bytes: int,
     max_state_bytes: int,
     max_state_members: int,
+    sample_ratio: float,
 }
 
 // Explicit request context; pass this value when spawning background work.
@@ -28,8 +32,10 @@ pub struct TraceContext {
 }
 
 // Default limits: 256 parent bytes, 512 state bytes, 32 state members.
+// Sampling is off until sample_ratio says otherwise.
 pub fn trace_config() -> TraceConfig {
-    return TraceConfig { max_parent_bytes: 256, max_state_bytes: 512, max_state_members: 32 };
+    return TraceConfig { max_parent_bytes: 256, max_state_bytes: 512, max_state_members: 32,
+                         sample_ratio: 0.0 };
 }
 
 // Validate all startup limits together and copy them.
@@ -38,8 +44,10 @@ pub fn new_tracer(cfg: TraceConfig) -> result[Tracer, str] {
     if cfg.max_parent_bytes < 55 { push(problems, "max_parent_bytes must be at least 55"); }
     if cfg.max_state_bytes < 1 || cfg.max_state_bytes > 512 { push(problems, "max_state_bytes must be 1..512"); }
     if cfg.max_state_members < 1 || cfg.max_state_members > 32 { push(problems, "max_state_members must be 1..32"); }
+    if cfg.sample_ratio < 0.0 || cfg.sample_ratio > 1.0 { push(problems, "sample_ratio must be 0.0..1.0"); }
     if len(problems) > 0 { return err("tracing: " + strings.join(problems, "; ")); }
-    return ok(Tracer { max_parent_bytes: cfg.max_parent_bytes, max_state_bytes: cfg.max_state_bytes, max_state_members: cfg.max_state_members });
+    return ok(Tracer { max_parent_bytes: cfg.max_parent_bytes, max_state_bytes: cfg.max_state_bytes,
+        max_state_members: cfg.max_state_members, sample_ratio: cfg.sample_ratio });
 }
 
 fn empty_trace() -> TraceContext {
@@ -84,7 +92,8 @@ pub fn trace_context(t: Tracer, headers: bytes) -> result[TraceContext, str] {
     }
     let made = trace_random(16);
     guard let id = made else let e = err_of(made) { return err(e); }
-    return ok(TraceContext { trace_id: id, parent_id: "", span_id: span, sampled: false, state: "" });
+    return ok(TraceContext { trace_id: id, parent_id: "", span_id: span,
+        sampled: tracewire.sampled(id, t.sample_ratio), state: "" });
 }
 
 // A validated version-00 header; reserved flags are always zero.
@@ -109,7 +118,14 @@ pub fn trace_request(ctx: TraceContext, req: httpc.Request) -> result[httpc.Requ
     guard let span = generated else let e = err_of(generated) { return err(e); }
     let child = TraceContext { trace_id: ctx.trace_id, parent_id: ctx.span_id,
         span_id: span, sampled: ctx.sampled, state: state };
-    let hdr = trace_header(child);
+    return traced_as(child, req);
+}
+
+// `req` carrying exactly this context, so the next service's parent is a
+// span that exists: traced_send records it, trace_request does not.
+fn traced_as(ctx: TraceContext, req: httpc.Request) -> result[httpc.Request, str] {
+    let state = ctx.state;
+    let hdr = trace_header(ctx);
     guard let parent = hdr else let e = err_of(hdr) { return err(e); }
     let headers: map[str]str = {};
     for k, v in req.headers {
@@ -148,7 +164,7 @@ fn trace_router[S](r: Router[S], ctx: TraceContext) -> Router[S] {
         sanitize: r.sanitize, auto_etag: r.auto_etag, rindex: r.rindex,
         static_paths: r.static_paths, idem: r.idem, gzip: r.gzip, mounts: r.mounts,
         no_lines: r.no_lines, observations: r.observations, tracer: r.no_tracer,
-        no_tracer: r.no_tracer, request_locals: trace_locals(ctx),
+        no_tracer: r.no_tracer, spans: r.spans, request_locals: trace_locals(ctx),
         sockets: r.sockets, no_socket: r.no_socket };
 }
 
