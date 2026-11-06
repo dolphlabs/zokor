@@ -78,7 +78,8 @@ GUIDE_PAGES = [
             "HTTPS, logging, background jobs, metrics, tracing, and OpenAPI."),
         "nav": "Operations",
         "sections": ["Configuration", "Server timeouts, limits, and shutdown",
-                     "HTTPS", "Logging", "Background jobs", "Errors",
+                     "HTTPS", "Logging", "Sessions, CSRF and passwords",
+                     "Background jobs", "Errors",
                      "Metrics", "Tracing", "OpenAPI"],
     },
     {

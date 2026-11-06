@@ -156,6 +156,15 @@ Cors.preflight(origin: str) -> http.Response
 is_preflight(method: str, raw_headers: bytes) -> bool
     Whether a request is a CORS preflight: OPTIONS, with an Origin and the method the real request will use.
 
+## csrf.sl -- Cross-site request forgery.
+gc struct CsrfGuard { trusted: map[str]bool }
+csrf_guard(origins: [str]) -> result[CsrfGuard, str]
+    A guard that also accepts these origins, like https://app.example.com.
+csrf_guard_from(cfg: Config) -> CsrfGuard
+    CSRF_TRUSTED_ORIGINS, comma separated.
+csrf_check[S](c: Ctx[S], g: CsrfGuard) -> opt[http.Response]
+    For a `before`: none to go on, or the 403.
+
 ## errors.sl -- Failure, as one shape.
 gc struct Code { name: str, status: i32, message: str }
 gc struct FieldError { field: str, reason: str }
@@ -227,9 +236,9 @@ request_ids() -> RequestIds
 RequestIds.next() -> str
 
 ## jobs.sl -- Background jobs: work on a schedule, and work queued to run later.
-gc struct JobCtx[S] { state: S, name: str, payload: str, attempt: int, due: timez.Time, deadline: until }
+gc struct JobCtx[S] { state: S, name: str, payload: str, attempt: int, job_id: int, due: timez.Time, deadline: until }
     What a run gets: the service's state, which run this is, and the deadline to pass to everything that can block.
-gc struct Jobs[S] { state: S, zone: timez.Zone, clock: timez.Clock, logger: Logger, default_timeout: int, scheduled: [ScheduledJob[S]], kinds: [JobKind[S]], queue: [QueuedJob], lock: mutex, in_flight: int, stopping: bool, failures: int }
+gc struct Jobs[S] { state: S, zone: timez.Zone, clock: timez.Clock, logger: Logger, default_timeout: int, scheduled: [ScheduledJob[S]], kinds: [JobKind[S]], queue: [QueuedJob], lock: mutex, in_flight: int, stopping: bool, failures: int, store: opt[pg.Pool], max_running: int, poll_every: int, store_timeout: int, claimed: int, worker: str }
 new_jobs[S](state: S) -> Jobs[S]
 job_backoff(attempt: int) -> int
     The wait before try `attempt + 1`: 1 s, 2 s, 4 s ...
@@ -251,6 +260,20 @@ Jobs.stop() -> int
     Stops starting runs.
 Jobs.wait_runs(timeout: int) -> bool
     Waits until no run is in progress, or `timeout` nanoseconds pass; true when none is.
+Jobs.durable(db: pg.Pool) -> result[int, str]
+    Moves queued jobs to the zokor_jobs table of `db`.
+Jobs.pending(deadline: until) -> result[int, str]
+    Durable jobs not yet finished or given up on.
+Jobs.dead(deadline: until) -> result[int, str]
+    Durable jobs that ran out of attempts and wait for a person.
+Jobs.poll() -> result[int, str]
+    Claims due rows, up to the room left under max_running, and starts each in its own task.
+
+## jobs_durable.sl -- A queue of background jobs that survives restarts, in Postgres.
+jobs_schema() -> str
+    The SQL of the table a durable queue needs, for a file of its own in your migrations directory, such as...
+enqueue_tx(c: pg.Conn, kind: str, payload: str, at: timez.Time, deadline: until) -> result[int, str]
+    Queues one run of `kind` in the transaction `c` is in: it exists if that transaction commits, and never otherwise.
 
 ## json.sl -- JSON, for the shapes you know and the ones you do not.
 enum JsonKind { Null, Bool, Number, String, Array, Object }
@@ -481,6 +504,16 @@ offset_page[S, T](c: Ctx[S], p: Page, rows: [T], total: opt[int]) -> http.Respon
     An offset page of `rows` -- up to p.fetch() of them; one past the limit means there is a next page -- in the envelope, with Link.
 cursor_page[S, T](c: Ctx[S], p: Page, rows: [T], key: fn(T) -> [str]) -> http.Response
     A keyset page of `rows` -- up to p.fetch(); one past the limit means there is a next page, whose cursor is `key` of the last...
+
+## passwords.sl -- Password hashing.
+hash_password(password: str) -> result[str, str]
+    A new salted hash of `password`, at the default cost.
+check_password(password: str, stored: str) -> result[bool, str]
+    Whether `password` matches `stored`.
+password_needs_rehash(stored: str) -> result[bool, str]
+    Whether `stored` is below the current default cost: after a successful check_password, hash the password again and store that.
+password_decoy(password: str)
+    The work of one check_password, for when there is no hash to check.
 
 ## postgres.sl -- Postgres, wired to zokor's config, results and error envelope.
 pg_from_config(cfg: Config) -> result[pg.Pool, str]
@@ -786,6 +819,37 @@ listen_and_serve[S](r: Router[S], port: int) -> result[int, str]
     Bind, then accept until the process is asked to stop.
 listen_and_serve_with[S](r: Router[S], port: int, sc: ServerConfig) -> result[int, str]
     Same, with timeouts, limits, and the shutdown drain window under the caller's control -- built from config with...
+
+## sessions.sl -- Browser sessions: a login that lives on the server.
+gc struct Session { subject: str, csrf: str, created: int, data: map[str]str, seen: int, key: str, token: str }
+Session.get(key: str) -> str
+    The value saved under `key`, "" when there is none.
+Session.set(key: str, value: str) -> int
+    Sets a value; `sessions.save` stores it.
+Session.remove(key: str) -> bool
+Session.csrf_matches(token: str) -> bool
+    Whether `token` is this session's CSRF token, in constant time.
+gc struct Sessions { idle_ttl: int, absolute_ttl: int, cookie: Cookie, clock: timez.Clock, timeout: int, remote: opt[redis.Pool], local: map[str]LocalSession, by_subject: map[str]map[str]bool, lock: mutex, since_sweep: int }
+sessions_in_memory() -> Sessions
+    Sessions kept in this process: right for one instance, and every login ends with it.
+sessions_redis(p: redis.Pool) -> Sessions
+    Sessions kept in Redis, shared by every instance behind the balancer.
+Sessions.save(s: Session) -> result[int, str]
+    Stores what has changed in `s`.
+Sessions.end_all(subject: str) -> result[int, str]
+    Ends every session of `subject`, on every device: after a password change, or to lock an account.
+session_start[S](c: Ctx[S], ss: Sessions, subject: str) -> result[Session, str]
+    A session for `subject`, in place of any the request came with.
+session_cookie(resp: http.Response, ss: Sessions, s: Session) -> result[http.Response, str]
+    Puts the cookie for a session just started on `resp`.
+session_of[S](c: Ctx[S], ss: Sessions) -> result[opt[Session], str]
+    The request's session, none when it has no good one.
+session_require[S](c: Ctx[S], ss: Sessions) -> result[Session, http.Response]
+    The request's session, or the response to send: 401 without one, 503 when the store is down.
+session_end[S](c: Ctx[S], ss: Sessions, resp: http.Response) -> result[http.Response, str]
+    Logs the request out: ends its session and clears the cookie on `resp`.
+csrf_token_ok[S](c: Ctx[S], s: Session) -> bool
+    Whether the request's x-csrf-token header is this session's token: the second layer csrf.sl describes.
 
 ## sio_serve.sl -- Socket.IO routes, served: Engine.IO v4 and Socket.IO v5 (what socket.io-client 3 and 4 speak), on both of its transports.
 gc struct SioRoute[S] { settings: SioSettings, event: fn(S, Socket, SioEvent), connect: opt[fn(S, Socket, str, str) -> result[bool, str]], disconnect: opt[fn(S, Socket, str, str)], sessions: SioSessions }

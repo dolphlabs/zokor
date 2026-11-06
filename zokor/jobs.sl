@@ -33,13 +33,14 @@
 //   - on SIGTERM the scheduler stops starting runs within a quarter
 //     second; runs in progress get the server's shutdown drain to finish.
 //
-// The queue is in memory: what is queued is lost when the process
-// stops. Work that must survive a restart belongs in a table or a Redis
-// list that a scheduled job drains.
+// By default the queue is in memory: what is queued is lost when the
+// process stops. jobs.durable(pool) moves it to a Postgres table, which
+// survives restarts and is shared by every instance (jobs_durable.sl).
 //
 // Tests drive the scheduler with `tick(now)` on fixed instants and
 // `wait_runs()`, and never sleep.
 
+import "pg";
 import "proc";
 import "time";
 import "timez";
@@ -53,6 +54,9 @@ pub gc struct JobCtx[S] {
     payload: str,
     // 1 on the first try of a queued job; always 1 for a scheduled one.
     attempt: int,
+    // A durable job's row id, stable across its retries, to make a side
+    // effect idempotent; 0 otherwise.
+    job_id: int,
     // When this run was due.
     due: timez.Time,
     deadline: until,
@@ -98,6 +102,19 @@ pub gc struct Jobs[S] {
     stopping: bool,
     // Runs that ended in err or a panic, and queued jobs given up on.
     failures: int,
+    // Set by durable(): the queue is this table, not `queue`.
+    store: opt[pg.Pool],
+    // Durable runs this process holds at once.
+    max_running: int,
+    // How often a durable queue is checked for due work.
+    poll_every: int,
+    // How long one call to the queue's table may take.
+    store_timeout: int,
+    // Durable runs in progress here.
+    claimed: int,
+    // Names this process's claims, so a run that lost its lease cannot
+    // finish a row another worker now holds.
+    worker: str,
 }
 
 pub fn new_jobs[S](state: S) -> Jobs[S] {
@@ -116,7 +133,13 @@ pub fn new_jobs[S](state: S) -> Jobs[S] {
         lock: make_mutex(),
         in_flight: 0,
         stopping: false,
-        failures: 0
+        failures: 0,
+        store: none,
+        max_running: 16,
+        poll_every: timez.SECOND,
+        store_timeout: 5 * timez.SECOND,
+        claimed: 0,
+        worker: ""
     };
 }
 
@@ -205,6 +228,9 @@ impl Jobs[S] {
 
     // Queues one run of `kind` with `payload`, due at `at` (now or in
     // the past runs at the next tick). err when nothing handles `kind`.
+    // On a durable queue it is written to the table before this returns,
+    // and ok holds the row id; to queue it in your own transaction, use
+    // enqueue_tx.
     pub fn enqueue(self: Jobs[S], kind: str, payload: str, at: timez.Time) -> result[int, str] {
         mutex_lock(self.lock);
         let known = false;
@@ -216,6 +242,10 @@ impl Jobs[S] {
         if !known {
             mutex_unlock(self.lock);
             return err("no handler for job kind " + kind + "; register it with handle()");
+        }
+        if let db = self.store {
+            mutex_unlock(self.lock);
+            return insert_job(db, kind, payload, at, self.store_deadline());
         }
         push(self.queue, QueuedJob { kind: kind, payload: payload, at: at, attempt: 1 });
         let n = len(self.queue);
@@ -276,6 +306,7 @@ impl Jobs[S] {
                 name: j.name,
                 payload: "",
                 attempt: 1,
+                job_id: 0,
                 due: next,
                 deadline: until_of(time.mono() + j.timeout)
             };
@@ -299,6 +330,7 @@ impl Jobs[S] {
                         name: q.kind,
                         payload: q.payload,
                         attempt: q.attempt,
+                        job_id: 0,
                         due: q.at,
                         deadline: until_of(time.mono() + k.timeout)
                     };
@@ -342,6 +374,11 @@ impl Jobs[S] {
     // least every quarter second so a stop or SIGTERM is seen quickly.
     pub fn start(self: Jobs[S]) -> int {
         spawn jobs_loop(self);
+        // Its own task: a database that stops answering delays this
+        // queue, never a cron schedule.
+        if let _db = self.store {
+            spawn jobs_poll_loop(self);
+        }
         return 0;
     }
 
@@ -387,6 +424,212 @@ impl Jobs[S] {
         mutex_lock(self.lock);
         push(self.queue, q);
         mutex_unlock(self.lock);
+    }
+
+    fn store_deadline(self: Jobs[S]) -> until {
+        return until_of(time.mono() + self.store_timeout);
+    }
+
+    // Moves queued jobs to the zokor_jobs table of `db`. Call it before
+    // start(). err, naming the fix, when the table is not there.
+    pub fn durable(self: Jobs[S], db: pg.Pool) -> result[int, str] {
+        let none_args: [pg.Arg] = [];
+        let r = pg.pool_query(db, "select id from zokor_jobs limit 0", none_args,
+                              self.store_deadline());
+        guard let _rows = r else let e = err_of(r) {
+            return err(job_store_problem(e));
+        }
+        let id = new_session_id();
+        if len(id) == 0 {
+            return err("could not generate a worker id");
+        }
+        mutex_lock(self.lock);
+        self.worker = id;
+        self.store = some(db);
+        mutex_unlock(self.lock);
+        return ok(0);
+    }
+
+    // Durable jobs not yet finished or given up on.
+    pub fn pending(self: Jobs[S], deadline: until) -> result[int, str] {
+        return self.count_where("dead_at is null", deadline);
+    }
+
+    // Durable jobs that ran out of attempts and wait for a person.
+    pub fn dead(self: Jobs[S], deadline: until) -> result[int, str] {
+        return self.count_where("dead_at is not null", deadline);
+    }
+
+    fn count_where(self: Jobs[S], condition: str, deadline: until) -> result[int, str] {
+        guard let db = self.store else {
+            return err("the queue is in memory; call durable() first");
+        }
+        let none_args: [pg.Arg] = [];
+        let r: result[opt[JobCount], str] = query_one(db,
+            "select count(*) as n from zokor_jobs where " + condition, none_args, deadline);
+        guard let row = r else let e = err_of(r) {
+            return err(job_store_problem(e));
+        }
+        guard let c = row else {
+            return ok(0);
+        }
+        return ok(c.n);
+    }
+
+    // The kinds handled here as a JSON array, and the longest timeout.
+    fn claim_terms(self: Jobs[S]) -> ClaimTerms {
+        let sb = builder.new_str();
+        sb.write("[");
+        let longest = 0;
+        let i = 0;
+        for k in self.kinds {
+            if i > 0 {
+                sb.write(",");
+            }
+            quote_into(sb, k.kind);
+            if k.timeout > longest {
+                longest = k.timeout;
+            }
+            i = i + 1;
+        }
+        sb.write("]");
+        return ClaimTerms { kinds: sb.finish(), lease: longest + lease_margin() };
+    }
+
+    // Claims due rows, up to the room left under max_running, and starts
+    // each in its own task. Returns how many it started. The scheduler
+    // calls this every poll_every; a test calls it directly.
+    pub fn poll(self: Jobs[S]) -> result[int, str] {
+        guard let db = self.store else {
+            return ok(0);
+        }
+        mutex_lock(self.lock);
+        let room = self.max_running - self.claimed;
+        let worker = self.worker;
+        if self.stopping || room <= 0 || len(self.kinds) == 0 {
+            mutex_unlock(self.lock);
+            return ok(0);
+        }
+        let terms = self.claim_terms();
+        mutex_unlock(self.lock);
+        let cr: result[[ClaimedJob], str] = query_all(db,
+            "with ready as (select id from zokor_jobs" +
+            " where dead_at is null and run_at <= now()" +
+            " and (locked_until is null or locked_until <= now())" +
+            " and kind in (select jsonb_array_elements_text($1::jsonb))" +
+            " order by run_at, id limit $2 for update skip locked)" +
+            " update zokor_jobs j set attempt = j.attempt + 1, locked_by = $3," +
+            " locked_until = now() + $4::text::interval" +
+            " from ready where j.id = ready.id" +
+            " returning j.id, j.kind, j.payload, j.run_at, j.attempt",
+            [pg.arg_text(terms.kinds), pg.arg_int(room), pg.arg_text(worker),
+             interval_ms(terms.lease)], self.store_deadline());
+        guard let claims = cr else let e = err_of(cr) {
+            return err(job_store_problem(e));
+        }
+        let started = 0;
+        for q in claims {
+            if self.start_claimed(db, q) {
+                started = started + 1;
+            }
+        }
+        return ok(started);
+    }
+
+    fn start_claimed(self: Jobs[S], db: pg.Pool, q: ClaimedJob) -> bool {
+        mutex_lock(self.lock);
+        let found: opt[JobKind[S]] = none;
+        for k in self.kinds {
+            if k.kind == q.kind {
+                found = some(k);
+            }
+        }
+        guard let k = found else {
+            mutex_unlock(self.lock);
+            return false;
+        }
+        if q.attempt > k.attempts {
+            mutex_unlock(self.lock);
+            // Every try was used and the last never reported: a crash or
+            // a lost lease, which is the reason not to run it again.
+            self.logger.error("Jobs", q.kind + " #" + to_str(q.id) +
+                              " used its attempts without finishing; marked dead");
+            self.bury(db, q, "used its attempts without finishing");
+            return false;
+        }
+        self.in_flight = self.in_flight + 1;
+        self.claimed = self.claimed + 1;
+        mutex_unlock(self.lock);
+        let c = JobCtx[S] {
+            state: self.state,
+            name: q.kind,
+            payload: q.payload,
+            attempt: q.attempt,
+            job_id: q.id,
+            due: q.run_at,
+            deadline: until_of(time.mono() + k.timeout)
+        };
+        spawn run_claimed(self, db, k, q, c);
+        return true;
+    }
+
+    // The fence on every write after a claim: a worker whose lease ran
+    // out must not touch a row someone else now holds.
+    fn settle(self: Jobs[S], db: pg.Pool, q: ClaimedJob, sql: str, extra: [pg.Arg]) {
+        let args = [pg.arg_int(q.id), pg.arg_text(self.worker), pg.arg_int(q.attempt)];
+        for a in extra {
+            push(args, a);
+        }
+        let r: result[[JobId], str] = query_all(db,
+            sql + " where id = $1 and locked_by = $2 and attempt = $3 returning id",
+            args, self.store_deadline());
+        guard let rows = r else let e = err_of(r) {
+            // The lease runs out and the job runs again: at least once.
+            self.logger.error("Jobs", q.kind + " #" + to_str(q.id) +
+                              ": could not record the outcome: " + e);
+            return;
+        }
+        if len(rows) == 0 {
+            self.logger.warn("Jobs", q.kind + " #" + to_str(q.id) +
+                             " lost its lease before finishing; its outcome was not recorded");
+        }
+    }
+
+    fn bury(self: Jobs[S], db: pg.Pool, q: ClaimedJob, why: str) {
+        self.settle(db, q,
+            "update zokor_jobs set dead_at = now(), locked_by = null, locked_until = null," +
+            " last_error = left($4, " + to_str(max_job_error_chars()) + ")",
+            [pg.arg_text(why)]);
+    }
+
+    fn retry_later(self: Jobs[S], db: pg.Pool, q: ClaimedJob, why: str, wait: int) {
+        self.settle(db, q,
+            "update zokor_jobs set locked_by = null, locked_until = null," +
+            " last_error = left($4, " + to_str(max_job_error_chars()) + ")," +
+            " run_at = now() + $5::text::interval",
+            [pg.arg_text(why), interval_ms(wait)]);
+    }
+
+    // Sleeps out poll_every in short steps, so a stop is seen quickly.
+    fn poll_pause(self: Jobs[S]) {
+        let end = time.mono() + self.poll_every;
+        while !self.stop_requested() && !proc.shutdown_requested() {
+            let left = (end - time.mono()) as int;
+            if left <= 0 {
+                return;
+            }
+            if left > 250 * timez.MILLISECOND {
+                left = 250 * timez.MILLISECOND;
+            }
+            time.sleep(left);
+        }
+    }
+
+    fn release_claim(self: Jobs[S], failed: bool) {
+        mutex_lock(self.lock);
+        self.claimed = self.claimed - 1;
+        mutex_unlock(self.lock);
+        self.finished(failed);
     }
 }
 

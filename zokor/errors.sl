@@ -82,6 +82,7 @@ pub fn new_registry() -> Registry {
     register(r, "token_expired", 401, "that token has expired");
     register(r, "payment_required", 402, "payment is required to continue");
     register(r, "forbidden", 403, "not allowed");
+    register(r, "csrf_rejected", 403, "this request did not come from an allowed origin");
     register(r, "not_found", 404, "no such resource");
     register(r, "method_not_allowed", 405, "that method is not allowed here");
     register(r, "not_acceptable", 406, "no representation matches the Accept header");
