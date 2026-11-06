@@ -413,6 +413,28 @@
       ]
     },
     {
+      "file": "csrf.sl",
+      "description": "Cross-site request forgery.",
+      "items": [
+        {
+          "signature": "gc struct CsrfGuard { trusted: map[str]bool }",
+          "description": ""
+        },
+        {
+          "signature": "csrf_guard(origins: [str]) -> result[CsrfGuard, str]",
+          "description": "A guard that also accepts these origins, like https://app.example.com."
+        },
+        {
+          "signature": "csrf_guard_from(cfg: Config) -> CsrfGuard",
+          "description": "CSRF_TRUSTED_ORIGINS, comma separated."
+        },
+        {
+          "signature": "csrf_check[S](c: Ctx[S], g: CsrfGuard) -> opt[http.Response]",
+          "description": "For a `before`: none to go on, or the 403."
+        }
+      ]
+    },
+    {
       "file": "errors.sl",
       "description": "Failure, as one shape.",
       "items": [
@@ -539,6 +561,16 @@
       ]
     },
     {
+      "file": "hub_relay.sl",
+      "description": "A Hub across instances.",
+      "items": [
+        {
+          "signature": "struct RelayLosses { dropped: int, lost: int, malformed: int, reconnects: int }",
+          "description": ""
+        }
+      ]
+    },
+    {
       "file": "idempotency.sl",
       "description": "Idempotency keys (the IETF Idempotency-Key header): a client retrying a POST or PATCH after a timeout gets the first answer...",
       "items": [
@@ -595,11 +627,11 @@
       "description": "Background jobs: work on a schedule, and work queued to run later.",
       "items": [
         {
-          "signature": "gc struct JobCtx[S] { state: S, name: str, payload: str, attempt: int, due: timez.Time, deadline: until }",
+          "signature": "gc struct JobCtx[S] { state: S, name: str, payload: str, attempt: int, job_id: int, due: timez.Time, deadline: until }",
           "description": "What a run gets: the service's state, which run this is, and the deadline to pass to everything that can block."
         },
         {
-          "signature": "gc struct Jobs[S] { state: S, zone: timez.Zone, clock: timez.Clock, logger: Logger, default_timeout: int, scheduled: [ScheduledJob[S]], kinds: [JobKind[S]], queue: [QueuedJob], lock: mutex, in_flight: int, stopping: bool, failures: int }",
+          "signature": "gc struct Jobs[S] { state: S, zone: timez.Zone, clock: timez.Clock, logger: Logger, default_timeout: int, scheduled: [ScheduledJob[S]], kinds: [JobKind[S]], queue: [QueuedJob], lock: mutex, in_flight: int, stopping: bool, failures: int, store: opt[pg.Pool], max_running: int, poll_every: int, store_timeout: int, claimed: int, worker: str }",
           "description": ""
         },
         {
@@ -645,6 +677,36 @@
         {
           "signature": "Jobs.wait_runs(timeout: int) -> bool",
           "description": "Waits until no run is in progress, or `timeout` nanoseconds pass; true when none is."
+        },
+        {
+          "signature": "Jobs.durable(db: pg.Pool) -> result[int, str]",
+          "description": "Moves queued jobs to the zokor_jobs table of `db`."
+        },
+        {
+          "signature": "Jobs.pending(deadline: until) -> result[int, str]",
+          "description": "Durable jobs not yet finished or given up on."
+        },
+        {
+          "signature": "Jobs.dead(deadline: until) -> result[int, str]",
+          "description": "Durable jobs that ran out of attempts and wait for a person."
+        },
+        {
+          "signature": "Jobs.poll() -> result[int, str]",
+          "description": "Claims due rows, up to the room left under max_running, and starts each in its own task."
+        }
+      ]
+    },
+    {
+      "file": "jobs_durable.sl",
+      "description": "A queue of background jobs that survives restarts, in Postgres.",
+      "items": [
+        {
+          "signature": "jobs_schema() -> str",
+          "description": "The SQL of the table a durable queue needs, for a file of its own in your migrations directory, such as..."
+        },
+        {
+          "signature": "enqueue_tx(c: pg.Conn, kind: str, payload: str, at: timez.Time, deadline: until) -> result[int, str]",
+          "description": "Queues one run of `kind` in the transaction `c` is in: it exists if that transaction commits, and never otherwise."
         }
       ]
     },
@@ -1283,6 +1345,28 @@
       ]
     },
     {
+      "file": "passwords.sl",
+      "description": "Password hashing.",
+      "items": [
+        {
+          "signature": "hash_password(password: str) -> result[str, str]",
+          "description": "A new salted hash of `password`, at the default cost."
+        },
+        {
+          "signature": "check_password(password: str, stored: str) -> result[bool, str]",
+          "description": "Whether `password` matches `stored`."
+        },
+        {
+          "signature": "password_needs_rehash(stored: str) -> result[bool, str]",
+          "description": "Whether `stored` is below the current default cost: after a successful check_password, hash the password again and store that."
+        },
+        {
+          "signature": "password_decoy(password: str)",
+          "description": "The work of one check_password, for when there is no hash to check."
+        }
+      ]
+    },
+    {
       "file": "postgres.sl",
       "description": "Postgres, wired to zokor's config, results and error envelope.",
       "items": [
@@ -1341,12 +1425,16 @@
           "description": ""
         },
         {
-          "signature": "gc struct RateLimiter { limit: int, window: int, shards: [RateShard], sweep_every: int }",
+          "signature": "gc struct RateLimiter { limit: int, window: int, shards: [RateShard], sweep_every: int, remote: opt[redis.Pool], name: str, timeout: int, fallbacks: int, fallback_lock: mutex }",
           "description": ""
         },
         {
           "signature": "new_rate_limiter(limit: int, window_ns: int) -> RateLimiter",
           "description": "At most `limit` requests per client in any `window_ns` nanoseconds (1000000000 is one second)."
+        },
+        {
+          "signature": "rate_limiter_redis(p: redis.Pool, name: str, limit: int, window_ns: int) -> RateLimiter",
+          "description": "The same limit shared by every instance, counted in Redis."
         },
         {
           "signature": "retry_after_secs(wait_ns: int) -> int",
@@ -1363,6 +1451,10 @@
         {
           "signature": "RateLimiter.check_at(key: str, now: int) -> RateCheck",
           "description": "take_at, with what is left: what the RateLimit-* headers report."
+        },
+        {
+          "signature": "RateLimiter.check(key: str) -> RateCheck",
+          "description": "One check of `key` now: shared when the limiter is, falling back to this process's count when Redis does not answer."
         },
         {
           "signature": "RateLimiter.take(key: str) -> int",
@@ -2045,6 +2137,76 @@
       ]
     },
     {
+      "file": "sessions.sl",
+      "description": "Browser sessions: a login that lives on the server.",
+      "items": [
+        {
+          "signature": "gc struct Session { subject: str, csrf: str, created: int, data: map[str]str, seen: int, key: str, token: str }",
+          "description": ""
+        },
+        {
+          "signature": "Session.get(key: str) -> str",
+          "description": "The value saved under `key`, \"\" when there is none."
+        },
+        {
+          "signature": "Session.set(key: str, value: str) -> int",
+          "description": "Sets a value; `sessions.save` stores it."
+        },
+        {
+          "signature": "Session.remove(key: str) -> bool",
+          "description": ""
+        },
+        {
+          "signature": "Session.csrf_matches(token: str) -> bool",
+          "description": "Whether `token` is this session's CSRF token, in constant time."
+        },
+        {
+          "signature": "gc struct Sessions { idle_ttl: int, absolute_ttl: int, cookie: Cookie, clock: timez.Clock, timeout: int, remote: opt[redis.Pool], local: map[str]LocalSession, by_subject: map[str]map[str]bool, lock: mutex, since_sweep: int }",
+          "description": ""
+        },
+        {
+          "signature": "sessions_in_memory() -> Sessions",
+          "description": "Sessions kept in this process: right for one instance, and every login ends with it."
+        },
+        {
+          "signature": "sessions_redis(p: redis.Pool) -> Sessions",
+          "description": "Sessions kept in Redis, shared by every instance behind the balancer."
+        },
+        {
+          "signature": "Sessions.save(s: Session) -> result[int, str]",
+          "description": "Stores what has changed in `s`."
+        },
+        {
+          "signature": "Sessions.end_all(subject: str) -> result[int, str]",
+          "description": "Ends every session of `subject`, on every device: after a password change, or to lock an account."
+        },
+        {
+          "signature": "session_start[S](c: Ctx[S], ss: Sessions, subject: str) -> result[Session, str]",
+          "description": "A session for `subject`, in place of any the request came with."
+        },
+        {
+          "signature": "session_cookie(resp: http.Response, ss: Sessions, s: Session) -> result[http.Response, str]",
+          "description": "Puts the cookie for a session just started on `resp`."
+        },
+        {
+          "signature": "session_of[S](c: Ctx[S], ss: Sessions) -> result[opt[Session], str]",
+          "description": "The request's session, none when it has no good one."
+        },
+        {
+          "signature": "session_require[S](c: Ctx[S], ss: Sessions) -> result[Session, http.Response]",
+          "description": "The request's session, or the response to send: 401 without one, 503 when the store is down."
+        },
+        {
+          "signature": "session_end[S](c: Ctx[S], ss: Sessions, resp: http.Response) -> result[http.Response, str]",
+          "description": "Logs the request out: ends its session and clears the cookie on `resp`."
+        },
+        {
+          "signature": "csrf_token_ok[S](c: Ctx[S], s: Session) -> bool",
+          "description": "Whether the request's x-csrf-token header is this session's token: the second layer csrf.sl describes."
+        }
+      ]
+    },
+    {
       "file": "sio_serve.sl",
       "description": "Socket.IO routes, served: Engine.IO v4 and Socket.IO v5 (what socket.io-client 3 and 4 speak), on both of its transports.",
       "items": [
@@ -2119,7 +2281,7 @@
           "description": ""
         },
         {
-          "signature": "gc struct Hub { id: str, lock: mutex, sockets: map[str]Socket, rooms: map[str]map[str]bool }",
+          "signature": "gc struct Hub { id: str, lock: mutex, sockets: map[str]Socket, rooms: map[str]map[str]bool, relay: opt[HubRelay] }",
           "description": "Sockets by id, and rooms of them: what a chat, a live dashboard or a notification fan-out needs to reach more than the one..."
         },
         {
@@ -2181,6 +2343,18 @@
         {
           "signature": "Hub.emit_binary_to_room(room: str, namespace: str, name: str, args_json: str, data: [bytes], except: str) -> int",
           "description": "emit_binary to every Socket.IO session in a room (\"\" for the hub)."
+        },
+        {
+          "signature": "Hub.share(url: str, channel: str) -> result[int, str]",
+          "description": "Joins this hub to `channel` on the Redis at `url`: everything sent on any hub sharing that channel reaches every instance's..."
+        },
+        {
+          "signature": "Hub.unshare() -> int",
+          "description": "Stops sharing; this hub is in-process again."
+        },
+        {
+          "signature": "Hub.relay_losses() -> RelayLosses",
+          "description": "What this hub's sharing has lost, for a metric: messages dropped because Redis could not keep up, failed to publish, or..."
         }
       ]
     },
@@ -2349,12 +2523,16 @@
       "description": "Opaque bearer tokens.",
       "items": [
         {
-          "signature": "gc struct TokenStore { subjects: map[str]str, expires: map[str]int, ttl: int, lock: mutex, since_sweep: int }",
+          "signature": "gc struct TokenStore { subjects: map[str]str, expires: map[str]int, ttl: int, lock: mutex, since_sweep: int, remote: opt[redis.Pool], timeout: int }",
           "description": ""
         },
         {
           "signature": "new_token_store(ttl_ns: int) -> TokenStore",
           "description": "`ttl_ns` is how long a token stays valid after it is issued, in nanoseconds; 0 means until it is revoked."
+        },
+        {
+          "signature": "token_store_redis(p: redis.Pool, ttl_ns: int) -> TokenStore",
+          "description": "The same store in Redis, shared by every instance behind the balancer."
         },
         {
           "signature": "new_token() -> result[str, str]",
@@ -2386,7 +2564,7 @@
         },
         {
           "signature": "TokenStore.count() -> int",
-          "description": "How many tokens are held (expired ones count until swept)."
+          "description": "How many tokens this process holds (expired ones count until swept)."
         },
         {
           "signature": "bearer_subject[S](c: Ctx[S], store: TokenStore) -> opt[str]",

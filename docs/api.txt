@@ -156,6 +156,15 @@ Cors.preflight(origin: str) -> http.Response
 is_preflight(method: str, raw_headers: bytes) -> bool
     Whether a request is a CORS preflight: OPTIONS, with an Origin and the method the real request will use.
 
+## csrf.sl -- Cross-site request forgery.
+gc struct CsrfGuard { trusted: map[str]bool }
+csrf_guard(origins: [str]) -> result[CsrfGuard, str]
+    A guard that also accepts these origins, like https://app.example.com.
+csrf_guard_from(cfg: Config) -> CsrfGuard
+    CSRF_TRUSTED_ORIGINS, comma separated.
+csrf_check[S](c: Ctx[S], g: CsrfGuard) -> opt[http.Response]
+    For a `before`: none to go on, or the 403.
+
 ## errors.sl -- Failure, as one shape.
 gc struct Code { name: str, status: i32, message: str }
 gc struct FieldError { field: str, reason: str }
@@ -202,6 +211,9 @@ default_ready_timeout() -> int
 check_name_ok(name: str) -> bool
     A check name is 1-64 of [A-Za-z0-9_.-]: it is written into the JSON body and to stderr as is.
 
+## hub_relay.sl -- A Hub across instances.
+struct RelayLosses { dropped: int, lost: int, malformed: int, reconnects: int }
+
 ## idempotency.sl -- Idempotency keys (the IETF Idempotency-Key header): a client retrying a POST or PATCH after a timeout gets the first answer...
 gc struct Idempotency { ttl: int, lock_ttl: int, max_body: int, scope_local: str, required: bool, shards: [IdemShard], remote: opt[redis.Pool] }
 idempotency_in_memory() -> Idempotency
@@ -224,9 +236,9 @@ request_ids() -> RequestIds
 RequestIds.next() -> str
 
 ## jobs.sl -- Background jobs: work on a schedule, and work queued to run later.
-gc struct JobCtx[S] { state: S, name: str, payload: str, attempt: int, due: timez.Time, deadline: until }
+gc struct JobCtx[S] { state: S, name: str, payload: str, attempt: int, job_id: int, due: timez.Time, deadline: until }
     What a run gets: the service's state, which run this is, and the deadline to pass to everything that can block.
-gc struct Jobs[S] { state: S, zone: timez.Zone, clock: timez.Clock, logger: Logger, default_timeout: int, scheduled: [ScheduledJob[S]], kinds: [JobKind[S]], queue: [QueuedJob], lock: mutex, in_flight: int, stopping: bool, failures: int }
+gc struct Jobs[S] { state: S, zone: timez.Zone, clock: timez.Clock, logger: Logger, default_timeout: int, scheduled: [ScheduledJob[S]], kinds: [JobKind[S]], queue: [QueuedJob], lock: mutex, in_flight: int, stopping: bool, failures: int, store: opt[pg.Pool], max_running: int, poll_every: int, store_timeout: int, claimed: int, worker: str }
 new_jobs[S](state: S) -> Jobs[S]
 job_backoff(attempt: int) -> int
     The wait before try `attempt + 1`: 1 s, 2 s, 4 s ...
@@ -248,6 +260,20 @@ Jobs.stop() -> int
     Stops starting runs.
 Jobs.wait_runs(timeout: int) -> bool
     Waits until no run is in progress, or `timeout` nanoseconds pass; true when none is.
+Jobs.durable(db: pg.Pool) -> result[int, str]
+    Moves queued jobs to the zokor_jobs table of `db`.
+Jobs.pending(deadline: until) -> result[int, str]
+    Durable jobs not yet finished or given up on.
+Jobs.dead(deadline: until) -> result[int, str]
+    Durable jobs that ran out of attempts and wait for a person.
+Jobs.poll() -> result[int, str]
+    Claims due rows, up to the room left under max_running, and starts each in its own task.
+
+## jobs_durable.sl -- A queue of background jobs that survives restarts, in Postgres.
+jobs_schema() -> str
+    The SQL of the table a durable queue needs, for a file of its own in your migrations directory, such as...
+enqueue_tx(c: pg.Conn, kind: str, payload: str, at: timez.Time, deadline: until) -> result[int, str]
+    Queues one run of `kind` in the transaction `c` is in: it exists if that transaction commits, and never otherwise.
 
 ## json.sl -- JSON, for the shapes you know and the ones you do not.
 enum JsonKind { Null, Bool, Number, String, Array, Object }
@@ -479,6 +505,16 @@ offset_page[S, T](c: Ctx[S], p: Page, rows: [T], total: opt[int]) -> http.Respon
 cursor_page[S, T](c: Ctx[S], p: Page, rows: [T], key: fn(T) -> [str]) -> http.Response
     A keyset page of `rows` -- up to p.fetch(); one past the limit means there is a next page, whose cursor is `key` of the last...
 
+## passwords.sl -- Password hashing.
+hash_password(password: str) -> result[str, str]
+    A new salted hash of `password`, at the default cost.
+check_password(password: str, stored: str) -> result[bool, str]
+    Whether `password` matches `stored`.
+password_needs_rehash(stored: str) -> result[bool, str]
+    Whether `stored` is below the current default cost: after a successful check_password, hash the password again and store that.
+password_decoy(password: str)
+    The work of one check_password, for when there is no hash to check.
+
 ## postgres.sl -- Postgres, wired to zokor's config, results and error envelope.
 pg_from_config(cfg: Config) -> result[pg.Pool, str]
     DATABASE_URL (postgres://user:pass@host:port/db?sslmode=require) and DB_POOL_SIZE (default 10).
@@ -502,9 +538,11 @@ db_failure(reg: Registry, e: str, request_id: str) -> http.Response
 
 ## ratelimit.sl -- Rate limiting.
 gc struct RateShard { hits: map[str][int], lock: mutex, since_sweep: int }
-gc struct RateLimiter { limit: int, window: int, shards: [RateShard], sweep_every: int }
+gc struct RateLimiter { limit: int, window: int, shards: [RateShard], sweep_every: int, remote: opt[redis.Pool], name: str, timeout: int, fallbacks: int, fallback_lock: mutex }
 new_rate_limiter(limit: int, window_ns: int) -> RateLimiter
     At most `limit` requests per client in any `window_ns` nanoseconds (1000000000 is one second).
+rate_limiter_redis(p: redis.Pool, name: str, limit: int, window_ns: int) -> RateLimiter
+    The same limit shared by every instance, counted in Redis.
 retry_after_secs(wait_ns: int) -> int
     Whole seconds until `wait_ns` has passed, never below 1: a Retry-After of 0 invites an immediate retry that will be refused.
 struct RateCheck { wait: int, remaining: int, reset: int }
@@ -513,6 +551,8 @@ RateLimiter.take_at(key: str, now: int) -> int
     Counts one request for `key` at `now` (time.mono nanoseconds).
 RateLimiter.check_at(key: str, now: int) -> RateCheck
     take_at, with what is left: what the RateLimit-* headers report.
+RateLimiter.check(key: str) -> RateCheck
+    One check of `key` now: shared when the limiter is, falling back to this process's count when Redis does not answer.
 RateLimiter.take(key: str) -> int
     The same, now.
 RateLimiter.tracked() -> int
@@ -782,6 +822,37 @@ listen_and_serve[S](r: Router[S], port: int) -> result[int, str]
 listen_and_serve_with[S](r: Router[S], port: int, sc: ServerConfig) -> result[int, str]
     Same, with timeouts, limits, and the shutdown drain window under the caller's control -- built from config with...
 
+## sessions.sl -- Browser sessions: a login that lives on the server.
+gc struct Session { subject: str, csrf: str, created: int, data: map[str]str, seen: int, key: str, token: str }
+Session.get(key: str) -> str
+    The value saved under `key`, "" when there is none.
+Session.set(key: str, value: str) -> int
+    Sets a value; `sessions.save` stores it.
+Session.remove(key: str) -> bool
+Session.csrf_matches(token: str) -> bool
+    Whether `token` is this session's CSRF token, in constant time.
+gc struct Sessions { idle_ttl: int, absolute_ttl: int, cookie: Cookie, clock: timez.Clock, timeout: int, remote: opt[redis.Pool], local: map[str]LocalSession, by_subject: map[str]map[str]bool, lock: mutex, since_sweep: int }
+sessions_in_memory() -> Sessions
+    Sessions kept in this process: right for one instance, and every login ends with it.
+sessions_redis(p: redis.Pool) -> Sessions
+    Sessions kept in Redis, shared by every instance behind the balancer.
+Sessions.save(s: Session) -> result[int, str]
+    Stores what has changed in `s`.
+Sessions.end_all(subject: str) -> result[int, str]
+    Ends every session of `subject`, on every device: after a password change, or to lock an account.
+session_start[S](c: Ctx[S], ss: Sessions, subject: str) -> result[Session, str]
+    A session for `subject`, in place of any the request came with.
+session_cookie(resp: http.Response, ss: Sessions, s: Session) -> result[http.Response, str]
+    Puts the cookie for a session just started on `resp`.
+session_of[S](c: Ctx[S], ss: Sessions) -> result[opt[Session], str]
+    The request's session, none when it has no good one.
+session_require[S](c: Ctx[S], ss: Sessions) -> result[Session, http.Response]
+    The request's session, or the response to send: 401 without one, 503 when the store is down.
+session_end[S](c: Ctx[S], ss: Sessions, resp: http.Response) -> result[http.Response, str]
+    Logs the request out: ends its session and clears the cookie on `resp`.
+csrf_token_ok[S](c: Ctx[S], s: Session) -> bool
+    Whether the request's x-csrf-token header is this session's token: the second layer csrf.sl describes.
+
 ## sio_serve.sl -- Socket.IO routes, served: Engine.IO v4 and Socket.IO v5 (what socket.io-client 3 and 4 speak), on both of its transports.
 gc struct SioRoute[S] { settings: SioSettings, event: fn(S, Socket, SioEvent), connect: opt[fn(S, Socket, str, str) -> result[bool, str]], disconnect: opt[fn(S, Socket, str, str)], sessions: SioSessions }
 sio_route[S](event: fn(S, Socket, SioEvent)) -> SioRoute[S]
@@ -809,7 +880,7 @@ Socket.is_open() -> bool
 Socket.local(key: str) -> str
     A value the handshake's hooks set on the request, "" when none did.
 Socket.set_local(key: str, v: str) -> int
-gc struct Hub { id: str, lock: mutex, sockets: map[str]Socket, rooms: map[str]map[str]bool }
+gc struct Hub { id: str, lock: mutex, sockets: map[str]Socket, rooms: map[str]map[str]bool, relay: opt[HubRelay] }
     Sockets by id, and rooms of them: what a chat, a live dashboard or a notification fan-out needs to reach more than the one...
 new_hub() -> Hub
 Hub.add(s: Socket) -> int
@@ -832,6 +903,12 @@ Hub.emit_all(namespace: str, name: str, args_json: str, except: str) -> int
 Hub.emit_to_room(room: str, namespace: str, name: str, args_json: str, except: str) -> int
 Hub.emit_binary_to_room(room: str, namespace: str, name: str, args_json: str, data: [bytes], except: str) -> int
     emit_binary to every Socket.IO session in a room ("" for the hub).
+Hub.share(url: str, channel: str) -> result[int, str]
+    Joins this hub to `channel` on the Redis at `url`: everything sent on any hub sharing that channel reaches every instance's...
+Hub.unshare() -> int
+    Stops sharing; this hub is in-process again.
+Hub.relay_losses() -> RelayLosses
+    What this hub's sharing has lost, for a metric: messages dropped because Redis could not keep up, failed to publish, or...
 
 ## spans.sl -- Sending spans to a collector: Jaeger, Tempo, Datadog, Honeycomb, anything that takes OTLP/HTTP.
 gc struct SpanExporterConfig { endpoint: str, service: str, headers: map[str]str, max_queue: int, max_batch: int, flush_every: int, timeout: int }
@@ -895,9 +972,11 @@ resp_error_fields(r: http.Response) -> [str]
     The field names an error envelope complains about, in order, so a test asserts on the shape rather than on an exact string.
 
 ## tokens.sl -- Opaque bearer tokens.
-gc struct TokenStore { subjects: map[str]str, expires: map[str]int, ttl: int, lock: mutex, since_sweep: int }
+gc struct TokenStore { subjects: map[str]str, expires: map[str]int, ttl: int, lock: mutex, since_sweep: int, remote: opt[redis.Pool], timeout: int }
 new_token_store(ttl_ns: int) -> TokenStore
     `ttl_ns` is how long a token stays valid after it is issued, in nanoseconds; 0 means until it is revoked.
+token_store_redis(p: redis.Pool, ttl_ns: int) -> TokenStore
+    The same store in Redis, shared by every instance behind the balancer.
 new_token() -> result[str, str]
     32 random bytes as 64 lowercase hex characters.
 TokenStore.issue(subject: str) -> result[str, str]
@@ -911,7 +990,7 @@ TokenStore.revoke(token: str) -> bool
 TokenStore.revoke_subject(subject: str) -> int
     Ends every token issued to `subject` ("log out everywhere", a password change).
 TokenStore.count() -> int
-    How many tokens are held (expired ones count until swept).
+    How many tokens this process holds (expired ones count until swept).
 bearer_subject[S](c: Ctx[S], store: TokenStore) -> opt[str]
     The subject behind the request's `Authorization: Bearer <token>`, or none when the header is missing or the token is not live.
 

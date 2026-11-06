@@ -606,6 +606,10 @@ println("ok");
 ```
 
 Tokens are 256 random bits as 64 hex chars, looked up server-side.
+On several instances use `zokor.rate_limiter_redis(pool, name, limit,
+window_ns)`, which falls back to a local count if Redis is down, and
+`zokor.token_store_redis(pool, ttl_ns)`, which refuses if it is. A `Hub` reaches
+other instances after `hub.share(redis_url, channel)`.
 `new_token_store(ttl_ns)` (0 = until revoked); `issue` returns
 `result[str, str]`; `lookup(tok) -> opt[str]`; `revoke(tok) -> bool`;
 `revoke_subject(user) -> int`. The store is mutex-guarded.
@@ -890,7 +894,23 @@ turn; missed turns are not replayed. `jobs.handle(kind, f, attempts)` and
 `jobs.enqueue(kind, payload, at)` queue one-off work, retried with
 backoff (1s, 2s, 4s ... capped at 1h). In a server: `jobs.logger =
 sc.logger; jobs.start();` before `listen_and_serve`; it stops on SIGTERM.
-The queue is in memory.
+The queue is in memory unless `jobs.durable(db)` moves it to Postgres (the
+SQL is `zokor.jobs_schema()`; put it in a migration), where it survives
+restarts and instances share it. Then `zokor.enqueue_tx(conn, kind, payload,
+at, deadline)` queues inside a `transaction` body. Durable jobs run at least
+once, so make them safe to repeat, keyed on `c.job_id`; out of attempts
+leaves the row with `dead_at` set.
+
+Browser login: `let sr = zokor.session_start(c, c.state.sessions, user_id);`
+then `zokor.session_cookie(resp, c.state.sessions, s)`; `session_require(c,
+ss)` is `result[Session, http.Response]`, the session or the 401/503 to return;
+`session_end(c, ss, resp)` logs out and `ss.end_all(subject)` ends every device.
+`ss` is `zokor.sessions_in_memory()` or `zokor.sessions_redis(pool)`. Writes from
+browsers need `r.before(f)` where `f` returns `zokor.csrf_check(c,
+c.state.csrf)` and `csrf` is `zokor.csrf_guard([])`. Passwords:
+`zokor.hash_password(p)`, `zokor.check_password(p, stored)` (`ok(false)` for a
+wrong one), and `zokor.password_decoy(p)` when the account does not exist.
+Needs OpenSSL 3.2+.
 
 Spans: set `cfg.sample_ratio` on `zokor.trace_config()`, then `r.tracing(tracer);
 r.export_spans(spans);` where `spans` comes from `zokor.span_exporter_from(config)`
