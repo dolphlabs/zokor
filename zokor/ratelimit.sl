@@ -23,8 +23,25 @@
 // 2.0 us, at the cost of hashing the key (a lone task: 4.4 us).
 // Memory is bounded by the clients seen in the last window: each shard
 // sweeps keys that went quiet every `sweep_every` of its requests.
+//
+// That limiter lives in one process, so behind a balancer each instance
+// keeps its own count and three instances allow three times the limit,
+// which is how login throttling quietly weakens as a service scales.
+// rate_limiter_redis counts once for all of them:
+//
+//     let l = zokor.rate_limiter_redis(pool, "login", 5, 60 * timez.SECOND);
+//
+// It is the same sliding log, in a script Redis runs atomically and on
+// Redis's clock, since instances' monotonic clocks cannot be compared. When
+// Redis does not answer within `timeout`, the check falls back to this
+// process's own count and adds to `fallbacks`: an outage weakens the limit
+// by the number of instances, rather than removing it or taking the API
+// down with it.
 
 import "http";
+import "crypto";
+import "encoding";
+import "redis";
 import "time";
 
 pub gc struct RateShard {
@@ -40,6 +57,14 @@ pub gc struct RateLimiter {
     window: int,
     shards: [RateShard],
     sweep_every: int,
+    // Set by rate_limiter_redis: the count is shared, under `name`.
+    remote: opt[redis.Pool],
+    name: str,
+    // How long a shared check may take; it sits on the request path.
+    timeout: int,
+    // Shared checks answered by this process's count instead.
+    fallbacks: int,
+    fallback_lock: mutex,
 }
 
 // A power of two, so a shard is a mask, not a division.
@@ -78,8 +103,47 @@ pub fn new_rate_limiter(limit: int, window_ns: int) -> RateLimiter {
         limit: n,
         window: w,
         shards: shards,
-        sweep_every: 1024
+        sweep_every: 1024,
+        remote: none,
+        name: "",
+        timeout: 100000000,
+        fallbacks: 0,
+        fallback_lock: make_mutex()
     };
+}
+
+// The same limit shared by every instance, counted in Redis. `name` keeps
+// this limiter's counts apart from any other's on that server.
+pub fn rate_limiter_redis(p: redis.Pool, name: str, limit: int, window_ns: int) -> RateLimiter {
+    let l = new_rate_limiter(limit, window_ns);
+    l.remote = some(p);
+    l.name = name;
+    return l;
+}
+
+// The sliding log of check_at. Microsecond scores, because a Lua number
+// holds them exactly and nanoseconds since 1970 it does not. KEYS[1] is
+// the client's set; ARGV is the window, the limit and a member unique to
+// this request, since two requests in one microsecond must both count.
+fn rate_script() -> str {
+    return "local t = redis.call('TIME')\n" +
+           "local now = t[1] * 1000000 + t[2]\n" +
+           "local window = tonumber(ARGV[1])\n" +
+           "local limit = tonumber(ARGV[2])\n" +
+           "local floor = now - window\n" +
+           "redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', floor)\n" +
+           "local n = redis.call('ZCARD', KEYS[1])\n" +
+           "local wait = 0\n" +
+           "if n >= limit then\n" +
+           "  local old = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')\n" +
+           "  wait = tonumber(old[2]) - floor\n" +
+           "else\n" +
+           "  redis.call('ZADD', KEYS[1], now, ARGV[3])\n" +
+           "  n = n + 1\n" +
+           "  redis.call('PEXPIRE', KEYS[1], math.ceil(window / 1000) + 1)\n" +
+           "end\n" +
+           "local first = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')\n" +
+           "return {wait, limit - n, tonumber(first[2]) - floor}\n";
 }
 
 // Whole seconds until `wait_ns` has passed, never below 1: a
@@ -147,9 +211,56 @@ impl RateLimiter {
         return RateCheck { wait: wait, remaining: remaining, reset: reset };
     }
 
+    // One check of `key` now: shared when the limiter is, falling back
+    // to this process's count when Redis does not answer.
+    pub fn check(self: RateLimiter, key: str) -> RateCheck {
+        guard let p = self.remote else {
+            return self.check_at(key, time.mono() as int);
+        }
+        let r = self.check_shared(p, key);
+        guard let rc = r else {
+            mutex_lock(self.fallback_lock);
+            self.fallbacks = self.fallbacks + 1;
+            mutex_unlock(self.fallback_lock);
+            return self.check_at(key, time.mono() as int);
+        }
+        return rc;
+    }
+
+    fn check_shared(self: RateLimiter, p: redis.Pool, key: str) -> result[RateCheck, str] {
+        let dl = until_of(time.mono() + self.timeout);
+        let mr = crypto.rand(16);
+        guard let member = mr else let e = err_of(mr) {
+            return err(e);
+        }
+        let cr = redis.acquire(p, dl);
+        guard let conn = cr else let e = err_of(cr) {
+            return err(e);
+        }
+        let window_us = self.window / 1000;
+        if window_us < 1 {
+            window_us = 1;
+        }
+        let rr = redis.evalsha(conn, rate_script(), ["zokor:rate:" + self.name + ":" + key],
+                               [to_bytes(to_str(window_us)), to_bytes(to_str(self.limit)),
+                                to_bytes(encoding.hex_encode(member))], dl);
+        redis.release(p, conn);
+        guard let reply = rr else let e = err_of(rr) {
+            return err(e);
+        }
+        if len(reply.items) != 3 {
+            return err("rate script: unexpected reply");
+        }
+        return ok(RateCheck {
+            wait: reply.items[0].num * 1000,
+            remaining: reply.items[1].num,
+            reset: reply.items[2].num * 1000
+        });
+    }
+
     // The same, now.
     pub fn take(self: RateLimiter, key: str) -> int {
-        return self.take_at(key, time.mono() as int);
+        return self.check(key).wait;
     }
 
     // How many client keys are being tracked.
@@ -194,7 +305,7 @@ pub fn rate_limit[S](c: Ctx[S], l: RateLimiter, key: str) -> opt[http.Response] 
     if len(k) == 0 {
         k = "anonymous";
     }
-    let rc = l.check_at(k, time.mono() as int);
+    let rc = l.check(k);
     let limit = to_str(l.limit);
     let reset = to_str(retry_after_secs(rc.reset));
     if rc.wait == 0 {

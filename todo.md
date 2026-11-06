@@ -107,6 +107,14 @@ library, made and merged there first.
   rotation, aud/iss, leeway), `basic_credentials`/`basic_matches`,
   `api_keys_from`/`api_key_client`. Password hashing is still a pointer to
   dolphlabs/argon, not a helper here.
+- [x] **Shared state across instances** (2026-11-06, feat/shared-state):
+  `rate_limiter_redis` runs the sliding log in an atomic script on Redis's
+  clock and falls back to a local count when Redis does not answer;
+  `token_store_redis` keeps only token hashes and refuses when Redis is
+  gone; `hub.share` relays sends over Redis pub/sub through a bounded queue,
+  so a send still never waits. Not done: pub/sub is at most once, rooms and
+  counts stay per instance, and a Redis that hangs adds `timeout` to every
+  rate-limited request.
 - [x] **Rate limiter, finished**: `RateLimiter`/`rate_limit` exist
   (sliding window, per key, time injected via `take_at`, `429` +
   `Retry-After`). Still owed: sharding, `RateLimit-*` headers, and keying
