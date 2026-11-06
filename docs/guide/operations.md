@@ -401,9 +401,11 @@ let r = zokor.transaction(c.state.db, user, create_user, deadline);
 - **Limits.** `jobs.max_running` (16) caps runs held at once, `jobs.poll_every`
   (1 s) sets how often the table is checked, which is the delay a new job can
   wait, and `jobs.store_timeout` (5 s) bounds each call to it.
-- **Not covered.** Cron schedules: `every` still runs on each instance that
-  registers it, so give a schedule to one instance, or make it enqueue work
-  that a job id de-duplicates.
+- **Cron on several instances.** Once a queue is durable, one turn of a schedule
+  runs once, on whichever instance reaches it first, kept honest by a row in
+  `zokor_job_turns`. If that row cannot be written, the turn is skipped and
+  logged: a missed digest is a smaller problem than one sent twice. An `every`
+  without `durable` still runs on each instance that registers it.
 
 ## Errors
 

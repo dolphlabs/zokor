@@ -247,8 +247,8 @@ library, made and merged there first.
   LOCKED` under a lease, writes after a claim are fenced on worker and
   attempt, attempts are counted at the claim so a crash loop ends, and a job
   out of attempts stays with `dead_at` and `last_error`. At least once.
-  Not done: `every` still runs on each instance that registers it, so a
-  cron job fires once per replica; no lease heartbeat, so a run that
+  A durable queue also runs each cron turn once across instances, through
+  `zokor_job_turns`. Not done: no lease heartbeat, so a run that
   ignores its deadline past timeout + 30 s runs twice; no LISTEN/NOTIFY, so
   a new job waits up to `poll_every`; `retry_dead` is SQL in the README.
 - [x] **OpenAPI**: generate a startup OpenAPI 3.1.1 document from
