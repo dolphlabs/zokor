@@ -22,7 +22,9 @@ gen() {
 # `self` is omitted. Times are int nanoseconds, statuses i32.
 # Recipes: docs/llms-small.txt.
 HEAD
-    for f in "$ROOT"/zokor/*.sl; do
+    # Sorted by bytes: a glob's order follows the locale, and this file has
+    # to come out the same on every machine that checks it.
+    printf '%s\n' "$ROOT"/zokor/*.sl | LC_ALL=C sort | while IFS= read -r f; do
         case "$f" in *_test.sl) continue ;; esac
         awk -v file="$(basename "$f")" '
         function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
