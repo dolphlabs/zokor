@@ -385,12 +385,57 @@ and custom renderers receive it in `ErrorView.trace_id`. The startup
 registry remains shared and is never mutated per request. Use
 `trace_registry(registry, context)` for errors outside a handler.
 
-Sampling is propagated as a flag; this feature supplies context and
-correlation, without exporting spans. Entropy failures return an error
-from propagation helpers and a registered 500 from request dispatch.
+Entropy failures return an error from propagation helpers and a registered
+500 from request dispatch.
 Tracing off creates no per-request context, registry or locals map.
 Idempotent replays retain the original response body, including its
 original error trace id; the replay's request log records the new trace.
+
+**Exporting spans.** To see a request's path through your services, send spans
+to anything that takes OTLP/HTTP: Jaeger, Tempo, Datadog's agent, Honeycomb.
+
+```slang
+let cfg = zokor.trace_config();
+cfg.sample_ratio = 0.1;                       // a tenth of new traces
+let tr = zokor.new_tracer(cfg);
+guard let tracer = tr else let e = err_of(tr) { println(e); exit(1); }
+r.tracing(tracer);
+
+// OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_SERVICE_NAME, OTEL_EXPORTER_OTLP_HEADERS
+let er = zokor.span_exporter_from(config);
+guard let spans = er else let e = err_of(er) { println(e); exit(1); }
+r.export_spans(spans);
+// ... and after listen_and_serve returns:
+spans.flush(5000000000);
+```
+
+Every sampled request is then a server span, and spans of your own go inside it:
+
+```slang
+let sp = c.state.spans.start(c.trace(), "charge card");
+sp.attr("provider", "stripe");
+// ...
+sp.finish();
+```
+
+Send outbound calls with `traced_send(spans, c.trace(), request, deadline)`. It
+records the call as a client span and tells the next service so, which is what
+joins two services into one trace. `trace_request` alone passes the trace on,
+but under a span nobody records, so the tree has a hole there.
+
+- **Sampling.** `sample_ratio` (0.0 unless set) decides for new traces, from the
+  trace id, so every service with the same ratio agrees. A request that arrives
+  with a parent follows its parent. Tracing without a ratio exports nothing.
+- **What is sent.** A span is named for the route pattern, never the path, so an
+  id in a URL stays out of it. A client span carries only the URL's host, since
+  a URL can hold a secret. `sp.attr` and `sp.fail` send what you give them.
+- **A span never costs a request.** A finished span goes on a bounded queue and a
+  task sends batches of up to `max_batch` (512) every `flush_every` (5 s). A slow
+  collector fills the queue (`max_queue`, 2048), then spans are dropped. Nothing
+  retries. `spans.stats()` gives `sent`, `dropped` and `failed`.
+- **At exit.** Call `flush(timeout)`, or the last batch is lost.
+- **Not covered.** Static routes, which skip tracing by design, make no span, and
+  background jobs start no trace of their own: pass a context in by hand.
 
 ## OpenAPI
 
