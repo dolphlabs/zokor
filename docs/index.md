@@ -100,6 +100,7 @@ declare, and every handler receives it.
 | `csrf_guard`, `csrf_check` | cross-site request forgery: refuses cross-origin writes from browsers, with no tokens in your pages |
 | `hash_password`, `check_password` | Argon2id password hashes, in the standard PHC format |
 | `new_jobs`, `every`, `handle`, `enqueue` | background jobs: cron schedules in a time zone, a retrying in-memory queue |
+| `new_jobs`, `every`, `handle`, `enqueue` | background jobs: cron schedules in a time zone, a retrying in-memory or Postgres queue |
 | `preconditions`, `etag_of`, `r.etags()` | conditional requests: `304 Not Modified`, `412` on a lost update, ETag and Last-Modified |
 | `redis_from_config` | a Redis pool from `REDIS_URL`, optional by default |
 | `ServerConfig`, `listen_and_serve_with` | idle/header/body/write timeouts, safe defaults, all overridable |
