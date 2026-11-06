@@ -21,7 +21,7 @@ fn jd_live(test: str) -> opt[pg.Pool] {
         println("skip " + test + " (" + e + ")");
         return none;
     }
-    let dropped = pg.pool_exec(p, "drop table if exists zokor_jobs", jd_dl());
+    let dropped = pg.pool_exec(p, "drop table if exists zokor_jobs; drop table if exists zokor_job_turns", jd_dl());
     guard let _d = dropped else let e = err_of(dropped) {
         println("skip " + test + " (" + e + ")");
         return none;
@@ -84,7 +84,7 @@ fn jd_tx_body(c: pg.Conn, n: JdNew) -> result[int, str] {
 
 fn test_durable_refuses_a_missing_table_and_names_the_fix() {
     guard let p = jd_live("test_durable_refuses_a_missing_table_and_names_the_fix") else { return; }
-    assert((pg.pool_exec(p, "drop table zokor_jobs", jd_dl()) ?? -1) >= 0);
+    assert((pg.pool_exec(p, "drop table zokor_jobs; drop table zokor_job_turns", jd_dl()) ?? -1) >= 0);
     let j = new_jobs(js_state());
     let r = j.durable(p);
     guard let _x = r else let e = err_of(r) {
@@ -97,7 +97,7 @@ fn test_durable_refuses_a_missing_table_and_names_the_fix() {
 
 fn test_jobs_schema_applies_as_a_migration() {
     guard let p = jd_live("test_jobs_schema_applies_as_a_migration") else { return; }
-    assert((pg.pool_exec(p, "drop table zokor_jobs; drop table if exists zokor_schema_migrations",
+    assert((pg.pool_exec(p, "drop table zokor_jobs; drop table zokor_job_turns; drop table if exists zokor_schema_migrations",
                          jd_dl()) ?? -1) >= 0);
     let r = migrate(p, [new_migration(1, "1_zokor_jobs.sql", jobs_schema())], jd_dl());
     guard let n = r else let e = err_of(r) {
@@ -411,6 +411,82 @@ fn test_durable_scheduler_runs_jobs_on_its_own() {
     j.stop();
     assert(j.wait_runs(5000000000));
     pg_close(p);
+}
+
+// The reason this table exists: a schedule on two replicas, one run.
+fn test_durable_schedule_runs_each_turn_once_across_instances() {
+    guard let p = jd_live("test_durable_schedule_runs_each_turn_once_across_instances") else { return; }
+    assert((pg.pool_exec(p, "truncate zokor_job_turns", jd_dl()) ?? -1) >= 0);
+    let s = js_state();
+    let a = jd_jobs(p, s);
+    let b = jd_jobs(p, s);
+    assert((a.every("digest", "* * * * *", js_record, timez.SECOND) ?? 0) == 1);
+    assert((b.every("digest", "* * * * *", js_record, timez.SECOND) ?? 0) == 1);
+    let t0 = timez.unix(1700000000);
+    a.tick(t0);
+    b.tick(t0);
+    let turn = t0.add(2 * timez.MINUTE);
+    a.tick(turn);
+    b.tick(turn);
+    assert(a.wait_runs(5000000000) && b.wait_runs(5000000000));
+    assert(len(js_seen(s)) == 1);
+    let later = turn.add(2 * timez.MINUTE);
+    a.tick(later);
+    b.tick(later);
+    assert(a.wait_runs(5000000000) && b.wait_runs(5000000000));
+    assert(len(js_seen(s)) == 2);
+    pg_close(p);
+}
+
+// Different jobs at the same instant are different turns.
+fn test_durable_schedule_turns_are_kept_apart_by_name() {
+    guard let p = jd_live("test_durable_schedule_turns_are_kept_apart_by_name") else { return; }
+    assert((pg.pool_exec(p, "truncate zokor_job_turns", jd_dl()) ?? -1) >= 0);
+    let s = js_state();
+    let j = jd_jobs(p, s);
+    assert((j.every("one", "* * * * *", js_record, timez.SECOND) ?? 0) == 1);
+    assert((j.every("two", "* * * * *", js_record, timez.SECOND) ?? 0) == 2);
+    let t0 = timez.unix(1700000000);
+    j.tick(t0);
+    j.tick(t0.add(2 * timez.MINUTE));
+    assert(j.wait_runs(5000000000));
+    assert(len(js_seen(s)) == 2);
+    pg_close(p);
+}
+
+fn test_durable_schedule_skips_a_turn_it_cannot_claim() {
+    guard let p = jd_live("test_durable_schedule_skips_a_turn_it_cannot_claim") else { return; }
+    let s = js_state();
+    let j = jd_jobs(p, s);
+    assert((j.every("digest", "* * * * *", js_record, timez.SECOND) ?? 0) == 1);
+    assert((pg.pool_exec(p, "drop table zokor_job_turns", jd_dl()) ?? -1) >= 0);
+    let t0 = timez.unix(1700000000);
+    j.tick(t0);
+    j.tick(t0.add(2 * timez.MINUTE));
+    assert(j.wait_runs(5000000000));
+    assert(len(js_seen(s)) == 0);
+    assert(j.running() == 0);
+    pg_close(p);
+}
+
+fn test_durable_schedule_old_turns_are_pruned() {
+    guard let p = jd_live("test_durable_schedule_old_turns_are_pruned") else { return; }
+    assert((pg.pool_exec(p, "truncate zokor_job_turns;" +
+        " insert into zokor_job_turns (name, due) values ('digest', now() - interval '8 days')",
+        jd_dl()) ?? -1) >= 0);
+    let won = claim_turn(p, "digest", timez.now(), jd_dl());
+    assert(won ?? false);
+    let r: result[opt[JobCount], str] = query_one(p,
+        "select count(*) as n from zokor_job_turns", jd_no_args(), jd_dl());
+    guard let row = r else { assert(false); return; }
+    guard let c = row else { assert(false); return; }
+    assert(c.n == 1);
+    pg_close(p);
+}
+
+fn jd_no_args() -> [pg.Arg] {
+    let none_here: [pg.Arg] = [];
+    return none_here;
 }
 
 fn test_durable_error_text_is_capped_without_splitting_a_character() {

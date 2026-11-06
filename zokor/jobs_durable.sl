@@ -36,8 +36,13 @@
 //     a rolling deploy, the instance that knows it takes it.
 //
 // Every clock here is the database's, so instances need not agree on the
-// time. Cron schedules are not covered: `every` still runs on each
-// instance that registers it.
+// time.
+//
+// Durable also means one turn of a cron schedule runs once, on whichever
+// instance gets there first: without this, `every` fires once per replica.
+// A turn's due time is the same instant everywhere, so it is the key.
+// If that claim cannot be made, the turn is skipped and logged: a missed
+// digest is a smaller problem than one sent to everyone twice.
 
 import "builder";
 import "pg";
@@ -86,7 +91,12 @@ pub fn jobs_schema() -> str {
            "    last_error text,\n" +
            "    created_at timestamptz not null default now()\n" +
            ");\n" +
-           "create index zokor_jobs_ready on zokor_jobs (run_at, id) where dead_at is null;\n";
+           "create index zokor_jobs_ready on zokor_jobs (run_at, id) where dead_at is null;\n" +
+           "create table zokor_job_turns (\n" +
+           "    name text not null,\n" +
+           "    due timestamptz not null,\n" +
+           "    primary key (name, due)\n" +
+           ");\n";
 }
 
 fn insert_sql() -> str {
@@ -116,8 +126,8 @@ fn inserted_id(kind: str, r: result[opt[JobId], str]) -> result[int, str] {
 
 // The likely first failure of a new service, named with its fix.
 fn job_store_problem(e: str) -> str {
-    if contains(e, "zokor_jobs") && contains(e, "does not exist") {
-        return "the zokor_jobs table does not exist; apply zokor.jobs_schema() in a migration";
+    if (contains(e, "zokor_jobs") || contains(e, "zokor_job_turns")) && contains(e, "does not exist") {
+        return "the job tables do not exist; apply zokor.jobs_schema() in a migration";
     }
     return e;
 }
@@ -139,6 +149,33 @@ pub fn enqueue_tx(c: pg.Conn, kind: str, payload: str, at: timez.Time,
         return err("job " + kind + ": the insert returned no row");
     }
     return ok(rows[0].id);
+}
+
+// Whether this instance won one turn of a schedule. The row only has to
+// outlive any instance's chance of reaching the same turn, so old ones go
+// when a new one is won.
+fn claim_turn(db: pg.Pool, name: str, due: timez.Time, deadline: until) -> result[bool, str] {
+    let r: result[[JobTurn], str] = query_all(db,
+        "insert into zokor_job_turns (name, due) values ($1, $2)" +
+        " on conflict do nothing returning name",
+        [pg.arg_text(name), pg.arg_time(due)], deadline);
+    guard let won = r else let e = err_of(r) {
+        return err(job_store_problem(e));
+    }
+    if len(won) == 0 {
+        return ok(false);
+    }
+    let pr: result[[JobTurn], str] = query_all(db,
+        "delete from zokor_job_turns where name = $1 and due < $2::timestamptz - interval '7 days'" +
+        " returning name", [pg.arg_text(name), pg.arg_time(due)], deadline);
+    guard let _p = pr else {
+        return ok(true);
+    }
+    return ok(true);
+}
+
+struct JobTurn {
+    name: str,
 }
 
 fn interval_ms(ns: int) -> pg.Arg {

@@ -899,7 +899,8 @@ SQL is `zokor.jobs_schema()`; put it in a migration), where it survives
 restarts and instances share it. Then `zokor.enqueue_tx(conn, kind, payload,
 at, deadline)` queues inside a `transaction` body. Durable jobs run at least
 once, so make them safe to repeat, keyed on `c.job_id`; out of attempts
-leaves the row with `dead_at` set.
+leaves the row with `dead_at` set. Durable also runs each `every` turn once
+across instances.
 
 Browser login: `let sr = zokor.session_start(c, c.state.sessions, user_id);`
 then `zokor.session_cookie(resp, c.state.sessions, s)`; `session_require(c,

@@ -660,7 +660,29 @@ fn job_outcome[S](run: fn(JobCtx[S]) -> result[int, str], c: JobCtx[S]) -> str {
     return "";
 }
 
+// Whether this instance runs this turn: always, unless the queue is durable
+// and another instance got there first.
+fn takes_turn[S](js: Jobs[S], name: str, due: timez.Time) -> bool {
+    guard let db = js.store else {
+        return true;
+    }
+    let r = claim_turn(db, name, due, js.store_deadline());
+    guard let won = r else let e = err_of(r) {
+        js.logger.error("Jobs", name + ": could not claim the turn at " + due.rfc3339() +
+                        ", skipped: " + e);
+        return false;
+    }
+    return won;
+}
+
 fn run_scheduled[S](js: Jobs[S], j: ScheduledJob[S], c: JobCtx[S]) {
+    if !takes_turn(js, j.name, c.due) {
+        mutex_lock(js.lock);
+        j.running = false;
+        mutex_unlock(js.lock);
+        js.finished(false);
+        return;
+    }
     let why = job_outcome(j.run, c);
     if len(why) > 0 {
         js.logger.error("Jobs", j.name + " failed: " + why);
