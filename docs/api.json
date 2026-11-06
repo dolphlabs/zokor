@@ -539,6 +539,16 @@
       ]
     },
     {
+      "file": "hub_relay.sl",
+      "description": "A Hub across instances.",
+      "items": [
+        {
+          "signature": "struct RelayLosses { dropped: int, lost: int, malformed: int, reconnects: int }",
+          "description": ""
+        }
+      ]
+    },
+    {
       "file": "idempotency.sl",
       "description": "Idempotency keys (the IETF Idempotency-Key header): a client retrying a POST or PATCH after a timeout gets the first answer...",
       "items": [
@@ -1341,12 +1351,16 @@
           "description": ""
         },
         {
-          "signature": "gc struct RateLimiter { limit: int, window: int, shards: [RateShard], sweep_every: int }",
+          "signature": "gc struct RateLimiter { limit: int, window: int, shards: [RateShard], sweep_every: int, remote: opt[redis.Pool], name: str, timeout: int, fallbacks: int, fallback_lock: mutex }",
           "description": ""
         },
         {
           "signature": "new_rate_limiter(limit: int, window_ns: int) -> RateLimiter",
           "description": "At most `limit` requests per client in any `window_ns` nanoseconds (1000000000 is one second)."
+        },
+        {
+          "signature": "rate_limiter_redis(p: redis.Pool, name: str, limit: int, window_ns: int) -> RateLimiter",
+          "description": "The same limit shared by every instance, counted in Redis."
         },
         {
           "signature": "retry_after_secs(wait_ns: int) -> int",
@@ -1363,6 +1377,10 @@
         {
           "signature": "RateLimiter.check_at(key: str, now: int) -> RateCheck",
           "description": "take_at, with what is left: what the RateLimit-* headers report."
+        },
+        {
+          "signature": "RateLimiter.check(key: str) -> RateCheck",
+          "description": "One check of `key` now: shared when the limiter is, falling back to this process's count when Redis does not answer."
         },
         {
           "signature": "RateLimiter.take(key: str) -> int",
@@ -2115,7 +2133,7 @@
           "description": ""
         },
         {
-          "signature": "gc struct Hub { id: str, lock: mutex, sockets: map[str]Socket, rooms: map[str]map[str]bool }",
+          "signature": "gc struct Hub { id: str, lock: mutex, sockets: map[str]Socket, rooms: map[str]map[str]bool, relay: opt[HubRelay] }",
           "description": "Sockets by id, and rooms of them: what a chat, a live dashboard or a notification fan-out needs to reach more than the one..."
         },
         {
@@ -2177,6 +2195,18 @@
         {
           "signature": "Hub.emit_binary_to_room(room: str, namespace: str, name: str, args_json: str, data: [bytes], except: str) -> int",
           "description": "emit_binary to every Socket.IO session in a room (\"\" for the hub)."
+        },
+        {
+          "signature": "Hub.share(url: str, channel: str) -> result[int, str]",
+          "description": "Joins this hub to `channel` on the Redis at `url`: everything sent on any hub sharing that channel reaches every instance's..."
+        },
+        {
+          "signature": "Hub.unshare() -> int",
+          "description": "Stops sharing; this hub is in-process again."
+        },
+        {
+          "signature": "Hub.relay_losses() -> RelayLosses",
+          "description": "What this hub's sharing has lost, for a metric: messages dropped because Redis could not keep up, failed to publish, or..."
         }
       ]
     },
@@ -2271,12 +2301,16 @@
       "description": "Opaque bearer tokens.",
       "items": [
         {
-          "signature": "gc struct TokenStore { subjects: map[str]str, expires: map[str]int, ttl: int, lock: mutex, since_sweep: int }",
+          "signature": "gc struct TokenStore { subjects: map[str]str, expires: map[str]int, ttl: int, lock: mutex, since_sweep: int, remote: opt[redis.Pool], timeout: int }",
           "description": ""
         },
         {
           "signature": "new_token_store(ttl_ns: int) -> TokenStore",
           "description": "`ttl_ns` is how long a token stays valid after it is issued, in nanoseconds; 0 means until it is revoked."
+        },
+        {
+          "signature": "token_store_redis(p: redis.Pool, ttl_ns: int) -> TokenStore",
+          "description": "The same store in Redis, shared by every instance behind the balancer."
         },
         {
           "signature": "new_token() -> result[str, str]",
@@ -2308,7 +2342,7 @@
         },
         {
           "signature": "TokenStore.count() -> int",
-          "description": "How many tokens are held (expired ones count until swept)."
+          "description": "How many tokens this process holds (expired ones count until swept)."
         },
         {
           "signature": "bearer_subject[S](c: Ctx[S], store: TokenStore) -> opt[str]",

@@ -96,6 +96,7 @@ declare, and every handler receives it.
 | `r.compress(compression())` | gzip for clients that accept it, on bodies worth it |
 | `r.idempotency(store)` | idempotency keys: a retried POST gets the first answer, in memory or Redis |
 | `page_of`, `offset_page`, `cursor_page` | pagination: offset or keyset pages, one envelope, `Link` headers |
+| `rate_limiter_redis`, `token_store_redis`, `hub.share` | one limit, one token store and one set of sockets across every instance, over Redis |
 | `new_jobs`, `every`, `handle`, `enqueue` | background jobs: cron schedules in a time zone, a retrying in-memory queue |
 | `preconditions`, `etag_of`, `r.etags()` | conditional requests: `304 Not Modified`, `412` on a lost update, ETag and Last-Modified |
 | `redis_from_config` | a Redis pool from `REDIS_URL`, optional by default |

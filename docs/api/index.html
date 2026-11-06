@@ -49,7 +49,7 @@
 <div class="page">
   <article class="content">
 <header class="page-head"><p class="page-kicker">Zokor documentation</p><h1>API reference</h1><p class="tagline">Browse public Zokor types, functions, and methods, with signatures and descriptions generated from the source package.</p><p class="agentline"><a href="../api/index.md">Markdown</a> · <a href="../llms.txt">llms.txt</a> · <a href="../api.json">api.json</a></p></header>
-<p>The public package surface contains 593 entries across 38 source files. This page is generated from <code>docs/api.txt</code>, which is generated from <code>zokor/</code>.</p>
+<p>The public package surface contains 600 entries across 39 source files. This page is generated from <code>docs/api.txt</code>, which is generated from <code>zokor/</code>.</p>
 <section class="api-module"><h2 id="auth-sl">auth.sl<a class="anchor" href="#auth-sl" aria-label="Link to this section">#</a></h2>
 <p class="api-module-description">Authentication helpers: bearer JWTs, Basic credentials and API keys.</p>
 <div class="api-item" id="auth-sl-gc"><code>gc struct JwtAuth { keys: [bytes], audience: str, issuer: str, leeway: int }</code></div>
@@ -198,6 +198,10 @@
 <div class="api-item" id="health-sl-gc-2"><code>gc struct Readiness[S] { live_path: str, ready_path: str, checks: [ReadyCheck[S]], timeout: int, logger: Logger }</code></div>
 <div class="api-item" id="health-sl-default-ready-timeout"><code>default_ready_timeout() -&gt; int</code><p>0.9s: inside Kubernetes&#x27; default 1s probe timeout, so a slow dependency is answered as a 503 naming it rather than as a probe...</p></div>
 <div class="api-item" id="health-sl-check-name-ok"><code>check_name_ok(name: str) -&gt; bool</code><p>A check name is 1-64 of [A-Za-z0-9_.-]: it is written into the JSON body and to stderr as is.</p></div>
+</section>
+<section class="api-module"><h2 id="hub-relay-sl">hub_relay.sl<a class="anchor" href="#hub-relay-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">A Hub across instances.</p>
+<div class="api-item" id="hub-relay-sl-struct"><code>struct RelayLosses { dropped: int, lost: int, malformed: int, reconnects: int }</code></div>
 </section>
 <section class="api-module"><h2 id="idempotency-sl">idempotency.sl<a class="anchor" href="#idempotency-sl" aria-label="Link to this section">#</a></h2>
 <p class="api-module-description">Idempotency keys (the IETF Idempotency-Key header): a client retrying a POST or PATCH after a timeout gets the first answer...</p>
@@ -417,12 +421,14 @@
 <section class="api-module"><h2 id="ratelimit-sl">ratelimit.sl<a class="anchor" href="#ratelimit-sl" aria-label="Link to this section">#</a></h2>
 <p class="api-module-description">Rate limiting.</p>
 <div class="api-item" id="ratelimit-sl-gc"><code>gc struct RateShard { hits: map[str][int], lock: mutex, since_sweep: int }</code></div>
-<div class="api-item" id="ratelimit-sl-gc-2"><code>gc struct RateLimiter { limit: int, window: int, shards: [RateShard], sweep_every: int }</code></div>
+<div class="api-item" id="ratelimit-sl-gc-2"><code>gc struct RateLimiter { limit: int, window: int, shards: [RateShard], sweep_every: int, remote: opt[redis.Pool], name: str, timeout: int, fallbacks: int, fallback_lock: mutex }</code></div>
 <div class="api-item" id="ratelimit-sl-new-rate-limiter"><code>new_rate_limiter(limit: int, window_ns: int) -&gt; RateLimiter</code><p>At most <code>limit</code> requests per client in any <code>window_ns</code> nanoseconds (1000000000 is one second).</p></div>
+<div class="api-item" id="ratelimit-sl-rate-limiter-redis"><code>rate_limiter_redis(p: redis.Pool, name: str, limit: int, window_ns: int) -&gt; RateLimiter</code><p>The same limit shared by every instance, counted in Redis.</p></div>
 <div class="api-item" id="ratelimit-sl-retry-after-secs"><code>retry_after_secs(wait_ns: int) -&gt; int</code><p>Whole seconds until <code>wait_ns</code> has passed, never below 1: a Retry-After of 0 invites an immediate retry that will be refused.</p></div>
 <div class="api-item" id="ratelimit-sl-struct"><code>struct RateCheck { wait: int, remaining: int, reset: int }</code><p>One check&#x27;s answer, for the RateLimit-* headers.</p></div>
 <div class="api-item" id="ratelimit-sl-ratelimiter-take-at"><code>RateLimiter.take_at(key: str, now: int) -&gt; int</code><p>Counts one request for <code>key</code> at <code>now</code> (time.mono nanoseconds).</p></div>
 <div class="api-item" id="ratelimit-sl-ratelimiter-check-at"><code>RateLimiter.check_at(key: str, now: int) -&gt; RateCheck</code><p>take_at, with what is left: what the RateLimit-* headers report.</p></div>
+<div class="api-item" id="ratelimit-sl-ratelimiter-check"><code>RateLimiter.check(key: str) -&gt; RateCheck</code><p>One check of <code>key</code> now: shared when the limiter is, falling back to this process&#x27;s count when Redis does not answer.</p></div>
 <div class="api-item" id="ratelimit-sl-ratelimiter-take"><code>RateLimiter.take(key: str) -&gt; int</code><p>The same, now.</p></div>
 <div class="api-item" id="ratelimit-sl-ratelimiter-tracked"><code>RateLimiter.tracked() -&gt; int</code><p>How many client keys are being tracked.</p></div>
 <div class="api-item" id="ratelimit-sl-rate-limit-s"><code>rate_limit[S](c: Ctx[S], l: RateLimiter, key: str) -&gt; opt[http.Response]</code><p>The body of a rate-limiting <code>before</code>: <code>none</code> to continue, or the registered <code>rate_limited</code> failure (429 unless re-registered)...</p></div>
@@ -624,7 +630,7 @@
 <div class="api-item" id="socket-sl-socket-is-open"><code>Socket.is_open() -&gt; bool</code></div>
 <div class="api-item" id="socket-sl-socket-local"><code>Socket.local(key: str) -&gt; str</code><p>A value the handshake&#x27;s hooks set on the request, &quot;&quot; when none did.</p></div>
 <div class="api-item" id="socket-sl-socket-set-local"><code>Socket.set_local(key: str, v: str) -&gt; int</code></div>
-<div class="api-item" id="socket-sl-gc-2"><code>gc struct Hub { id: str, lock: mutex, sockets: map[str]Socket, rooms: map[str]map[str]bool }</code><p>Sockets by id, and rooms of them: what a chat, a live dashboard or a notification fan-out needs to reach more than the one...</p></div>
+<div class="api-item" id="socket-sl-gc-2"><code>gc struct Hub { id: str, lock: mutex, sockets: map[str]Socket, rooms: map[str]map[str]bool, relay: opt[HubRelay] }</code><p>Sockets by id, and rooms of them: what a chat, a live dashboard or a notification fan-out needs to reach more than the one...</p></div>
 <div class="api-item" id="socket-sl-new-hub"><code>new_hub() -&gt; Hub</code></div>
 <div class="api-item" id="socket-sl-hub-add"><code>Hub.add(s: Socket) -&gt; int</code></div>
 <div class="api-item" id="socket-sl-hub-remove"><code>Hub.remove(s: Socket) -&gt; int</code><p>Takes the socket out of the hub and every room in it.</p></div>
@@ -640,6 +646,9 @@
 <div class="api-item" id="socket-sl-hub-emit-all"><code>Hub.emit_all(namespace: str, name: str, args_json: str, except: str) -&gt; int</code><p>Socket.IO: one event to every Socket.IO session in the hub, encoded once.</p></div>
 <div class="api-item" id="socket-sl-hub-emit-to-room"><code>Hub.emit_to_room(room: str, namespace: str, name: str, args_json: str, except: str) -&gt; int</code></div>
 <div class="api-item" id="socket-sl-hub-emit-binary-to-room"><code>Hub.emit_binary_to_room(room: str, namespace: str, name: str, args_json: str, data: [bytes], except: str) -&gt; int</code><p>emit_binary to every Socket.IO session in a room (&quot;&quot; for the hub).</p></div>
+<div class="api-item" id="socket-sl-hub-share"><code>Hub.share(url: str, channel: str) -&gt; result[int, str]</code><p>Joins this hub to <code>channel</code> on the Redis at <code>url</code>: everything sent on any hub sharing that channel reaches every instance&#x27;s...</p></div>
+<div class="api-item" id="socket-sl-hub-unshare"><code>Hub.unshare() -&gt; int</code><p>Stops sharing; this hub is in-process again.</p></div>
+<div class="api-item" id="socket-sl-hub-relay-losses"><code>Hub.relay_losses() -&gt; RelayLosses</code><p>What this hub&#x27;s sharing has lost, for a metric: messages dropped because Redis could not keep up, failed to publish, or...</p></div>
 </section>
 <section class="api-module"><h2 id="testkit-sl">testkit.sl<a class="anchor" href="#testkit-sl" aria-label="Link to this section">#</a></h2>
 <p class="api-module-description">Building a request, and reading a response.</p>
@@ -666,8 +675,9 @@
 </section>
 <section class="api-module"><h2 id="tokens-sl">tokens.sl<a class="anchor" href="#tokens-sl" aria-label="Link to this section">#</a></h2>
 <p class="api-module-description">Opaque bearer tokens.</p>
-<div class="api-item" id="tokens-sl-gc"><code>gc struct TokenStore { subjects: map[str]str, expires: map[str]int, ttl: int, lock: mutex, since_sweep: int }</code></div>
+<div class="api-item" id="tokens-sl-gc"><code>gc struct TokenStore { subjects: map[str]str, expires: map[str]int, ttl: int, lock: mutex, since_sweep: int, remote: opt[redis.Pool], timeout: int }</code></div>
 <div class="api-item" id="tokens-sl-new-token-store"><code>new_token_store(ttl_ns: int) -&gt; TokenStore</code><p><code>ttl_ns</code> is how long a token stays valid after it is issued, in nanoseconds; 0 means until it is revoked.</p></div>
+<div class="api-item" id="tokens-sl-token-store-redis"><code>token_store_redis(p: redis.Pool, ttl_ns: int) -&gt; TokenStore</code><p>The same store in Redis, shared by every instance behind the balancer.</p></div>
 <div class="api-item" id="tokens-sl-new-token"><code>new_token() -&gt; result[str, str]</code><p>32 random bytes as 64 lowercase hex characters.</p></div>
 <div class="api-item" id="tokens-sl-tokenstore-issue"><code>TokenStore.issue(subject: str) -&gt; result[str, str]</code><p>A new token for <code>subject</code>.</p></div>
 <div class="api-item" id="tokens-sl-tokenstore-issue-at"><code>TokenStore.issue_at(subject: str, now: int) -&gt; result[str, str]</code></div>
@@ -675,7 +685,7 @@
 <div class="api-item" id="tokens-sl-tokenstore-lookup-at"><code>TokenStore.lookup_at(token: str, now: int) -&gt; opt[str]</code></div>
 <div class="api-item" id="tokens-sl-tokenstore-revoke"><code>TokenStore.revoke(token: str) -&gt; bool</code><p>Ends one token (logout).</p></div>
 <div class="api-item" id="tokens-sl-tokenstore-revoke-subject"><code>TokenStore.revoke_subject(subject: str) -&gt; int</code><p>Ends every token issued to <code>subject</code> (&quot;log out everywhere&quot;, a password change).</p></div>
-<div class="api-item" id="tokens-sl-tokenstore-count"><code>TokenStore.count() -&gt; int</code><p>How many tokens are held (expired ones count until swept).</p></div>
+<div class="api-item" id="tokens-sl-tokenstore-count"><code>TokenStore.count() -&gt; int</code><p>How many tokens this process holds (expired ones count until swept).</p></div>
 <div class="api-item" id="tokens-sl-bearer-subject-s"><code>bearer_subject[S](c: Ctx[S], store: TokenStore) -&gt; opt[str]</code><p>The subject behind the request&#x27;s <code>Authorization: Bearer &lt;token&gt;</code>, or none when the header is missing or the token is not live.</p></div>
 </section>
 <section class="api-module"><h2 id="tracing-sl">tracing.sl<a class="anchor" href="#tracing-sl" aria-label="Link to this section">#</a></h2>

@@ -202,6 +202,9 @@ default_ready_timeout() -> int
 check_name_ok(name: str) -> bool
     A check name is 1-64 of [A-Za-z0-9_.-]: it is written into the JSON body and to stderr as is.
 
+## hub_relay.sl -- A Hub across instances.
+struct RelayLosses { dropped: int, lost: int, malformed: int, reconnects: int }
+
 ## idempotency.sl -- Idempotency keys (the IETF Idempotency-Key header): a client retrying a POST or PATCH after a timeout gets the first answer...
 gc struct Idempotency { ttl: int, lock_ttl: int, max_body: int, scope_local: str, required: bool, shards: [IdemShard], remote: opt[redis.Pool] }
 idempotency_in_memory() -> Idempotency
@@ -502,9 +505,11 @@ db_failure(reg: Registry, e: str, request_id: str) -> http.Response
 
 ## ratelimit.sl -- Rate limiting.
 gc struct RateShard { hits: map[str][int], lock: mutex, since_sweep: int }
-gc struct RateLimiter { limit: int, window: int, shards: [RateShard], sweep_every: int }
+gc struct RateLimiter { limit: int, window: int, shards: [RateShard], sweep_every: int, remote: opt[redis.Pool], name: str, timeout: int, fallbacks: int, fallback_lock: mutex }
 new_rate_limiter(limit: int, window_ns: int) -> RateLimiter
     At most `limit` requests per client in any `window_ns` nanoseconds (1000000000 is one second).
+rate_limiter_redis(p: redis.Pool, name: str, limit: int, window_ns: int) -> RateLimiter
+    The same limit shared by every instance, counted in Redis.
 retry_after_secs(wait_ns: int) -> int
     Whole seconds until `wait_ns` has passed, never below 1: a Retry-After of 0 invites an immediate retry that will be refused.
 struct RateCheck { wait: int, remaining: int, reset: int }
@@ -513,6 +518,8 @@ RateLimiter.take_at(key: str, now: int) -> int
     Counts one request for `key` at `now` (time.mono nanoseconds).
 RateLimiter.check_at(key: str, now: int) -> RateCheck
     take_at, with what is left: what the RateLimit-* headers report.
+RateLimiter.check(key: str) -> RateCheck
+    One check of `key` now: shared when the limiter is, falling back to this process's count when Redis does not answer.
 RateLimiter.take(key: str) -> int
     The same, now.
 RateLimiter.tracked() -> int
@@ -807,7 +814,7 @@ Socket.is_open() -> bool
 Socket.local(key: str) -> str
     A value the handshake's hooks set on the request, "" when none did.
 Socket.set_local(key: str, v: str) -> int
-gc struct Hub { id: str, lock: mutex, sockets: map[str]Socket, rooms: map[str]map[str]bool }
+gc struct Hub { id: str, lock: mutex, sockets: map[str]Socket, rooms: map[str]map[str]bool, relay: opt[HubRelay] }
     Sockets by id, and rooms of them: what a chat, a live dashboard or a notification fan-out needs to reach more than the one...
 new_hub() -> Hub
 Hub.add(s: Socket) -> int
@@ -830,6 +837,12 @@ Hub.emit_all(namespace: str, name: str, args_json: str, except: str) -> int
 Hub.emit_to_room(room: str, namespace: str, name: str, args_json: str, except: str) -> int
 Hub.emit_binary_to_room(room: str, namespace: str, name: str, args_json: str, data: [bytes], except: str) -> int
     emit_binary to every Socket.IO session in a room ("" for the hub).
+Hub.share(url: str, channel: str) -> result[int, str]
+    Joins this hub to `channel` on the Redis at `url`: everything sent on any hub sharing that channel reaches every instance's...
+Hub.unshare() -> int
+    Stops sharing; this hub is in-process again.
+Hub.relay_losses() -> RelayLosses
+    What this hub's sharing has lost, for a metric: messages dropped because Redis could not keep up, failed to publish, or...
 
 ## testkit.sl -- Building a request, and reading a response.
 gc struct TestRequest { method: Method, path: str, headers: map[str]str, body: bytes }
@@ -862,9 +875,11 @@ resp_error_fields(r: http.Response) -> [str]
     The field names an error envelope complains about, in order, so a test asserts on the shape rather than on an exact string.
 
 ## tokens.sl -- Opaque bearer tokens.
-gc struct TokenStore { subjects: map[str]str, expires: map[str]int, ttl: int, lock: mutex, since_sweep: int }
+gc struct TokenStore { subjects: map[str]str, expires: map[str]int, ttl: int, lock: mutex, since_sweep: int, remote: opt[redis.Pool], timeout: int }
 new_token_store(ttl_ns: int) -> TokenStore
     `ttl_ns` is how long a token stays valid after it is issued, in nanoseconds; 0 means until it is revoked.
+token_store_redis(p: redis.Pool, ttl_ns: int) -> TokenStore
+    The same store in Redis, shared by every instance behind the balancer.
 new_token() -> result[str, str]
     32 random bytes as 64 lowercase hex characters.
 TokenStore.issue(subject: str) -> result[str, str]
@@ -878,7 +893,7 @@ TokenStore.revoke(token: str) -> bool
 TokenStore.revoke_subject(subject: str) -> int
     Ends every token issued to `subject` ("log out everywhere", a password change).
 TokenStore.count() -> int
-    How many tokens are held (expired ones count until swept).
+    How many tokens this process holds (expired ones count until swept).
 bearer_subject[S](c: Ctx[S], store: TokenStore) -> opt[str]
     The subject behind the request's `Authorization: Bearer <token>`, or none when the header is missing or the token is not live.
 
