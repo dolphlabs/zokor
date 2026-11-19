@@ -1111,6 +1111,72 @@
       ]
     },
     {
+      "file": "mail.sl",
+      "description": "Sending mail over SMTP, to any server that speaks it: SES, Mailgun, Postmark, Postfix, Gmail, or Mailpit on a laptop.",
+      "items": [
+        {
+          "signature": "enum MailSecurity { Tls, StartTls, Plain }",
+          "description": ""
+        },
+        {
+          "signature": "gc struct Mailer { host: str, port: int, security: MailSecurity, user: str, pass: str, from: str, helo: str, timeout: int, max_reply: int, tls_ctx: rawptr }",
+          "description": ""
+        },
+        {
+          "signature": "struct MailAttachment { filename: str, content_type: str, data: bytes }",
+          "description": ""
+        },
+        {
+          "signature": "struct MailHeader { name: str, value: str }",
+          "description": ""
+        },
+        {
+          "signature": "gc struct Mail { from: str, to: [str], cc: [str], bcc: [str], reply_to: [str], subject: str, text: str, html: str, attachments: [MailAttachment], headers: [MailHeader] }",
+          "description": "One message."
+        },
+        {
+          "signature": "struct MailSent { message_id: str, recipients: int, reply: str }",
+          "description": ""
+        },
+        {
+          "signature": "gc struct MailError { code: int, permanent: bool, detail: str, problems: [Problem] }",
+          "description": ""
+        },
+        {
+          "signature": "max_recipients() -> int { return 100; } pub fn new_mail(to: str, subject: str, text: str) -> Mail",
+          "description": "The most envelope recipients one mail may have: the number every server must accept (RFC 5321 4.5.3.1.8)."
+        },
+        {
+          "signature": "Mail.attach(filename: str, content_type: str, data: bytes) -> Mail",
+          "description": ""
+        },
+        {
+          "signature": "Mail.header(name: str, value: str) -> Mail",
+          "description": ""
+        },
+        {
+          "signature": "new_mailer(url: str, ca_file: str) -> result[Mailer, str]",
+          "description": "A mailer from an SMTP_URL-style string (see the top of this file)."
+        },
+        {
+          "signature": "mailer_from_config(cfg: Config) -> result[Mailer, str]",
+          "description": "The mailer SMTP_URL and its companions describe; err when SMTP_URL is unset or wrong."
+        },
+        {
+          "signature": "has_mailer(cfg: Config) -> bool",
+          "description": ""
+        },
+        {
+          "signature": "Mailer.send(mail: Mail) -> result[MailSent, MailError]",
+          "description": "Sends one mail within the mailer's timeout."
+        },
+        {
+          "signature": "Mailer.send_until(mail: Mail, deadline: until) -> result[MailSent, MailError]",
+          "description": ""
+        }
+      ]
+    },
+    {
       "file": "metrics.sl",
       "description": "Opt-in Prometheus metrics with bounded request series and custom scalars.",
       "items": [

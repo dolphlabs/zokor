@@ -407,6 +407,61 @@ let r = zokor.transaction(c.state.db, user, create_user, deadline);
   logged: a missed digest is a smaller problem than one sent twice. An `every`
   without `durable` still runs on each instance that registers it.
 
+## Mail
+
+SMTP to any server that speaks it: SES, Mailgun, Postmark, Gmail,
+Postfix, or Mailpit on a laptop. Off until `SMTP_URL` is set.
+
+```slang
+let mr = zokor.mailer_from_config(cfg);   // SMTP_URL, SMTP_FROM, SMTP_HELO, SMTP_TIMEOUT, SMTP_CA_FILE
+guard let mailer = mr else let e = err_of(mr) { println(e); exit(1); }
+
+let mail = zokor.new_mail("Ada <ada@example.com>", "Your receipt", "Thanks for your order.");
+mail.html = "<p>Thanks for your order.</p>";
+mail.bcc = ["audit@example.com"];
+mail.attach("receipt.pdf", "application/pdf", pdf);
+mail.header("List-Unsubscribe", "<https://example.com/unsubscribe/42>");
+let sr = mailer.send(mail);
+guard let sent = sr else let e = err_of(sr) {
+    // e.code: the SMTP reply (0 if none); e.permanent: stop retrying;
+    // e.problems: every field at fault, e.g. "cc[1]", "attachments[0].filename"
+    return err(e.detail);
+}
+println(sent.message_id);
+```
+
+| `SMTP_URL` | |
+|---|---|
+| `smtps://user:pass@host:465` | TLS from the first byte |
+| `smtp://user:pass@host:587` | STARTTLS, **required**: a server that does not offer it is refused |
+| `smtp+plain://localhost:1025` | no TLS, for a server on this machine, never with credentials |
+
+- **Checked before connecting.** Addresses, header values, file names and
+  content types are checked first, every problem at once, each naming its
+  field. A line break in a subject or a header is refused, not stripped,
+  so a header cannot be injected.
+- **TLS is verified and never optional.** The server's certificate is
+  checked against the system roots (or `SMTP_CA_FILE`). Credentials are
+  sent only inside TLS. After STARTTLS the client asks for the server's
+  extensions again and forgets what it was told in clear. Bytes that
+  arrive before the handshake end the send.
+- **Errors say whether to retry.** `permanent` is true for a `5xx`, a mail
+  that failed its checks, or a server that cannot do what is needed. A
+  `4xx`, a timeout or a dropped connection is retryable. Return `err` from
+  a job on a retryable error, and `ok` (after logging it) on a permanent one.
+- **One connection per mail**, under one deadline (`SMTP_TIMEOUT`, 30s).
+  MAIL and every RCPT go out in one write when the server pipelines. A
+  refused recipient stops the send before DATA, and its field is named
+  (`smtp: RCPT TO cc[0]: 550 5.1.1 ...`).
+- **Standard messages.** `Date`, `Message-ID` and MIME are written for you.
+  Non-ASCII headers become encoded words, text is quoted-printable, and
+  attachments are base64, so every server takes the message as is. A
+  repeated recipient gets one copy, and `bcc` appears in no header. A mail
+  has at most 100 recipients.
+
+Not yet: connection reuse across mails, OAuth2 login (`XOAUTH2`), and
+SMTPUTF8 (non-ASCII addresses: write the domain in its `xn--` form).
+
 ## Errors
 
 Every failure names a code; every code is registered once with its status

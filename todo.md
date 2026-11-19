@@ -159,6 +159,15 @@ library, made and merged there first.
   `dolphlabs/mongo` (optional, like `redis_from_config`), and the error
   shape for a duplicate key, so a service on Mongo gets what a service on
   Postgres does.
+- [x] **Mail over SMTP**: `mailer_from_config` (`SMTP_URL` as
+  `smtps://`, `smtp://` with STARTTLS required, or `smtp+plain://` for
+  loopback only), `new_mail`, `m.send`. Protocol and MIME are sans-io in
+  `internal/smtp`. Every field is checked before connecting, every problem
+  at once. TLS is always verified, credentials go only inside TLS, and
+  replies injected before the handshake are refused. Errors carry the SMTP
+  code and `permanent` for job retries. Tested against an in-process fake
+  and against Mailpit v1.27 (plain, STARTTLS and implicit TLS with AUTH).
+  Not done: connection reuse across mails, XOAUTH2, SMTPUTF8.
 - [x] **[slang] A sufficient `time` package**: slang's `timez` (slang
   #409): calendar time, RFC 3339 / HTTP / RFC 2822 dates, strftime,
   durations, IANA zones from the system tz database, test clocks and

@@ -103,6 +103,7 @@ declare, and every handler receives it.
 | `new_jobs`, `every`, `handle`, `enqueue` | background jobs: cron schedules in a time zone, a retrying in-memory or Postgres queue |
 | `preconditions`, `etag_of`, `r.etags()` | conditional requests: `304 Not Modified`, `412` on a lost update, ETag and Last-Modified |
 | `redis_from_config` | a Redis pool from `REDIS_URL`, optional by default |
+| `mailer_from_config`, `new_mail`, `m.send` | SMTP mail: TLS or STARTTLS (required and verified), text, HTML and attachments, retryable or permanent errors |
 | `ServerConfig`, `listen_and_serve_with` | idle/header/body/write timeouts, safe defaults, all overridable |
 | `RateLimiter`, `rate_limit` | per-client sliding-window limits: `429`, `Retry-After`, the registered envelope |
 | `TokenStore`, `bearer_subject` | opaque bearer tokens: crypto-random, issue/lookup/revoke, optional TTL, safe across tasks |
@@ -1486,6 +1487,61 @@ let r = zokor.transaction(c.state.db, user, create_user, deadline);
   logged: a missed digest is a smaller problem than one sent twice. An `every`
   without `durable` still runs on each instance that registers it.
 
+## Mail
+
+SMTP to any server that speaks it: SES, Mailgun, Postmark, Gmail,
+Postfix, or Mailpit on a laptop. Off until `SMTP_URL` is set.
+
+```slang
+let mr = zokor.mailer_from_config(cfg);   // SMTP_URL, SMTP_FROM, SMTP_HELO, SMTP_TIMEOUT, SMTP_CA_FILE
+guard let mailer = mr else let e = err_of(mr) { println(e); exit(1); }
+
+let mail = zokor.new_mail("Ada <ada@example.com>", "Your receipt", "Thanks for your order.");
+mail.html = "<p>Thanks for your order.</p>";
+mail.bcc = ["audit@example.com"];
+mail.attach("receipt.pdf", "application/pdf", pdf);
+mail.header("List-Unsubscribe", "<https://example.com/unsubscribe/42>");
+let sr = mailer.send(mail);
+guard let sent = sr else let e = err_of(sr) {
+    // e.code: the SMTP reply (0 if none); e.permanent: stop retrying;
+    // e.problems: every field at fault, e.g. "cc[1]", "attachments[0].filename"
+    return err(e.detail);
+}
+println(sent.message_id);
+```
+
+| `SMTP_URL` | |
+|---|---|
+| `smtps://user:pass@host:465` | TLS from the first byte |
+| `smtp://user:pass@host:587` | STARTTLS, **required**: a server that does not offer it is refused |
+| `smtp+plain://localhost:1025` | no TLS, for a server on this machine, never with credentials |
+
+- **Checked before connecting.** Addresses, header values, file names and
+  content types are checked first, every problem at once, each naming its
+  field. A line break in a subject or a header is refused, not stripped,
+  so a header cannot be injected.
+- **TLS is verified and never optional.** The server's certificate is
+  checked against the system roots (or `SMTP_CA_FILE`). Credentials are
+  sent only inside TLS. After STARTTLS the client asks for the server's
+  extensions again and forgets what it was told in clear. Bytes that
+  arrive before the handshake end the send.
+- **Errors say whether to retry.** `permanent` is true for a `5xx`, a mail
+  that failed its checks, or a server that cannot do what is needed. A
+  `4xx`, a timeout or a dropped connection is retryable. Return `err` from
+  a job on a retryable error, and `ok` (after logging it) on a permanent one.
+- **One connection per mail**, under one deadline (`SMTP_TIMEOUT`, 30s).
+  MAIL and every RCPT go out in one write when the server pipelines. A
+  refused recipient stops the send before DATA, and its field is named
+  (`smtp: RCPT TO cc[0]: 550 5.1.1 ...`).
+- **Standard messages.** `Date`, `Message-ID` and MIME are written for you.
+  Non-ASCII headers become encoded words, text is quoted-printable, and
+  attachments are base64, so every server takes the message as is. A
+  repeated recipient gets one copy, and `bcc` appears in no header. A mail
+  has at most 100 recipients.
+
+Not yet: connection reuse across mails, OAuth2 login (`XOAUTH2`), and
+SMTPUTF8 (non-ASCII addresses: write the domain in its `xn--` form).
+
 ## Errors
 
 Every failure names a code; every code is registered once with its status
@@ -2408,6 +2464,28 @@ LogFormat.pretty_into(sb: builder.Str, ev: LogEvent, color: bool, since_ns: int)
 LogFormat.json(ev: LogEvent) -> str
     The same as single strings, without the newline: for a consumer that wants one line at a time.
 LogFormat.pretty(ev: LogEvent, color: bool, since_ns: int) -> str
+
+## mail.sl -- Sending mail over SMTP, to any server that speaks it: SES, Mailgun, Postmark, Postfix, Gmail, or Mailpit on a laptop.
+enum MailSecurity { Tls, StartTls, Plain }
+gc struct Mailer { host: str, port: int, security: MailSecurity, user: str, pass: str, from: str, helo: str, timeout: int, max_reply: int, tls_ctx: rawptr }
+struct MailAttachment { filename: str, content_type: str, data: bytes }
+struct MailHeader { name: str, value: str }
+gc struct Mail { from: str, to: [str], cc: [str], bcc: [str], reply_to: [str], subject: str, text: str, html: str, attachments: [MailAttachment], headers: [MailHeader] }
+    One message.
+struct MailSent { message_id: str, recipients: int, reply: str }
+gc struct MailError { code: int, permanent: bool, detail: str, problems: [Problem] }
+max_recipients() -> int { return 100; } pub fn new_mail(to: str, subject: str, text: str) -> Mail
+    The most envelope recipients one mail may have: the number every server must accept (RFC 5321 4.5.3.1.8).
+Mail.attach(filename: str, content_type: str, data: bytes) -> Mail
+Mail.header(name: str, value: str) -> Mail
+new_mailer(url: str, ca_file: str) -> result[Mailer, str]
+    A mailer from an SMTP_URL-style string (see the top of this file).
+mailer_from_config(cfg: Config) -> result[Mailer, str]
+    The mailer SMTP_URL and its companions describe; err when SMTP_URL is unset or wrong.
+has_mailer(cfg: Config) -> bool
+Mailer.send(mail: Mail) -> result[MailSent, MailError]
+    Sends one mail within the mailer's timeout.
+Mailer.send_until(mail: Mail, deadline: until) -> result[MailSent, MailError]
 
 ## metrics.sl -- Opt-in Prometheus metrics with bounded request series and custom scalars.
 gc struct MetricsConfig { path: str, max_series: int, max_custom: int, buckets_ns: [int] }

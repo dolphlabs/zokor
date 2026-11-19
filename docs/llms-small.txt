@@ -920,6 +920,40 @@ before exit. `c.state.spans.start(c.trace(), name)` gives a span with `attr`,
 `fail` and `finish`. `zokor.traced_send(spans, c.trace(), req, deadline)` sends an
 outbound call as a span, so the next service joins the trace.
 
+## Mail (SMTP)
+
+`zokor.mailer_from_config(cfg)` reads `SMTP_URL` (`smtps://user:pass@host:465`,
+`smtp://...:587` with STARTTLS required, or `smtp+plain://localhost:1025` for a
+local catcher), `SMTP_FROM`, `SMTP_HELO`, `SMTP_TIMEOUT`, `SMTP_CA_FILE`.
+`mailer.send(mail)` returns `result[MailSent, MailError]`. A mail is checked
+before any connection: every bad field is in `e.problems`.
+
+```slang
+import "zokor";
+
+let mr = zokor.new_mailer("smtp+plain://localhost:1025", "");
+guard let mailer = mr else let e = err_of(mr) { println(e); exit(1); }
+mailer.from = "Shop <shop@example.com>";
+let mail = zokor.new_mail("ada", "Hi\r\nBcc: x@evil.example", "Thanks.");
+mail.cc = ["Ada <ada@example.com>"];
+mail.html = "<p>Thanks.</p>";
+mail.attach("../receipt.pdf", "application/pdf", b"%PDF");
+let r = mailer.send(mail);
+guard let sent = r else let e = err_of(r) {
+    for p in e.problems {
+        println(p.key + " " + p.reason);  // to[0], subject, attachments[0].filename
+    }
+    println(e.permanent);                 // true: retrying cannot help
+    exit(0);
+}
+println(sent.message_id);
+```
+
+`e.code` is the SMTP reply (0 if none). In a job, return `err` when
+`!e.permanent` (4xx, timeout, dropped connection) so it is retried, and `ok`
+after logging when it is permanent. `bcc` is in no header; at most 100
+recipients per mail.
+
 ## Serving for real
 
 ```slang

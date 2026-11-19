@@ -49,7 +49,7 @@
 <div class="page">
   <article class="content">
 <header class="page-head"><p class="page-kicker">Zokor documentation</p><h1>API reference</h1><p class="tagline">Browse public Zokor types, functions, and methods, with signatures and descriptions generated from the source package.</p><p class="agentline"><a href="../api/index.md">Markdown</a> · <a href="../llms.txt">llms.txt</a> · <a href="../api.json">api.json</a></p></header>
-<p>The public package surface contains 648 entries across 44 source files. This page is generated from <code>docs/api.txt</code>, which is generated from <code>zokor/</code>.</p>
+<p>The public package surface contains 663 entries across 45 source files. This page is generated from <code>docs/api.txt</code>, which is generated from <code>zokor/</code>.</p>
 <section class="api-module"><h2 id="auth-sl">auth.sl<a class="anchor" href="#auth-sl" aria-label="Link to this section">#</a></h2>
 <p class="api-module-description">Authentication helpers: bearer JWTs, Basic credentials and API keys.</p>
 <div class="api-item" id="auth-sl-gc"><code>gc struct JwtAuth { keys: [bytes], audience: str, issuer: str, leeway: int }</code></div>
@@ -353,6 +353,24 @@
 <div class="api-item" id="log-sl-logformat-pretty-into"><code>LogFormat.pretty_into(sb: builder.Str, ev: LogEvent, color: bool, since_ns: int) -&gt; builder.Str</code><p>The NestJS layout and a newline, appended to <code>sb</code>:   [zokor] &lt;pid&gt;  - &lt;utc time&gt;     LOG [Context] message +3.21ms The...</p></div>
 <div class="api-item" id="log-sl-logformat-json"><code>LogFormat.json(ev: LogEvent) -&gt; str</code><p>The same as single strings, without the newline: for a consumer that wants one line at a time.</p></div>
 <div class="api-item" id="log-sl-logformat-pretty"><code>LogFormat.pretty(ev: LogEvent, color: bool, since_ns: int) -&gt; str</code></div>
+</section>
+<section class="api-module"><h2 id="mail-sl">mail.sl<a class="anchor" href="#mail-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Sending mail over SMTP, to any server that speaks it: SES, Mailgun, Postmark, Postfix, Gmail, or Mailpit on a laptop.</p>
+<div class="api-item" id="mail-sl-enum"><code>enum MailSecurity { Tls, StartTls, Plain }</code></div>
+<div class="api-item" id="mail-sl-gc"><code>gc struct Mailer { host: str, port: int, security: MailSecurity, user: str, pass: str, from: str, helo: str, timeout: int, max_reply: int, tls_ctx: rawptr }</code></div>
+<div class="api-item" id="mail-sl-struct"><code>struct MailAttachment { filename: str, content_type: str, data: bytes }</code></div>
+<div class="api-item" id="mail-sl-struct-2"><code>struct MailHeader { name: str, value: str }</code></div>
+<div class="api-item" id="mail-sl-gc-2"><code>gc struct Mail { from: str, to: [str], cc: [str], bcc: [str], reply_to: [str], subject: str, text: str, html: str, attachments: [MailAttachment], headers: [MailHeader] }</code><p>One message.</p></div>
+<div class="api-item" id="mail-sl-struct-3"><code>struct MailSent { message_id: str, recipients: int, reply: str }</code></div>
+<div class="api-item" id="mail-sl-gc-3"><code>gc struct MailError { code: int, permanent: bool, detail: str, problems: [Problem] }</code></div>
+<div class="api-item" id="mail-sl-max-recipients"><code>max_recipients() -&gt; int { return 100; } pub fn new_mail(to: str, subject: str, text: str) -&gt; Mail</code><p>The most envelope recipients one mail may have: the number every server must accept (RFC 5321 4.5.3.1.8).</p></div>
+<div class="api-item" id="mail-sl-mail-attach"><code>Mail.attach(filename: str, content_type: str, data: bytes) -&gt; Mail</code></div>
+<div class="api-item" id="mail-sl-mail-header"><code>Mail.header(name: str, value: str) -&gt; Mail</code></div>
+<div class="api-item" id="mail-sl-new-mailer"><code>new_mailer(url: str, ca_file: str) -&gt; result[Mailer, str]</code><p>A mailer from an SMTP_URL-style string (see the top of this file).</p></div>
+<div class="api-item" id="mail-sl-mailer-from-config"><code>mailer_from_config(cfg: Config) -&gt; result[Mailer, str]</code><p>The mailer SMTP_URL and its companions describe; err when SMTP_URL is unset or wrong.</p></div>
+<div class="api-item" id="mail-sl-has-mailer"><code>has_mailer(cfg: Config) -&gt; bool</code></div>
+<div class="api-item" id="mail-sl-mailer-send"><code>Mailer.send(mail: Mail) -&gt; result[MailSent, MailError]</code><p>Sends one mail within the mailer&#x27;s timeout.</p></div>
+<div class="api-item" id="mail-sl-mailer-send-until"><code>Mailer.send_until(mail: Mail, deadline: until) -&gt; result[MailSent, MailError]</code></div>
 </section>
 <section class="api-module"><h2 id="metrics-sl">metrics.sl<a class="anchor" href="#metrics-sl" aria-label="Link to this section">#</a></h2>
 <p class="api-module-description">Opt-in Prometheus metrics with bounded request series and custom scalars.</p>
