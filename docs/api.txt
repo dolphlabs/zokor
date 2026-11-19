@@ -415,6 +415,28 @@ LogFormat.json(ev: LogEvent) -> str
     The same as single strings, without the newline: for a consumer that wants one line at a time.
 LogFormat.pretty(ev: LogEvent, color: bool, since_ns: int) -> str
 
+## mail.sl -- Sending mail over SMTP, to any server that speaks it: SES, Mailgun, Postmark, Postfix, Gmail, or Mailpit on a laptop.
+enum MailSecurity { Tls, StartTls, Plain }
+gc struct Mailer { host: str, port: int, security: MailSecurity, user: str, pass: str, from: str, helo: str, timeout: int, max_reply: int, tls_ctx: rawptr }
+struct MailAttachment { filename: str, content_type: str, data: bytes }
+struct MailHeader { name: str, value: str }
+gc struct Mail { from: str, to: [str], cc: [str], bcc: [str], reply_to: [str], subject: str, text: str, html: str, attachments: [MailAttachment], headers: [MailHeader] }
+    One message.
+struct MailSent { message_id: str, recipients: int, reply: str }
+gc struct MailError { code: int, permanent: bool, detail: str, problems: [Problem] }
+max_recipients() -> int { return 100; } pub fn new_mail(to: str, subject: str, text: str) -> Mail
+    The most envelope recipients one mail may have: the number every server must accept (RFC 5321 4.5.3.1.8).
+Mail.attach(filename: str, content_type: str, data: bytes) -> Mail
+Mail.header(name: str, value: str) -> Mail
+new_mailer(url: str, ca_file: str) -> result[Mailer, str]
+    A mailer from an SMTP_URL-style string (see the top of this file).
+mailer_from_config(cfg: Config) -> result[Mailer, str]
+    The mailer SMTP_URL and its companions describe; err when SMTP_URL is unset or wrong.
+has_mailer(cfg: Config) -> bool
+Mailer.send(mail: Mail) -> result[MailSent, MailError]
+    Sends one mail within the mailer's timeout.
+Mailer.send_until(mail: Mail, deadline: until) -> result[MailSent, MailError]
+
 ## metrics.sl -- Opt-in Prometheus metrics with bounded request series and custom scalars.
 gc struct MetricsConfig { path: str, max_series: int, max_custom: int, buckets_ns: [int] }
 metrics_config() -> MetricsConfig

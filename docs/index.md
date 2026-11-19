@@ -103,6 +103,7 @@ declare, and every handler receives it.
 | `new_jobs`, `every`, `handle`, `enqueue` | background jobs: cron schedules in a time zone, a retrying in-memory or Postgres queue |
 | `preconditions`, `etag_of`, `r.etags()` | conditional requests: `304 Not Modified`, `412` on a lost update, ETag and Last-Modified |
 | `redis_from_config` | a Redis pool from `REDIS_URL`, optional by default |
+| `mailer_from_config`, `new_mail`, `m.send` | SMTP mail: TLS or STARTTLS (required and verified), text, HTML and attachments, retryable or permanent errors |
 | `ServerConfig`, `listen_and_serve_with` | idle/header/body/write timeouts, safe defaults, all overridable |
 | `RateLimiter`, `rate_limit` | per-client sliding-window limits: `429`, `Retry-After`, the registered envelope |
 | `TokenStore`, `bearer_subject` | opaque bearer tokens: crypto-random, issue/lookup/revoke, optional TTL, safe across tasks |
