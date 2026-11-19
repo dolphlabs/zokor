@@ -79,7 +79,7 @@ GUIDE_PAGES = [
         "nav": "Operations",
         "sections": ["Configuration", "Server timeouts, limits, and shutdown",
                      "HTTPS", "Logging", "Sessions, CSRF and passwords",
-                     "Background jobs", "Errors",
+                     "Background jobs", "Mail", "Errors",
                      "Metrics", "Tracing", "OpenAPI"],
     },
     {
