@@ -481,6 +481,31 @@ Negotiator.choose(header: opt[str]) -> result[opt[str], str]
 negotiate[S](c: Ctx[S], n: Negotiator) -> result[str, http.Response]
     A selected media type, or a registered 400/406 response.
 
+## oauth.sl -- Sign in with an OAuth 2.0 or OpenID Connect provider: Google, Microsoft, GitHub, Okta, Auth0, Keycloak, or any other that...
+gc struct OAuth { name: str, client_id: str, client_secret: str, authorize_url: str, token_url: str, userinfo_url: str, redirect_url: str, scopes: [str], issuer: str, jwks: opt[jwt.Jwks], secret_in_body: bool, extra: [OAuthParam], keys: CookieKeys, flow_ttl: int, timeout: int, http: httpc.Client }
+struct OAuthParam { name: str, value: str }
+struct OAuthTokens { access_token: str, refresh_token: str, id_token: str, scope: str, expires_in: int }
+struct OAuthLogin { tokens: OAuthTokens, subject: str, email: str, name: str, return_to: str }
+    Who signed in.
+struct OAuthError { code: str, detail: str }
+    code is the provider's own error code (access_denied, invalid_grant, ...) or one of zokor's: flow_missing (no or forged flow...
+oauth_provider(name: str, client_id: str, client_secret: str, authorize_url: str, token_url: str, redirect_url: str, scopes: [str], keys: CookieKeys) -> result[OAuth, str]
+    A plain OAuth 2.0 provider from its endpoints.
+oidc_provider(name: str, issuer: str, client_id: str, client_secret: str, redirect_url: str, scopes: [str], keys: CookieKeys, deadline: until) -> result[OAuth, str]
+    An OpenID Connect provider, its endpoints and signing keys found through discovery at `issuer` (which must be https).
+oauth_from_config(cfg: Config, name: str, keys: CookieKeys, deadline: until) -> result[OAuth, str]
+    The provider `name` from OAUTH_<NAME>_* (see the top of this file): discovered when an issuer is set, else from its two endpoints.
+oauth_start[S](c: Ctx[S], o: OAuth, return_to: str) -> result[http.Response, str]
+    Starts a sign-in: a redirect to the provider, with the flow cookie that oauth_finish needs.
+oauth_finish[S](c: Ctx[S], o: OAuth) -> result[OAuthLogin, OAuthError]
+    Finishes a sign-in on the redirect URL's handler.
+oauth_done(resp: http.Response, o: OAuth) -> http.Response
+    `resp` with the flow cookie deleted: return it from the callback.
+oauth_refresh(o: OAuth, refresh_token: str, scopes: [str]) -> result[OAuthTokens, OAuthError]
+    Fresh tokens for a refresh token (RFC 6749 6).
+oauth_userinfo[T](o: OAuth, access_token: str) -> result[T, OAuthError]
+    The provider's user info for an access token, decoded as T: the OpenID userinfo endpoint, or a provider API such as GitHub's...
+
 ## openapi.sl -- Startup OpenAPI generation from registered routes and explicit wire schemas.
 gc struct OpenApiLimits { max_routes: int, max_schemas: int, max_schema_bytes: int, max_total_schema_bytes: int, max_schema_depth: int, max_document_bytes: int, max_collection_entries: int, max_metadata_bytes: int }
     Resource limits for startup metadata and the generated document.

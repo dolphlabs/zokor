@@ -159,6 +159,16 @@ library, made and merged there first.
   `dolphlabs/mongo` (optional, like `redis_from_config`), and the error
   shape for a duplicate key, so a service on Mongo gets what a service on
   Postgres does.
+- [x] **Sign-in with OAuth 2.0 and OpenID Connect**: `oauth_from_config`
+  (an issuer for discovery, or authorize and token URLs), `oauth_start`,
+  `oauth_finish`, `oauth_done`, `oauth_refresh`, `oauth_userinfo`. The
+  authorization code flow with PKCE S256; state, verifier and nonce sealed
+  with AES-256-GCM into a `__Host-` cookie under a key derived from
+  COOKIE_KEYS, so nothing is stored server side. RFC 9207 `iss` checked;
+  ID tokens verified through dolphlabs/jwt v0.2.0 (JWKS, issuer, audience,
+  expiry, nonce); only verified emails handed on. Protocol pieces are
+  sans-io in `internal/oauth`. Tested against an in-process token endpoint.
+  Not done: implicit and device flows, private_key_jwt, RP-initiated logout.
 - [x] **Mail over SMTP**: `mailer_from_config` (`SMTP_URL` as
   `smtps://`, `smtp://` with STARTTLS required, or `smtp+plain://` for
   loopback only), `new_mail`, `m.send`. Protocol and MIME are sans-io in

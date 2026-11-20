@@ -25,6 +25,7 @@ test:
 	$(SLANGC) test zokor/internal/accept $(TESTFLAGS)
 	$(SLANGC) test zokor/internal/location $(TESTFLAGS)
 	$(SLANGC) test zokor/internal/smtp $(TESTFLAGS)
+	$(SLANGC) test zokor/internal/oauth $(TESTFLAGS)
 	$(SLANGC) test examples/ports/src/domain/inventory $(TESTFLAGS)
 	$(SLANGC) test examples/ports/src/application/inventory $(TESTFLAGS)
 	$(SLANGC) test examples/ports/src/infrastructure/memory $(TESTFLAGS)
