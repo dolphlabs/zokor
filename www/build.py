@@ -52,7 +52,7 @@ GUIDE_PAGES = [
             "Build HTTP APIs with Zokor routing, middleware, authentication, validation, "
             "uploads, rate limits, caching, pagination, and content negotiation."),
         "nav": "HTTP",
-        "sections": ["Authentication", "Operator injection (MongoDB)",
+        "sections": ["Authentication", "Sign-in with OAuth and OpenID Connect", "Operator injection (MongoDB)",
                      "Cookies", "Conditional requests", "Security headers",
                      "CORS", "Health and readiness", "Static files",
                      "Content negotiation and redirects", "Compression",
