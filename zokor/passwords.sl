@@ -125,7 +125,7 @@ fn check_django_scrypt(password: str, stored: str) -> result[bool, str] {
     if len(want) < 16 || len(want) > 64 {
         return err("Django scrypt hash: a " + to_str(len(want)) + "-byte hash");
     }
-    let gr = crypto.scrypt(to_bytes(password), to_bytes(parts[2]), n, r, p, len(want));
+    let gr = crypto.pbkdf2_sha256(to_bytes(password), to_bytes(parts[2]), n, len(want));
     guard let got = gr else let e = err_of(gr) { return err("Django scrypt hash: " + e); }
     return ok(crypto.constant_time_eq(got, want));
 }
