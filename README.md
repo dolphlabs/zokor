@@ -1067,6 +1067,71 @@ let r = zokor.transaction(c.state.db, user, create_user, deadline);
   logged: a missed digest is a smaller problem than one sent twice. An `every`
   without `durable` still runs on each instance that registers it.
 
+## Sign-in with OAuth and OpenID Connect
+
+"Sign in with Google" (or Microsoft, GitHub, Okta, Auth0, Keycloak): the
+authorization code flow with PKCE, two handlers, and nothing to store
+between them.
+
+```slang
+// OAUTH_GOOGLE_ISSUER, _CLIENT_ID, _CLIENT_SECRET, _REDIRECT_URL, _SCOPES
+let keys = zokor.cookie_keys_from(cfg);
+let gr = zokor.oauth_from_config(cfg, "google", keys, until_of(time.mono() + 10000000000));
+guard let google = gr else let e = err_of(gr) { println(e); exit(1); }
+
+fn login(c: zokor.Ctx[App]) -> http.Response {
+    return zokor.oauth_start(c, c.state.google, c.query("next")) ??
+        zokor.text(500, "sign-in is not configured");
+}
+
+fn callback(c: zokor.Ctx[App]) -> http.Response {
+    let r = zokor.oauth_finish(c, c.state.google);
+    guard let login = r else let e = err_of(r) {
+        // e.code: access_denied, state_mismatch, flow_expired, id_token, ...
+        return zokor.text(401, "sign-in failed");
+    }
+    // login.subject: the provider's id for the user; login.email: verified only
+    let resp = zokor.redirect(303, login.return_to);
+    return zokor.oauth_done(resp, c.state.google);
+}
+```
+
+| Setting (for a provider named `google`) | |
+|---|---|
+| `OAUTH_GOOGLE_ISSUER` | OpenID Connect: endpoints and signing keys come from the issuer's discovery document |
+| `OAUTH_GOOGLE_AUTHORIZE_URL`, `OAUTH_GOOGLE_TOKEN_URL` | plain OAuth 2.0 instead of an issuer (GitHub) |
+| `OAUTH_GOOGLE_USERINFO_URL` | optional; `oauth_userinfo[T](o, token)` reads it |
+| `OAUTH_GOOGLE_CLIENT_ID`, `OAUTH_GOOGLE_CLIENT_SECRET`, `OAUTH_GOOGLE_REDIRECT_URL` | the secret is blank for a public client |
+| `OAUTH_GOOGLE_SCOPES` | space-separated; `openid email profile` by default with an issuer |
+
+- **Nothing to store between the two requests.** `oauth_start` seals the
+  state, the PKCE verifier and the OpenID nonce into a `__Host-` cookie
+  with AES-256-GCM, under a key derived from `COOKIE_KEYS`, for ten
+  minutes (`o.flow_ttl`). Rotating `COOKIE_KEYS` keeps sign-ins in flight
+  working. The cookie cannot be read, changed, or moved to another
+  provider.
+- **Checked before the code is used.** The cookie must open and be
+  unexpired, and the `state` must match it (compared in constant time). An
+  `iss` in the redirect must be the configured issuer (RFC 9207, against
+  mix-up attacks). The provider's own error, such as `access_denied`,
+  comes back as `e.code`.
+- **ID tokens are verified.** With an issuer, the token reply must carry an
+  ID token. Its signature is checked against the issuer's JWKS (fetched
+  and rotated by `dolphlabs/jwt`), then issuer, audience, expiry and
+  nonce. `login.email` is set only when the provider says it is verified.
+- **https only.** Every endpoint must be https, except http to localhost
+  for a provider running on your machine. The discovery document must
+  name exactly the issuer asked for, and offer PKCE S256 if it lists PKCE
+  methods. The provider is never followed through a redirect.
+- `oauth_refresh(o, refresh_token, [])` renews tokens, and
+  `oauth_provider(...)` / `oidc_provider(...)` build a provider in code.
+  `o.extra` adds parameters such as `prompt=consent`, and
+  `o.secret_in_body` sends the secret as `client_secret_post` (discovery
+  sets it when that is all the provider takes).
+
+Not yet: the implicit and device flows, private_key_jwt client
+authentication, and RP-initiated logout.
+
 ## Mail
 
 SMTP to any server that speaks it: SES, Mailgun, Postmark, Gmail,
