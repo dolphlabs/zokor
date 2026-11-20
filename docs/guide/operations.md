@@ -321,6 +321,14 @@ including the OpenSSL 3.0 in Ubuntu 24.04, these calls return `err`, so call
 `hash_password` once at startup if a service depends on it. zokor sets no
 password policy: length rules and breached-password checks are yours.
 
+**Migrated users.** `check_password` also reads the hashes other
+frameworks store: bcrypt (`$2a$`, `$2b$`, `$2y$`, from Rails and
+Laravel), and Django's `pbkdf2_sha256$...` and `scrypt$...`. For these,
+`password_needs_rehash` is always true. Import the old hashes as they are,
+and store `hash_password(password)` after each successful login, so they
+drain away as users come back. bcrypt reads only a password's first 72
+bytes, as bcrypt always has.
+
 ## Background jobs
 
 Work on a schedule, and work queued to run later, on slang's tasks:

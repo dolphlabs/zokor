@@ -49,7 +49,7 @@
 <div class="page">
   <article class="content">
 <header class="page-head"><p class="page-kicker">Zokor documentation</p><h1>API reference</h1><p class="tagline">Browse public Zokor types, functions, and methods, with signatures and descriptions generated from the source package.</p><p class="agentline"><a href="../api/index.md">Markdown</a> · <a href="../llms.txt">llms.txt</a> · <a href="../api.json">api.json</a></p></header>
-<p>The public package surface contains 663 entries across 45 source files. This page is generated from <code>docs/api.txt</code>, which is generated from <code>zokor/</code>.</p>
+<p>The public package surface contains 676 entries across 46 source files. This page is generated from <code>docs/api.txt</code>, which is generated from <code>zokor/</code>.</p>
 <section class="api-module"><h2 id="auth-sl">auth.sl<a class="anchor" href="#auth-sl" aria-label="Link to this section">#</a></h2>
 <p class="api-module-description">Authentication helpers: bearer JWTs, Basic credentials and API keys.</p>
 <div class="api-item" id="auth-sl-gc"><code>gc struct JwtAuth { keys: [bytes], audience: str, issuer: str, leeway: int }</code></div>
@@ -408,6 +408,22 @@
 <div class="api-item" id="negotiation-sl-negotiator-choose"><code>Negotiator.choose(header: opt[str]) -&gt; result[opt[str], str]</code><p>none means no acceptable offer; err means malformed Accept.</p></div>
 <div class="api-item" id="negotiation-sl-negotiate-s"><code>negotiate[S](c: Ctx[S], n: Negotiator) -&gt; result[str, http.Response]</code><p>A selected media type, or a registered 400/406 response.</p></div>
 </section>
+<section class="api-module"><h2 id="oauth-sl">oauth.sl<a class="anchor" href="#oauth-sl" aria-label="Link to this section">#</a></h2>
+<p class="api-module-description">Sign in with an OAuth 2.0 or OpenID Connect provider: Google, Microsoft, GitHub, Okta, Auth0, Keycloak, or any other that...</p>
+<div class="api-item" id="oauth-sl-gc"><code>gc struct OAuth { name: str, client_id: str, client_secret: str, authorize_url: str, token_url: str, userinfo_url: str, redirect_url: str, scopes: [str], issuer: str, jwks: opt[jwt.Jwks], secret_in_body: bool, extra: [OAuthParam], keys: CookieKeys, flow_ttl: int, timeout: int, http: httpc.Client }</code></div>
+<div class="api-item" id="oauth-sl-struct"><code>struct OAuthParam { name: str, value: str }</code></div>
+<div class="api-item" id="oauth-sl-struct-2"><code>struct OAuthTokens { access_token: str, refresh_token: str, id_token: str, scope: str, expires_in: int }</code></div>
+<div class="api-item" id="oauth-sl-struct-3"><code>struct OAuthLogin { tokens: OAuthTokens, subject: str, email: str, name: str, return_to: str }</code><p>Who signed in.</p></div>
+<div class="api-item" id="oauth-sl-struct-4"><code>struct OAuthError { code: str, detail: str }</code><p>code is the provider&#x27;s own error code (access_denied, invalid_grant, ...) or one of zokor&#x27;s: flow_missing (no or forged flow...</p></div>
+<div class="api-item" id="oauth-sl-oauth-provider"><code>oauth_provider(name: str, client_id: str, client_secret: str, authorize_url: str, token_url: str, redirect_url: str, scopes: [str], keys: CookieKeys) -&gt; result[OAuth, str]</code><p>A plain OAuth 2.0 provider from its endpoints.</p></div>
+<div class="api-item" id="oauth-sl-oidc-provider"><code>oidc_provider(name: str, issuer: str, client_id: str, client_secret: str, redirect_url: str, scopes: [str], keys: CookieKeys, deadline: until) -&gt; result[OAuth, str]</code><p>An OpenID Connect provider, its endpoints and signing keys found through discovery at <code>issuer</code> (which must be https).</p></div>
+<div class="api-item" id="oauth-sl-oauth-from-config"><code>oauth_from_config(cfg: Config, name: str, keys: CookieKeys, deadline: until) -&gt; result[OAuth, str]</code><p>The provider <code>name</code> from OAUTH_&lt;NAME&gt;_* (see the top of this file): discovered when an issuer is set, else from its two endpoints.</p></div>
+<div class="api-item" id="oauth-sl-oauth-start-s"><code>oauth_start[S](c: Ctx[S], o: OAuth, return_to: str) -&gt; result[http.Response, str]</code><p>Starts a sign-in: a redirect to the provider, with the flow cookie that oauth_finish needs.</p></div>
+<div class="api-item" id="oauth-sl-oauth-finish-s"><code>oauth_finish[S](c: Ctx[S], o: OAuth) -&gt; result[OAuthLogin, OAuthError]</code><p>Finishes a sign-in on the redirect URL&#x27;s handler.</p></div>
+<div class="api-item" id="oauth-sl-oauth-done"><code>oauth_done(resp: http.Response, o: OAuth) -&gt; http.Response</code><p><code>resp</code> with the flow cookie deleted: return it from the callback.</p></div>
+<div class="api-item" id="oauth-sl-oauth-refresh"><code>oauth_refresh(o: OAuth, refresh_token: str, scopes: [str]) -&gt; result[OAuthTokens, OAuthError]</code><p>Fresh tokens for a refresh token (RFC 6749 6).</p></div>
+<div class="api-item" id="oauth-sl-oauth-userinfo-t"><code>oauth_userinfo[T](o: OAuth, access_token: str) -&gt; result[T, OAuthError]</code><p>The provider&#x27;s user info for an access token, decoded as T: the OpenID userinfo endpoint, or a provider API such as GitHub&#x27;s...</p></div>
+</section>
 <section class="api-module"><h2 id="openapi-sl">openapi.sl<a class="anchor" href="#openapi-sl" aria-label="Link to this section">#</a></h2>
 <p class="api-module-description">Startup OpenAPI generation from registered routes and explicit wire schemas.</p>
 <div class="api-item" id="openapi-sl-gc"><code>gc struct OpenApiLimits { max_routes: int, max_schemas: int, max_schema_bytes: int, max_total_schema_bytes: int, max_schema_depth: int, max_document_bytes: int, max_collection_entries: int, max_metadata_bytes: int }</code><p>Resource limits for startup metadata and the generated document.</p></div>
@@ -441,8 +457,8 @@
 <section class="api-module"><h2 id="passwords-sl">passwords.sl<a class="anchor" href="#passwords-sl" aria-label="Link to this section">#</a></h2>
 <p class="api-module-description">Password hashing.</p>
 <div class="api-item" id="passwords-sl-hash-password"><code>hash_password(password: str) -&gt; result[str, str]</code><p>A new salted hash of <code>password</code>, at the default cost.</p></div>
-<div class="api-item" id="passwords-sl-check-password"><code>check_password(password: str, stored: str) -&gt; result[bool, str]</code><p>Whether <code>password</code> matches <code>stored</code>.</p></div>
-<div class="api-item" id="passwords-sl-password-needs-rehash"><code>password_needs_rehash(stored: str) -&gt; result[bool, str]</code><p>Whether <code>stored</code> is below the current default cost: after a successful check_password, hash the password again and store that.</p></div>
+<div class="api-item" id="passwords-sl-check-password"><code>check_password(password: str, stored: str) -&gt; result[bool, str]</code><p>Whether <code>password</code> matches <code>stored</code>, an Argon2id hash or one of the carried-over formats above.</p></div>
+<div class="api-item" id="passwords-sl-password-needs-rehash"><code>password_needs_rehash(stored: str) -&gt; result[bool, str]</code><p>Whether <code>stored</code> should be replaced: an Argon2id hash below the current default cost, or any carried-over format.</p></div>
 <div class="api-item" id="passwords-sl-password-decoy"><code>password_decoy(password: str)</code><p>The work of one check_password, for when there is no hash to check.</p></div>
 </section>
 <section class="api-module"><h2 id="postgres-sl">postgres.sl<a class="anchor" href="#postgres-sl" aria-label="Link to this section">#</a></h2>

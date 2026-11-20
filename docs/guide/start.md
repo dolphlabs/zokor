@@ -89,4 +89,6 @@ into your build.
 slang 0.2.8 or later. zokor v0.2.1's whole suite (`make check`) passes on
 the 0.2.8 release. Older slang releases lack pieces zokor uses: the
 compiler-backed `pg.rows_as`, `link.tls_accept` for HTTPS, and `link.split`
-for served WebSocket and Socket.IO routes.
+for served WebSocket and Socket.IO routes. On `dev`, after v0.2.1,
+`check_password`'s bcrypt and Django scrypt hashes need slang's `dev`
+branch (`crypto.bcrypt_verify` and `crypto.scrypt`) until its next release.

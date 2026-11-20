@@ -202,7 +202,9 @@ into your build.
 slang 0.2.8 or later. zokor v0.2.1's whole suite (`make check`) passes on
 the 0.2.8 release. Older slang releases lack pieces zokor uses: the
 compiler-backed `pg.rows_as`, `link.tls_accept` for HTTPS, and `link.split`
-for served WebSocket and Socket.IO routes.
+for served WebSocket and Socket.IO routes. On `dev`, after v0.2.1,
+`check_password`'s bcrypt and Django scrypt hashes need slang's `dev`
+branch (`crypto.bcrypt_verify` and `crypto.scrypt`) until its next release.
 
 
 # The zokor command
@@ -344,6 +346,71 @@ fn require_user(c: zokor.Ctx[App]) -> opt[http.Response] {
   name, so a request can be traced to who sent it.
 - Only SHA-256 digests are kept in memory. Every key is compared, in
   constant time.
+
+## Sign-in with OAuth and OpenID Connect
+
+"Sign in with Google" (or Microsoft, GitHub, Okta, Auth0, Keycloak): the
+authorization code flow with PKCE, two handlers, and nothing to store
+between them.
+
+```slang
+// OAUTH_GOOGLE_ISSUER, _CLIENT_ID, _CLIENT_SECRET, _REDIRECT_URL, _SCOPES
+let keys = zokor.cookie_keys_from(cfg);
+let gr = zokor.oauth_from_config(cfg, "google", keys, until_of(time.mono() + 10000000000));
+guard let google = gr else let e = err_of(gr) { println(e); exit(1); }
+
+fn login(c: zokor.Ctx[App]) -> http.Response {
+    return zokor.oauth_start(c, c.state.google, c.query("next")) ??
+        zokor.text(500, "sign-in is not configured");
+}
+
+fn callback(c: zokor.Ctx[App]) -> http.Response {
+    let r = zokor.oauth_finish(c, c.state.google);
+    guard let login = r else let e = err_of(r) {
+        // e.code: access_denied, state_mismatch, flow_expired, id_token, ...
+        return zokor.text(401, "sign-in failed");
+    }
+    // login.subject: the provider's id for the user; login.email: verified only
+    let resp = zokor.redirect(303, login.return_to);
+    return zokor.oauth_done(resp, c.state.google);
+}
+```
+
+| Setting (for a provider named `google`) | |
+|---|---|
+| `OAUTH_GOOGLE_ISSUER` | OpenID Connect: endpoints and signing keys come from the issuer's discovery document |
+| `OAUTH_GOOGLE_AUTHORIZE_URL`, `OAUTH_GOOGLE_TOKEN_URL` | plain OAuth 2.0 instead of an issuer (GitHub) |
+| `OAUTH_GOOGLE_USERINFO_URL` | optional; `oauth_userinfo[T](o, token)` reads it |
+| `OAUTH_GOOGLE_CLIENT_ID`, `OAUTH_GOOGLE_CLIENT_SECRET`, `OAUTH_GOOGLE_REDIRECT_URL` | the secret is blank for a public client |
+| `OAUTH_GOOGLE_SCOPES` | space-separated; `openid email profile` by default with an issuer |
+
+- **Nothing to store between the two requests.** `oauth_start` seals the
+  state, the PKCE verifier and the OpenID nonce into a `__Host-` cookie
+  with AES-256-GCM, under a key derived from `COOKIE_KEYS`, for ten
+  minutes (`o.flow_ttl`). Rotating `COOKIE_KEYS` keeps sign-ins in flight
+  working. The cookie cannot be read, changed, or moved to another
+  provider.
+- **Checked before the code is used.** The cookie must open and be
+  unexpired, and the `state` must match it (compared in constant time). An
+  `iss` in the redirect must be the configured issuer (RFC 9207, against
+  mix-up attacks). The provider's own error, such as `access_denied`,
+  comes back as `e.code`.
+- **ID tokens are verified.** With an issuer, the token reply must carry an
+  ID token. Its signature is checked against the issuer's JWKS (fetched
+  and rotated by `dolphlabs/jwt`), then issuer, audience, expiry and
+  nonce. `login.email` is set only when the provider says it is verified.
+- **https only.** Every endpoint must be https, except http to localhost
+  for a provider running on your machine. The discovery document must
+  name exactly the issuer asked for, and offer PKCE S256 if it lists PKCE
+  methods. The provider is never followed through a redirect.
+- `oauth_refresh(o, refresh_token, [])` renews tokens, and
+  `oauth_provider(...)` / `oidc_provider(...)` build a provider in code.
+  `o.extra` adds parameters such as `prompt=consent`, and
+  `o.secret_in_body` sends the secret as `client_secret_post` (discovery
+  sets it when that is all the provider takes).
+
+Not yet: the implicit and device flows, private_key_jwt client
+authentication, and RP-initiated logout.
 
 ## Operator injection (MongoDB)
 
@@ -1399,6 +1466,14 @@ hash at the current cost. Argon2id needs OpenSSL 3.2 or newer: on older builds,
 including the OpenSSL 3.0 in Ubuntu 24.04, these calls return `err`, so call
 `hash_password` once at startup if a service depends on it. zokor sets no
 password policy: length rules and breached-password checks are yours.
+
+**Migrated users.** `check_password` also reads the hashes other
+frameworks store: bcrypt (`$2a$`, `$2b$`, `$2y$`, from Rails and
+Laravel), and Django's `pbkdf2_sha256$...` and `scrypt$...`. For these,
+`password_needs_rehash` is always true. Import the old hashes as they are,
+and store `hash_password(password)` after each successful login, so they
+drain away as users come back. bcrypt reads only a password's first 72
+bytes, as bcrypt always has.
 
 ## Background jobs
 
@@ -2530,6 +2605,31 @@ Negotiator.choose(header: opt[str]) -> result[opt[str], str]
 negotiate[S](c: Ctx[S], n: Negotiator) -> result[str, http.Response]
     A selected media type, or a registered 400/406 response.
 
+## oauth.sl -- Sign in with an OAuth 2.0 or OpenID Connect provider: Google, Microsoft, GitHub, Okta, Auth0, Keycloak, or any other that...
+gc struct OAuth { name: str, client_id: str, client_secret: str, authorize_url: str, token_url: str, userinfo_url: str, redirect_url: str, scopes: [str], issuer: str, jwks: opt[jwt.Jwks], secret_in_body: bool, extra: [OAuthParam], keys: CookieKeys, flow_ttl: int, timeout: int, http: httpc.Client }
+struct OAuthParam { name: str, value: str }
+struct OAuthTokens { access_token: str, refresh_token: str, id_token: str, scope: str, expires_in: int }
+struct OAuthLogin { tokens: OAuthTokens, subject: str, email: str, name: str, return_to: str }
+    Who signed in.
+struct OAuthError { code: str, detail: str }
+    code is the provider's own error code (access_denied, invalid_grant, ...) or one of zokor's: flow_missing (no or forged flow...
+oauth_provider(name: str, client_id: str, client_secret: str, authorize_url: str, token_url: str, redirect_url: str, scopes: [str], keys: CookieKeys) -> result[OAuth, str]
+    A plain OAuth 2.0 provider from its endpoints.
+oidc_provider(name: str, issuer: str, client_id: str, client_secret: str, redirect_url: str, scopes: [str], keys: CookieKeys, deadline: until) -> result[OAuth, str]
+    An OpenID Connect provider, its endpoints and signing keys found through discovery at `issuer` (which must be https).
+oauth_from_config(cfg: Config, name: str, keys: CookieKeys, deadline: until) -> result[OAuth, str]
+    The provider `name` from OAUTH_<NAME>_* (see the top of this file): discovered when an issuer is set, else from its two endpoints.
+oauth_start[S](c: Ctx[S], o: OAuth, return_to: str) -> result[http.Response, str]
+    Starts a sign-in: a redirect to the provider, with the flow cookie that oauth_finish needs.
+oauth_finish[S](c: Ctx[S], o: OAuth) -> result[OAuthLogin, OAuthError]
+    Finishes a sign-in on the redirect URL's handler.
+oauth_done(resp: http.Response, o: OAuth) -> http.Response
+    `resp` with the flow cookie deleted: return it from the callback.
+oauth_refresh(o: OAuth, refresh_token: str, scopes: [str]) -> result[OAuthTokens, OAuthError]
+    Fresh tokens for a refresh token (RFC 6749 6).
+oauth_userinfo[T](o: OAuth, access_token: str) -> result[T, OAuthError]
+    The provider's user info for an access token, decoded as T: the OpenID userinfo endpoint, or a provider API such as GitHub's...
+
 ## openapi.sl -- Startup OpenAPI generation from registered routes and explicit wire schemas.
 gc struct OpenApiLimits { max_routes: int, max_schemas: int, max_schema_bytes: int, max_total_schema_bytes: int, max_schema_depth: int, max_document_bytes: int, max_collection_entries: int, max_metadata_bytes: int }
     Resource limits for startup metadata and the generated document.
@@ -2580,9 +2680,9 @@ cursor_page[S, T](c: Ctx[S], p: Page, rows: [T], key: fn(T) -> [str]) -> http.Re
 hash_password(password: str) -> result[str, str]
     A new salted hash of `password`, at the default cost.
 check_password(password: str, stored: str) -> result[bool, str]
-    Whether `password` matches `stored`.
+    Whether `password` matches `stored`, an Argon2id hash or one of the carried-over formats above.
 password_needs_rehash(stored: str) -> result[bool, str]
-    Whether `stored` is below the current default cost: after a successful check_password, hash the password again and store that.
+    Whether `stored` should be replaced: an Argon2id hash below the current default cost, or any carried-over format.
 password_decoy(password: str)
     The work of one check_password, for when there is no hash to check.
 

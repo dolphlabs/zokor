@@ -1303,6 +1303,64 @@
       ]
     },
     {
+      "file": "oauth.sl",
+      "description": "Sign in with an OAuth 2.0 or OpenID Connect provider: Google, Microsoft, GitHub, Okta, Auth0, Keycloak, or any other that...",
+      "items": [
+        {
+          "signature": "gc struct OAuth { name: str, client_id: str, client_secret: str, authorize_url: str, token_url: str, userinfo_url: str, redirect_url: str, scopes: [str], issuer: str, jwks: opt[jwt.Jwks], secret_in_body: bool, extra: [OAuthParam], keys: CookieKeys, flow_ttl: int, timeout: int, http: httpc.Client }",
+          "description": ""
+        },
+        {
+          "signature": "struct OAuthParam { name: str, value: str }",
+          "description": ""
+        },
+        {
+          "signature": "struct OAuthTokens { access_token: str, refresh_token: str, id_token: str, scope: str, expires_in: int }",
+          "description": ""
+        },
+        {
+          "signature": "struct OAuthLogin { tokens: OAuthTokens, subject: str, email: str, name: str, return_to: str }",
+          "description": "Who signed in."
+        },
+        {
+          "signature": "struct OAuthError { code: str, detail: str }",
+          "description": "code is the provider's own error code (access_denied, invalid_grant, ...) or one of zokor's: flow_missing (no or forged flow..."
+        },
+        {
+          "signature": "oauth_provider(name: str, client_id: str, client_secret: str, authorize_url: str, token_url: str, redirect_url: str, scopes: [str], keys: CookieKeys) -> result[OAuth, str]",
+          "description": "A plain OAuth 2.0 provider from its endpoints."
+        },
+        {
+          "signature": "oidc_provider(name: str, issuer: str, client_id: str, client_secret: str, redirect_url: str, scopes: [str], keys: CookieKeys, deadline: until) -> result[OAuth, str]",
+          "description": "An OpenID Connect provider, its endpoints and signing keys found through discovery at `issuer` (which must be https)."
+        },
+        {
+          "signature": "oauth_from_config(cfg: Config, name: str, keys: CookieKeys, deadline: until) -> result[OAuth, str]",
+          "description": "The provider `name` from OAUTH_<NAME>_* (see the top of this file): discovered when an issuer is set, else from its two endpoints."
+        },
+        {
+          "signature": "oauth_start[S](c: Ctx[S], o: OAuth, return_to: str) -> result[http.Response, str]",
+          "description": "Starts a sign-in: a redirect to the provider, with the flow cookie that oauth_finish needs."
+        },
+        {
+          "signature": "oauth_finish[S](c: Ctx[S], o: OAuth) -> result[OAuthLogin, OAuthError]",
+          "description": "Finishes a sign-in on the redirect URL's handler."
+        },
+        {
+          "signature": "oauth_done(resp: http.Response, o: OAuth) -> http.Response",
+          "description": "`resp` with the flow cookie deleted: return it from the callback."
+        },
+        {
+          "signature": "oauth_refresh(o: OAuth, refresh_token: str, scopes: [str]) -> result[OAuthTokens, OAuthError]",
+          "description": "Fresh tokens for a refresh token (RFC 6749 6)."
+        },
+        {
+          "signature": "oauth_userinfo[T](o: OAuth, access_token: str) -> result[T, OAuthError]",
+          "description": "The provider's user info for an access token, decoded as T: the OpenID userinfo endpoint, or a provider API such as GitHub's..."
+        }
+      ]
+    },
+    {
       "file": "openapi.sl",
       "description": "Startup OpenAPI generation from registered routes and explicit wire schemas.",
       "items": [
@@ -1420,11 +1478,11 @@
         },
         {
           "signature": "check_password(password: str, stored: str) -> result[bool, str]",
-          "description": "Whether `password` matches `stored`."
+          "description": "Whether `password` matches `stored`, an Argon2id hash or one of the carried-over formats above."
         },
         {
           "signature": "password_needs_rehash(stored: str) -> result[bool, str]",
-          "description": "Whether `stored` is below the current default cost: after a successful check_password, hash the password again and store that."
+          "description": "Whether `stored` should be replaced: an Argon2id hash below the current default cost, or any carried-over format."
         },
         {
           "signature": "password_decoy(password: str)",
