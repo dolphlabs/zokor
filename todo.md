@@ -368,11 +368,11 @@ to its generic response helper. No compiler change is included here.
   `zokor add route <feature> <METHOD> <path> <handler>` registers a route
   at the server's marker with a 501 handler and an auth-and-mounted test.
   `zokor check` enforces the layout (section 3).
-- [ ] Tag `v0.2.0`, the release the README and the guide pin (`v0.1.0`
-  was tagged 2026-09-30, before the `src/` -> `zokor/` rename), once a
-  slang release includes what zokor needs (generics, `dir` pins,
-  `exclude`, and this year's fixes). Until then the README's
-  Requirements section is the truth.
+- [x] Tag `v0.2.0` (2026-10-15). `v0.1.0` was tagged 2026-09-30,
+  before the `src/` -> `zokor/` rename.
+- [x] Tag `v0.2.1` (2026-11-20): durable jobs, sessions, shared state,
+  span export, multi-instance cron and mail over SMTP, on slang 0.2.8.
+  The README and `zokor new` pin it.
 
 ## Performance
 
