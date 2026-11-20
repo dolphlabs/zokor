@@ -28,7 +28,7 @@ fn default_git() -> str {
 }
 
 fn default_tag() -> str {
-    return "v0.2.0";
+    return "v0.2.1";
 }
 
 fn subst(s: str, v: Vars) -> str {
