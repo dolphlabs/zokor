@@ -63,6 +63,16 @@ library, made and merged there first.
 
 ## 2. Browser-facing APIs
 
+- [x] **Sessions, CSRF and passwords** (2026-11-06, feat/sessions):
+  `sessions_in_memory`/`sessions_redis` with the store holding only a
+  SHA-256 of the token, rotation at login, idle and absolute limits on the
+  server, `end_all`, and 503 rather than a pass when the store is down.
+  `csrf_check` follows Sec-Fetch-Site, then Origin against Host, with
+  trusted origins, plus a per-session token as a second layer.
+  `hash_password` and friends wrap the `argon` package, a new dependency.
+  Argon2id needs OpenSSL 3.2, so on Ubuntu 24.04's 3.0 these return err and
+  their tests skip: Linux CI does not exercise them. Not done: concurrent
+  saves race (last wins), and no login throttling helper beyond `rate_limit`.
 - [x] **CORS**: allowed origins, methods, headers, credentials, max-age,
   correct `Vary: Origin`, and a real preflight answer. `r.cors(policy)` /
   `cors_from(cfg)` (`CORS_*`); applied by the router, so preflights skip
@@ -107,6 +117,14 @@ library, made and merged there first.
   rotation, aud/iss, leeway), `basic_credentials`/`basic_matches`,
   `api_keys_from`/`api_key_client`. Password hashing is still a pointer to
   dolphlabs/argon, not a helper here.
+- [x] **Shared state across instances** (2026-11-06, feat/shared-state):
+  `rate_limiter_redis` runs the sliding log in an atomic script on Redis's
+  clock and falls back to a local count when Redis does not answer;
+  `token_store_redis` keeps only token hashes and refuses when Redis is
+  gone; `hub.share` relays sends over Redis pub/sub through a bounded queue,
+  so a send still never waits. Not done: pub/sub is at most once, rooms and
+  counts stay per instance, and a Redis that hangs adds `timeout` to every
+  rate-limited request.
 - [x] **Rate limiter, finished**: `RateLimiter`/`rate_limit` exist
   (sliding window, per key, time injected via `take_at`, `429` +
   `Retry-After`). Still owed: sharding, `RateLimit-*` headers, and keying
@@ -141,6 +159,15 @@ library, made and merged there first.
   `dolphlabs/mongo` (optional, like `redis_from_config`), and the error
   shape for a duplicate key, so a service on Mongo gets what a service on
   Postgres does.
+- [x] **Mail over SMTP**: `mailer_from_config` (`SMTP_URL` as
+  `smtps://`, `smtp://` with STARTTLS required, or `smtp+plain://` for
+  loopback only), `new_mail`, `m.send`. Protocol and MIME are sans-io in
+  `internal/smtp`. Every field is checked before connecting, every problem
+  at once. TLS is always verified, credentials go only inside TLS, and
+  replies injected before the handshake are refused. Errors carry the SMTP
+  code and `permanent` for job retries. Tested against an in-process fake
+  and against Mailpit v1.27 (plain, STARTTLS and implicit TLS with AUTH).
+  Not done: connection reuse across mails, XOAUTH2, SMTPUTF8.
 - [x] **[slang] A sufficient `time` package**: slang's `timez` (slang
   #409): calendar time, RFC 3339 / HTTP / RFC 2822 dates, strftime,
   durations, IANA zones from the system tz database, test clocks and
@@ -201,6 +228,13 @@ library, made and merged there first.
   exposition, concurrent updates and a real blocked-handler scrape are
   tested. Default-off probe: +1 startup allocation (64 bytes), none per
   request; 974 -> 1,000.5 ns medians in ABBA x4, inside the run spread.
+- [x] **Span export** (2026-11-06, feat/span-export): OTLP/HTTP JSON to
+  any collector. `sample_ratio`, server spans named for the route pattern,
+  `exporter.start` for manual spans, `traced_send` for client spans, a bounded
+  queue that drops and counts. Verified against a real Jaeger 1.62: two services
+  gave one trace, no warnings, every parent link intact. Not done: no retry on
+  429 or 503, no protobuf, no spans from static routes, background jobs start
+  no trace, and `trace_request` alone still leaves a hole in the tree.
 - [x] **Tracing**: opt-in W3C `traceparent`/`tracestate` parsing, explicit
   request contexts and outbound request copies with child spans. Context
   survives frame fallback, static dispatch and handler panic isolation.
@@ -215,8 +249,17 @@ library, made and merged there first.
   its own task (a panic is that run's failure); an in-memory queue with
   per-kind attempts and exponential backoff (1 s doubling, capped at an
   hour); stops starting runs on SIGTERM. Tests drive it with `tick` on a
-  fixed clock. Not done: a durable queue (Redis or Postgres) -- queued
-  work is lost on restart.
+  fixed clock.
+- [x] **Durable jobs** (2026-11-06, feat/durable-jobs): `jobs.durable(db)`
+  moves the queue to a `zokor_jobs` table (`jobs_schema()`), and `enqueue_tx`
+  queues inside the caller's transaction. Claims use `FOR UPDATE SKIP
+  LOCKED` under a lease, writes after a claim are fenced on worker and
+  attempt, attempts are counted at the claim so a crash loop ends, and a job
+  out of attempts stays with `dead_at` and `last_error`. At least once.
+  A durable queue also runs each cron turn once across instances, through
+  `zokor_job_turns`. Not done: no lease heartbeat, so a run that
+  ignores its deadline past timeout + 30 s runs twice; no LISTEN/NOTIFY, so
+  a new job waits up to `poll_every`; `retry_dead` is SQL in the README.
 - [x] **OpenAPI**: generate a startup OpenAPI 3.1.1 document from
   `routes_list`, explicit JSON wire DTO definitions and the error registry.
   Request/response/parameter metadata, local recursive schema references,

@@ -156,6 +156,15 @@ Cors.preflight(origin: str) -> http.Response
 is_preflight(method: str, raw_headers: bytes) -> bool
     Whether a request is a CORS preflight: OPTIONS, with an Origin and the method the real request will use.
 
+## csrf.sl -- Cross-site request forgery.
+gc struct CsrfGuard { trusted: map[str]bool }
+csrf_guard(origins: [str]) -> result[CsrfGuard, str]
+    A guard that also accepts these origins, like https://app.example.com.
+csrf_guard_from(cfg: Config) -> CsrfGuard
+    CSRF_TRUSTED_ORIGINS, comma separated.
+csrf_check[S](c: Ctx[S], g: CsrfGuard) -> opt[http.Response]
+    For a `before`: none to go on, or the 403.
+
 ## errors.sl -- Failure, as one shape.
 gc struct Code { name: str, status: i32, message: str }
 gc struct FieldError { field: str, reason: str }
@@ -202,6 +211,9 @@ default_ready_timeout() -> int
 check_name_ok(name: str) -> bool
     A check name is 1-64 of [A-Za-z0-9_.-]: it is written into the JSON body and to stderr as is.
 
+## hub_relay.sl -- A Hub across instances.
+struct RelayLosses { dropped: int, lost: int, malformed: int, reconnects: int }
+
 ## idempotency.sl -- Idempotency keys (the IETF Idempotency-Key header): a client retrying a POST or PATCH after a timeout gets the first answer...
 gc struct Idempotency { ttl: int, lock_ttl: int, max_body: int, scope_local: str, required: bool, shards: [IdemShard], remote: opt[redis.Pool] }
 idempotency_in_memory() -> Idempotency
@@ -224,9 +236,9 @@ request_ids() -> RequestIds
 RequestIds.next() -> str
 
 ## jobs.sl -- Background jobs: work on a schedule, and work queued to run later.
-gc struct JobCtx[S] { state: S, name: str, payload: str, attempt: int, due: timez.Time, deadline: until }
+gc struct JobCtx[S] { state: S, name: str, payload: str, attempt: int, job_id: int, due: timez.Time, deadline: until }
     What a run gets: the service's state, which run this is, and the deadline to pass to everything that can block.
-gc struct Jobs[S] { state: S, zone: timez.Zone, clock: timez.Clock, logger: Logger, default_timeout: int, scheduled: [ScheduledJob[S]], kinds: [JobKind[S]], queue: [QueuedJob], lock: mutex, in_flight: int, stopping: bool, failures: int }
+gc struct Jobs[S] { state: S, zone: timez.Zone, clock: timez.Clock, logger: Logger, default_timeout: int, scheduled: [ScheduledJob[S]], kinds: [JobKind[S]], queue: [QueuedJob], lock: mutex, in_flight: int, stopping: bool, failures: int, store: opt[pg.Pool], max_running: int, poll_every: int, store_timeout: int, claimed: int, worker: str }
 new_jobs[S](state: S) -> Jobs[S]
 job_backoff(attempt: int) -> int
     The wait before try `attempt + 1`: 1 s, 2 s, 4 s ...
@@ -248,6 +260,20 @@ Jobs.stop() -> int
     Stops starting runs.
 Jobs.wait_runs(timeout: int) -> bool
     Waits until no run is in progress, or `timeout` nanoseconds pass; true when none is.
+Jobs.durable(db: pg.Pool) -> result[int, str]
+    Moves queued jobs to the zokor_jobs table of `db`.
+Jobs.pending(deadline: until) -> result[int, str]
+    Durable jobs not yet finished or given up on.
+Jobs.dead(deadline: until) -> result[int, str]
+    Durable jobs that ran out of attempts and wait for a person.
+Jobs.poll() -> result[int, str]
+    Claims due rows, up to the room left under max_running, and starts each in its own task.
+
+## jobs_durable.sl -- A queue of background jobs that survives restarts, in Postgres.
+jobs_schema() -> str
+    The SQL of the table a durable queue needs, for a file of its own in your migrations directory, such as...
+enqueue_tx(c: pg.Conn, kind: str, payload: str, at: timez.Time, deadline: until) -> result[int, str]
+    Queues one run of `kind` in the transaction `c` is in: it exists if that transaction commits, and never otherwise.
 
 ## json.sl -- JSON, for the shapes you know and the ones you do not.
 enum JsonKind { Null, Bool, Number, String, Array, Object }
@@ -389,6 +415,28 @@ LogFormat.json(ev: LogEvent) -> str
     The same as single strings, without the newline: for a consumer that wants one line at a time.
 LogFormat.pretty(ev: LogEvent, color: bool, since_ns: int) -> str
 
+## mail.sl -- Sending mail over SMTP, to any server that speaks it: SES, Mailgun, Postmark, Postfix, Gmail, or Mailpit on a laptop.
+enum MailSecurity { Tls, StartTls, Plain }
+gc struct Mailer { host: str, port: int, security: MailSecurity, user: str, pass: str, from: str, helo: str, timeout: int, max_reply: int, tls_ctx: rawptr }
+struct MailAttachment { filename: str, content_type: str, data: bytes }
+struct MailHeader { name: str, value: str }
+gc struct Mail { from: str, to: [str], cc: [str], bcc: [str], reply_to: [str], subject: str, text: str, html: str, attachments: [MailAttachment], headers: [MailHeader] }
+    One message.
+struct MailSent { message_id: str, recipients: int, reply: str }
+gc struct MailError { code: int, permanent: bool, detail: str, problems: [Problem] }
+max_recipients() -> int { return 100; } pub fn new_mail(to: str, subject: str, text: str) -> Mail
+    The most envelope recipients one mail may have: the number every server must accept (RFC 5321 4.5.3.1.8).
+Mail.attach(filename: str, content_type: str, data: bytes) -> Mail
+Mail.header(name: str, value: str) -> Mail
+new_mailer(url: str, ca_file: str) -> result[Mailer, str]
+    A mailer from an SMTP_URL-style string (see the top of this file).
+mailer_from_config(cfg: Config) -> result[Mailer, str]
+    The mailer SMTP_URL and its companions describe; err when SMTP_URL is unset or wrong.
+has_mailer(cfg: Config) -> bool
+Mailer.send(mail: Mail) -> result[MailSent, MailError]
+    Sends one mail within the mailer's timeout.
+Mailer.send_until(mail: Mail, deadline: until) -> result[MailSent, MailError]
+
 ## metrics.sl -- Opt-in Prometheus metrics with bounded request series and custom scalars.
 gc struct MetricsConfig { path: str, max_series: int, max_custom: int, buckets_ns: [int] }
 metrics_config() -> MetricsConfig
@@ -479,6 +527,16 @@ offset_page[S, T](c: Ctx[S], p: Page, rows: [T], total: opt[int]) -> http.Respon
 cursor_page[S, T](c: Ctx[S], p: Page, rows: [T], key: fn(T) -> [str]) -> http.Response
     A keyset page of `rows` -- up to p.fetch(); one past the limit means there is a next page, whose cursor is `key` of the last...
 
+## passwords.sl -- Password hashing.
+hash_password(password: str) -> result[str, str]
+    A new salted hash of `password`, at the default cost.
+check_password(password: str, stored: str) -> result[bool, str]
+    Whether `password` matches `stored`.
+password_needs_rehash(stored: str) -> result[bool, str]
+    Whether `stored` is below the current default cost: after a successful check_password, hash the password again and store that.
+password_decoy(password: str)
+    The work of one check_password, for when there is no hash to check.
+
 ## postgres.sl -- Postgres, wired to zokor's config, results and error envelope.
 pg_from_config(cfg: Config) -> result[pg.Pool, str]
     DATABASE_URL (postgres://user:pass@host:port/db?sslmode=require) and DB_POOL_SIZE (default 10).
@@ -502,9 +560,11 @@ db_failure(reg: Registry, e: str, request_id: str) -> http.Response
 
 ## ratelimit.sl -- Rate limiting.
 gc struct RateShard { hits: map[str][int], lock: mutex, since_sweep: int }
-gc struct RateLimiter { limit: int, window: int, shards: [RateShard], sweep_every: int }
+gc struct RateLimiter { limit: int, window: int, shards: [RateShard], sweep_every: int, remote: opt[redis.Pool], name: str, timeout: int, fallbacks: int, fallback_lock: mutex }
 new_rate_limiter(limit: int, window_ns: int) -> RateLimiter
     At most `limit` requests per client in any `window_ns` nanoseconds (1000000000 is one second).
+rate_limiter_redis(p: redis.Pool, name: str, limit: int, window_ns: int) -> RateLimiter
+    The same limit shared by every instance, counted in Redis.
 retry_after_secs(wait_ns: int) -> int
     Whole seconds until `wait_ns` has passed, never below 1: a Retry-After of 0 invites an immediate retry that will be refused.
 struct RateCheck { wait: int, remaining: int, reset: int }
@@ -513,6 +573,8 @@ RateLimiter.take_at(key: str, now: int) -> int
     Counts one request for `key` at `now` (time.mono nanoseconds).
 RateLimiter.check_at(key: str, now: int) -> RateCheck
     take_at, with what is left: what the RateLimit-* headers report.
+RateLimiter.check(key: str) -> RateCheck
+    One check of `key` now: shared when the limiter is, falling back to this process's count when Redis does not answer.
 RateLimiter.take(key: str) -> int
     The same, now.
 RateLimiter.tracked() -> int
@@ -574,7 +636,7 @@ gc struct Ctx[S] { state: S, req: http.Request, params: opt[map[str]str], param1
 struct Served { resp: http.Response, route: str, upgrade: opt[Socket] }
     A response and the route pattern that produced it, for the request log.
 gc struct Route[S] { method: Method, pattern: str, befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], segs: [str], names: [str], wild: int, fkind: int, fpath: str, handler: fn(Ctx[S]) -> http.Response, has_static: bool, static_status: i32, static_ctype: str, static_body: bytes, static_rendered: bytes, static_hit: opt[http.StaticBody], static_close_hit: opt[http.StaticBody], no_map: opt[map[str]str], ws: int }
-gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security, sanitize: SanitizeMode, auto_etag: bool, rindex: [RNode], static_paths: map[str]int, idem: opt[Idempotency], gzip: opt[Compression], mounts: [FileMount], no_lines: opt[[str]], observations: opt[Metrics], tracer: opt[Tracer], no_tracer: opt[Tracer], request_locals: opt[map[str]str], sockets: [WsRoute[S]], no_socket: opt[Socket] }
+gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security, sanitize: SanitizeMode, auto_etag: bool, rindex: [RNode], static_paths: map[str]int, idem: opt[Idempotency], gzip: opt[Compression], mounts: [FileMount], no_lines: opt[[str]], observations: opt[Metrics], tracer: opt[Tracer], no_tracer: opt[Tracer], spans: opt[SpanExporter], request_locals: opt[map[str]str], sockets: [WsRoute[S]], no_socket: opt[Socket] }
     A `before` runs ahead of the handler and may end the request by returning a response; `none` carries on.
 new_router[S](state: S) -> Router[S]
     An application builds its router from its state alone; everything else starts empty or at the default a correct server should...
@@ -634,6 +696,8 @@ Router.routes_list() -> [str]
 Router.metrics(m: Metrics) -> int
     Opt-in Prometheus endpoint; a service's explicit route still wins.
 Router.tracing(driver: Tracer) -> int
+Router.export_spans(e: SpanExporter) -> int
+    Sends a span for every sampled request to `e`.
 Router.allowed(p: str) -> [Method]
     The methods registered for a path, for `Allow` on a 405 and for an automatic OPTIONS.
 Router.serve(req: http.Request) -> http.Response
@@ -780,6 +844,37 @@ listen_and_serve[S](r: Router[S], port: int) -> result[int, str]
 listen_and_serve_with[S](r: Router[S], port: int, sc: ServerConfig) -> result[int, str]
     Same, with timeouts, limits, and the shutdown drain window under the caller's control -- built from config with...
 
+## sessions.sl -- Browser sessions: a login that lives on the server.
+gc struct Session { subject: str, csrf: str, created: int, data: map[str]str, seen: int, key: str, token: str }
+Session.get(key: str) -> str
+    The value saved under `key`, "" when there is none.
+Session.set(key: str, value: str) -> int
+    Sets a value; `sessions.save` stores it.
+Session.remove(key: str) -> bool
+Session.csrf_matches(token: str) -> bool
+    Whether `token` is this session's CSRF token, in constant time.
+gc struct Sessions { idle_ttl: int, absolute_ttl: int, cookie: Cookie, clock: timez.Clock, timeout: int, remote: opt[redis.Pool], local: map[str]LocalSession, by_subject: map[str]map[str]bool, lock: mutex, since_sweep: int }
+sessions_in_memory() -> Sessions
+    Sessions kept in this process: right for one instance, and every login ends with it.
+sessions_redis(p: redis.Pool) -> Sessions
+    Sessions kept in Redis, shared by every instance behind the balancer.
+Sessions.save(s: Session) -> result[int, str]
+    Stores what has changed in `s`.
+Sessions.end_all(subject: str) -> result[int, str]
+    Ends every session of `subject`, on every device: after a password change, or to lock an account.
+session_start[S](c: Ctx[S], ss: Sessions, subject: str) -> result[Session, str]
+    A session for `subject`, in place of any the request came with.
+session_cookie(resp: http.Response, ss: Sessions, s: Session) -> result[http.Response, str]
+    Puts the cookie for a session just started on `resp`.
+session_of[S](c: Ctx[S], ss: Sessions) -> result[opt[Session], str]
+    The request's session, none when it has no good one.
+session_require[S](c: Ctx[S], ss: Sessions) -> result[Session, http.Response]
+    The request's session, or the response to send: 401 without one, 503 when the store is down.
+session_end[S](c: Ctx[S], ss: Sessions, resp: http.Response) -> result[http.Response, str]
+    Logs the request out: ends its session and clears the cookie on `resp`.
+csrf_token_ok[S](c: Ctx[S], s: Session) -> bool
+    Whether the request's x-csrf-token header is this session's token: the second layer csrf.sl describes.
+
 ## sio_serve.sl -- Socket.IO routes, served: Engine.IO v4 and Socket.IO v5 (what socket.io-client 3 and 4 speak), on both of its transports.
 gc struct SioRoute[S] { settings: SioSettings, event: fn(S, Socket, SioEvent), connect: opt[fn(S, Socket, str, str) -> result[bool, str]], disconnect: opt[fn(S, Socket, str, str)], sessions: SioSessions }
 sio_route[S](event: fn(S, Socket, SioEvent)) -> SioRoute[S]
@@ -807,7 +902,7 @@ Socket.is_open() -> bool
 Socket.local(key: str) -> str
     A value the handshake's hooks set on the request, "" when none did.
 Socket.set_local(key: str, v: str) -> int
-gc struct Hub { id: str, lock: mutex, sockets: map[str]Socket, rooms: map[str]map[str]bool }
+gc struct Hub { id: str, lock: mutex, sockets: map[str]Socket, rooms: map[str]map[str]bool, relay: opt[HubRelay] }
     Sockets by id, and rooms of them: what a chat, a live dashboard or a notification fan-out needs to reach more than the one...
 new_hub() -> Hub
 Hub.add(s: Socket) -> int
@@ -830,6 +925,43 @@ Hub.emit_all(namespace: str, name: str, args_json: str, except: str) -> int
 Hub.emit_to_room(room: str, namespace: str, name: str, args_json: str, except: str) -> int
 Hub.emit_binary_to_room(room: str, namespace: str, name: str, args_json: str, data: [bytes], except: str) -> int
     emit_binary to every Socket.IO session in a room ("" for the hub).
+Hub.share(url: str, channel: str) -> result[int, str]
+    Joins this hub to `channel` on the Redis at `url`: everything sent on any hub sharing that channel reaches every instance's...
+Hub.unshare() -> int
+    Stops sharing; this hub is in-process again.
+Hub.relay_losses() -> RelayLosses
+    What this hub's sharing has lost, for a metric: messages dropped because Redis could not keep up, failed to publish, or...
+
+## spans.sl -- Sending spans to a collector: Jaeger, Tempo, Datadog, Honeycomb, anything that takes OTLP/HTTP.
+gc struct SpanExporterConfig { endpoint: str, service: str, headers: map[str]str, max_queue: int, max_batch: int, flush_every: int, timeout: int }
+    How an exporter behaves.
+struct SpanStats { sent: int, dropped: int, failed: int }
+gc struct SpanExporter { url: str, service: str, headers: map[str]str, max_batch: int, flush_every: int, timeout: int, outbox: chan[str], lock: mutex, pending: int, flushing: int, stopped: bool, sent: int, dropped: int, failed: int, logger: Logger }
+gc struct Span { exporter: SpanExporter, ctx: TraceContext, data: tracewire.SpanData, done: bool }
+    One span in progress.
+span_exporter_config(endpoint: str, service: str) -> SpanExporterConfig
+    Defaults for this collector and service name.
+new_span_exporter(cfg: SpanExporterConfig) -> result[SpanExporter, str]
+    Starts an exporter and its sending task.
+span_exporter_from(cfg: Config) -> result[SpanExporter, str]
+    An exporter from the standard variables: OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_SERVICE_NAME, and OTEL_EXPORTER_OTLP_HEADERS, which...
+SpanExporter.start(ctx: TraceContext, name: str) -> Span
+    A child of `ctx`, running until finish().
+SpanExporter.flush(timeout: int) -> bool
+    Sends what is queued now, and waits up to `timeout` for it to finish.
+SpanExporter.stop()
+    Stops the sending task once what is queued has gone.
+SpanExporter.stats() -> SpanStats
+Span.attr(key: str, value: str) -> Span
+Span.attr_int(key: str, value: int) -> Span
+Span.fail(message: str) -> Span
+    Marks the span failed, for whoever is reading the trace.
+Span.context() -> TraceContext
+    This span's context: for a child of it, or for traced_send.
+Span.finish()
+    Ends the span.
+traced_send(e: SpanExporter, ctx: TraceContext, req: httpc.Request, deadline: until) -> result[httpc.Response, str]
+    httpc.send under a client span, so the service it calls joins this trace at a span that exists.
 
 ## testkit.sl -- Building a request, and reading a response.
 gc struct TestRequest { method: Method, path: str, headers: map[str]str, body: bytes }
@@ -862,9 +994,11 @@ resp_error_fields(r: http.Response) -> [str]
     The field names an error envelope complains about, in order, so a test asserts on the shape rather than on an exact string.
 
 ## tokens.sl -- Opaque bearer tokens.
-gc struct TokenStore { subjects: map[str]str, expires: map[str]int, ttl: int, lock: mutex, since_sweep: int }
+gc struct TokenStore { subjects: map[str]str, expires: map[str]int, ttl: int, lock: mutex, since_sweep: int, remote: opt[redis.Pool], timeout: int }
 new_token_store(ttl_ns: int) -> TokenStore
     `ttl_ns` is how long a token stays valid after it is issued, in nanoseconds; 0 means until it is revoked.
+token_store_redis(p: redis.Pool, ttl_ns: int) -> TokenStore
+    The same store in Redis, shared by every instance behind the balancer.
 new_token() -> result[str, str]
     32 random bytes as 64 lowercase hex characters.
 TokenStore.issue(subject: str) -> result[str, str]
@@ -878,14 +1012,14 @@ TokenStore.revoke(token: str) -> bool
 TokenStore.revoke_subject(subject: str) -> int
     Ends every token issued to `subject` ("log out everywhere", a password change).
 TokenStore.count() -> int
-    How many tokens are held (expired ones count until swept).
+    How many tokens this process holds (expired ones count until swept).
 bearer_subject[S](c: Ctx[S], store: TokenStore) -> opt[str]
     The subject behind the request's `Authorization: Bearer <token>`, or none when the header is missing or the token is not live.
 
 ## tracing.sl -- Request-scoped W3C context, carried explicitly across tasks and calls.
-gc struct TraceConfig { max_parent_bytes: int, max_state_bytes: int, max_state_members: int }
+gc struct TraceConfig { max_parent_bytes: int, max_state_bytes: int, max_state_members: int, sample_ratio: float }
     Startup limits for incoming W3C headers.
-gc struct Tracer { max_parent_bytes: int, max_state_bytes: int, max_state_members: int }
+gc struct Tracer { max_parent_bytes: int, max_state_bytes: int, max_state_members: int, sample_ratio: float }
     Validated, immutable startup tracing settings.
 struct TraceContext { trace_id: str, parent_id: str, span_id: str, sampled: bool, state: str }
     Explicit request context; pass this value when spawning background work.

@@ -638,5 +638,25 @@ a hook that refreshes a cookie.
 `TokenStore.issue(subject)` returns a 64-hex-character token from
 `crypto.rand`; `lookup(token)` gives the subject back (expired tokens
 are dropped), `revoke(token)` logs one session out and
-`revoke_subject(subject)` all of them. Tokens live in memory: they do
-not survive a restart and are not shared between instances.
+`revoke_subject(subject)` all of them. `new_token_store` keeps tokens in
+memory: they do not survive a restart and are not shared between instances.
+
+**Across instances.** A limiter in memory counts per process, so three
+instances allow three times the limit, which quietly weakens login throttling
+as a service scales. These take the same calls and share their state in Redis:
+
+```slang
+// `name` keeps this limiter's counts apart from any other's.
+let limiter = zokor.rate_limiter_redis(pool, "login", 5, 60000000000);
+let tokens = zokor.token_store_redis(pool, 86400000000000);
+```
+
+- **The limiter** is the same sliding log, in a script Redis runs atomically
+  and on its own clock, so instances need not agree on the time. A check waits
+  `limiter.timeout` (100 ms) for Redis, then falls back to this process's own
+  count and adds to `limiter.fallbacks`: an outage weakens the limit by the
+  number of instances, rather than removing it or taking the API down.
+- **The token store** keeps only a SHA-256 of each token, so a dump of Redis
+  holds no working credential. If Redis does not answer, `lookup` finds nothing,
+  so requests are refused rather than let through, and `issue` returns `err`.
+  `count` reports this process only: 0 on Redis.

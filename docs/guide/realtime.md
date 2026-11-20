@@ -37,8 +37,14 @@ and never wait: a send queues the message, and the connection's writer
 task puts it on the wire. A **`Hub`** holds sockets by id and in rooms:
 `add`, `join_room`, `leave_room`, `broadcast`, `to_room`, `get`, `count`,
 `room_size`. A socket leaves every hub it was in when its connection ends.
-The hub is in-process; several instances need their own fan-out between
-them (Redis pub/sub, say).
+A hub is in-process until `hub.share(redis_url, "chat")` joins it to a Redis
+channel: every send then also reaches every other instance's sockets. Sends
+still never wait, and a send's return value counts this instance's sockets.
+Delivery between instances is at most once, as Redis pub/sub is: an instance
+reconnecting misses what was sent meanwhile, and if Redis falls behind by 1024
+messages new ones are dropped. `hub.relay_losses()` counts both. Rooms stay per
+instance, so `room_size` and `count` do not add up other instances. Anyone who
+can publish on the channel can send to your sockets.
 
 Each connection is two tasks: one reads, decodes and calls the handlers in
 order, one message at a time; the other writes. What the settings in

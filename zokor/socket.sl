@@ -11,6 +11,9 @@
 
 import "http";
 import "internal/sio";
+import "json";
+import "redis";
+import "time";
 
 // One queued message. `kind`: 0 a text message, 1 a binary message, 2 a
 // WebSocket frame already encoded (the connection's own pongs and pings),
@@ -312,8 +315,8 @@ impl Socket {
 
 // Sockets by id, and rooms of them: what a chat, a live dashboard or a
 // notification fan-out needs to reach more than the one connection a
-// handler was called for. In-process: a service on several instances
-// needs its own fan-out between them (Redis pub/sub, say) on top.
+// handler was called for. In-process, until hub.share(url, channel)
+// joins this hub to the same channel on every other instance (hub_relay.sl).
 //
 //     let hub = zokor.new_hub();          // in the app's state
 //     hub.add(sock);                      // on open
@@ -326,12 +329,14 @@ pub gc struct Hub {
     lock: mutex,
     sockets: map[str]Socket,
     rooms: map[str]map[str]bool,
+    // Set by share(): what is sent here goes to other instances too.
+    relay: opt[HubRelay],
 }
 
 pub fn new_hub() -> Hub {
     let s: map[str]Socket = {};
     let r: map[str]map[str]bool = {};
-    return Hub { id: new_session_id(), lock: make_mutex(), sockets: s, rooms: r };
+    return Hub { id: new_session_id(), lock: make_mutex(), sockets: s, rooms: r, relay: none };
 }
 
 impl Hub {
@@ -431,18 +436,28 @@ impl Hub {
     // and so is a Socket.IO session, which takes emit_* instead -- one hub
     // can hold both, and a chat open to both calls both.
     pub fn broadcast(self: Hub, text: str, except: str) -> int {
-        return deliver(self.members(""), Out { kind: 0, text: text, data: b"" }, except, false);
+        return self.to_room(room_all(), text, except);
     }
 
     pub fn broadcast_binary(self: Hub, b: bytes, except: str) -> int {
-        return deliver(self.members(""), Out { kind: 1, text: "", data: b }, except, false);
+        return self.to_room_binary(room_all(), b, except);
     }
 
     pub fn to_room(self: Hub, room: str, text: str, except: str) -> int {
-        return deliver(self.members(room), Out { kind: 0, text: text, data: b"" }, except, false);
+        self.relay_send(relay_text(room, text, except));
+        return self.local_text(room, text, except);
     }
 
     pub fn to_room_binary(self: Hub, room: str, b: bytes, except: str) -> int {
+        self.relay_send(relay_binary(room, b, except));
+        return self.local_binary(room, b, except);
+    }
+
+    fn local_text(self: Hub, room: str, text: str, except: str) -> int {
+        return deliver(self.members(room), Out { kind: 0, text: text, data: b"" }, except, false);
+    }
+
+    fn local_binary(self: Hub, room: str, b: bytes, except: str) -> int {
         return deliver(self.members(room), Out { kind: 1, text: "", data: b }, except, false);
     }
 
@@ -450,12 +465,17 @@ impl Hub {
     // once. WebSockets in the hub are skipped.
     pub fn emit_all(self: Hub, namespace: str, name: str, args_json: str,
                     except: str) -> int {
-        let p = Out { kind: 0, text: sio.event(namespace, name, args_json), data: b"" };
-        return deliver(self.members(""), p, except, true);
+        return self.emit_to_room(room_all(), namespace, name, args_json, except);
     }
 
     pub fn emit_to_room(self: Hub, room: str, namespace: str, name: str,
                         args_json: str, except: str) -> int {
+        self.relay_send(relay_event(room, namespace, name, args_json, except));
+        return self.local_event(room, namespace, name, args_json, except);
+    }
+
+    fn local_event(self: Hub, room: str, namespace: str, name: str, args_json: str,
+                   except: str) -> int {
         let p = Out { kind: 0, text: sio.event(namespace, name, args_json), data: b"" };
         return deliver(self.members(room), p, except, true);
     }
@@ -463,6 +483,12 @@ impl Hub {
     // emit_binary to every Socket.IO session in a room ("" for the hub).
     pub fn emit_binary_to_room(self: Hub, room: str, namespace: str, name: str,
                                args_json: str, data: [bytes], except: str) -> int {
+        self.relay_send(relay_binary_event(room, namespace, name, args_json, data, except));
+        return self.local_binary_event(room, namespace, name, args_json, data, except);
+    }
+
+    fn local_binary_event(self: Hub, room: str, namespace: str, name: str, args_json: str,
+                          data: [bytes], except: str) -> int {
         let os = binary_outs(namespace, name, args_json, data);
         let n = 0;
         for s in self.members(room) {
@@ -471,6 +497,111 @@ impl Hub {
             }
         }
         return n;
+    }
+
+    // Joins this hub to `channel` on the Redis at `url`: everything sent
+    // on any hub sharing that channel reaches every instance's sockets.
+    // Call it at startup, once. err when Redis cannot be reached now; after
+    // that it reconnects by itself.
+    pub fn share(self: Hub, url: str, channel: str) -> result[int, str] {
+        if len(channel) == 0 {
+            return err("a shared hub needs a channel");
+        }
+        let pr = redis.new_pool(url, 2);
+        guard let p = pr else let e = err_of(pr) {
+            return err(e);
+        }
+        let dl = until_of(time.mono() + relay_connect_timeout());
+        let sr = redis.subscribe(url, [channel], relay_no_patterns(), dl);
+        guard let sub = sr else let e = err_of(sr) {
+            return err(e);
+        }
+        let box: chan[str] = make_chan(relay_capacity());
+        let rl = HubRelay {
+            pool: p, url: url, channel: channel, outbox: box, lock: make_mutex(),
+            stopped: false, dropped: 0, lost: 0, malformed: 0, reconnects: 0
+        };
+        mutex_lock(self.lock);
+        self.relay = some(rl);
+        mutex_unlock(self.lock);
+        spawn relay_publisher(rl);
+        spawn relay_listener(self, rl, sub);
+        return ok(0);
+    }
+
+    // Stops sharing; this hub is in-process again.
+    pub fn unshare(self: Hub) -> int {
+        mutex_lock(self.lock);
+        let found = self.relay;
+        self.relay = none;
+        mutex_unlock(self.lock);
+        if let rl = found {
+            rl.stop();
+        }
+        return 0;
+    }
+
+    // What this hub's sharing has lost, for a metric: messages dropped
+    // because Redis could not keep up, failed to publish, or arrived
+    // unreadable. All zero on a hub that does not share.
+    pub fn relay_losses(self: Hub) -> RelayLosses {
+        mutex_lock(self.lock);
+        let found = self.relay;
+        mutex_unlock(self.lock);
+        guard let rl = found else {
+            return RelayLosses { dropped: 0, lost: 0, malformed: 0, reconnects: 0 };
+        }
+        return rl.losses();
+    }
+
+    // Queues `w` for the other instances. Never waits: a send in this
+    // file promises not to, and a slow Redis must not stall a handler.
+    fn relay_send(self: Hub, w: HubWire) {
+        mutex_lock(self.lock);
+        let found = self.relay;
+        mutex_unlock(self.lock);
+        guard let rl = found else {
+            return;
+        }
+        w.from = self.id;
+        rl.queue(json.encode(w));
+    }
+
+    // A message from another instance, to this hub's own sockets.
+    fn relay_receive(self: Hub, rl: HubRelay, text: str) {
+        let dr: result[HubWire, str] = json.decode(text);
+        guard let w = dr else {
+            rl.count_malformed();
+            return;
+        }
+        if w.from == self.id {
+            return;
+        }
+        if w.kind == "text" {
+            self.local_text(w.room, w.text, w.except);
+        } else if w.kind == "binary" {
+            let br = relay_unpack(w.data);
+            guard let parts = br else {
+                rl.count_malformed();
+                return;
+            }
+            if len(parts) == 1 {
+                self.local_binary(w.room, parts[0], w.except);
+            } else {
+                rl.count_malformed();
+            }
+        } else if w.kind == "event" {
+            self.local_event(w.room, w.namespace, w.name, w.text, w.except);
+        } else if w.kind == "binary_event" {
+            let br = relay_unpack(w.data);
+            guard let parts = br else {
+                rl.count_malformed();
+                return;
+            }
+            self.local_binary_event(w.room, w.namespace, w.name, w.text, parts, w.except);
+        } else {
+            rl.count_malformed();
+        }
     }
 
     // A snapshot, taken under the lock and sent to outside it: a send

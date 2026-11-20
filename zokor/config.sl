@@ -236,7 +236,7 @@ fn mask(key: str, value: str) -> str {
     let secret = contains(k, "secret") || contains(k, "password") ||
                  contains(k, "token") || contains(k, "key") ||
                  contains(k, "dsn") || contains(k, "url") ||
-                 contains(k, "credential");
+                 contains(k, "credential") || contains(k, "otlp");
     if !secret {
         return "'" + value + "'";
     }
