@@ -102,6 +102,20 @@ jobs:
           docker exec pg pg_isready -U postgres -d zokor_test
           echo "ZOKOR_TEST_DATABASE_URL=postgres://postgres:zokor@127.0.0.1:5432/zokor_test" >> "$GITHUB_ENV"
 
+      # slangc compiles a program twice when a function's frame is over its
+      # limit (once to find it, once with a guard on it) and remembers the
+      # guards in ~/.cache/slang/frames for the next build. zokor's full test
+      # runner has such functions, and on linux-arm64 each compile of it
+      # takes over 400 s, so a cold cache puts Tests at its timeout. A stale
+      # entry is safe: every compile still reports every frame. Saved even
+      # when Tests fails, so a run that timed out still warms the next.
+      - name: Restore frame guards
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/slang/frames
+          key: frames-${{ matrix.name }}-${{ github.sha }}
+          restore-keys: frames-${{ matrix.name }}-
+
       # Verbose, so a crash names the last test that passed; kept, so the
       # runner a crash happened in can be downloaded and its
       # `(image+0x...)` pc resolved with addr2line or atos.
@@ -112,6 +126,13 @@ jobs:
         run: |
           mkdir -p "$TMPDIR"
           make test SLANGC="$SLANGC" TESTFLAGS="-v --keep"
+
+      - name: Save frame guards
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/slang/frames
+          key: frames-${{ matrix.name }}-${{ github.sha }}
 
       - name: Keep the test runners of a failed run
         if: failure()
