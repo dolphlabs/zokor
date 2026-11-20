@@ -202,7 +202,9 @@ into your build.
 slang 0.2.8 or later. zokor v0.2.1's whole suite (`make check`) passes on
 the 0.2.8 release. Older slang releases lack pieces zokor uses: the
 compiler-backed `pg.rows_as`, `link.tls_accept` for HTTPS, and `link.split`
-for served WebSocket and Socket.IO routes.
+for served WebSocket and Socket.IO routes. On `dev`, after v0.2.1,
+`check_password`'s bcrypt and Django scrypt hashes need slang's `dev`
+branch (`crypto.bcrypt_verify` and `crypto.scrypt`) until its next release.
 
 
 # The zokor command
@@ -1400,6 +1402,14 @@ including the OpenSSL 3.0 in Ubuntu 24.04, these calls return `err`, so call
 `hash_password` once at startup if a service depends on it. zokor sets no
 password policy: length rules and breached-password checks are yours.
 
+**Migrated users.** `check_password` also reads the hashes other
+frameworks store: bcrypt (`$2a$`, `$2b$`, `$2y$`, from Rails and
+Laravel), and Django's `pbkdf2_sha256$...` and `scrypt$...`. For these,
+`password_needs_rehash` is always true. Import the old hashes as they are,
+and store `hash_password(password)` after each successful login, so they
+drain away as users come back. bcrypt reads only a password's first 72
+bytes, as bcrypt always has.
+
 ## Background jobs
 
 Work on a schedule, and work queued to run later, on slang's tasks:
@@ -2580,9 +2590,9 @@ cursor_page[S, T](c: Ctx[S], p: Page, rows: [T], key: fn(T) -> [str]) -> http.Re
 hash_password(password: str) -> result[str, str]
     A new salted hash of `password`, at the default cost.
 check_password(password: str, stored: str) -> result[bool, str]
-    Whether `password` matches `stored`.
+    Whether `password` matches `stored`, an Argon2id hash or one of the carried-over formats above.
 password_needs_rehash(stored: str) -> result[bool, str]
-    Whether `stored` is below the current default cost: after a successful check_password, hash the password again and store that.
+    Whether `stored` should be replaced: an Argon2id hash below the current default cost, or any carried-over format.
 password_decoy(password: str)
     The work of one check_password, for when there is no hash to check.
 

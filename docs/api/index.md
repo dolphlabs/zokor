@@ -531,9 +531,9 @@ cursor_page[S, T](c: Ctx[S], p: Page, rows: [T], key: fn(T) -> [str]) -> http.Re
 hash_password(password: str) -> result[str, str]
     A new salted hash of `password`, at the default cost.
 check_password(password: str, stored: str) -> result[bool, str]
-    Whether `password` matches `stored`.
+    Whether `password` matches `stored`, an Argon2id hash or one of the carried-over formats above.
 password_needs_rehash(stored: str) -> result[bool, str]
-    Whether `stored` is below the current default cost: after a successful check_password, hash the password again and store that.
+    Whether `stored` should be replaced: an Argon2id hash below the current default cost, or any carried-over format.
 password_decoy(password: str)
     The work of one check_password, for when there is no hash to check.
 
