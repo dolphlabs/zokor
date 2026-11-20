@@ -69,7 +69,7 @@ lines), add the pin to `slang.project`. The whole file:
 name app
 version 0.1.0
 
-pkg zokor git https://github.com/dolphlabs/zokor tag v0.2.0 dir zokor
+pkg zokor git https://github.com/dolphlabs/zokor tag v0.2.1 dir zokor
 ```
 
 `v0.1.0` and older lived in `src/`: pin those with `dir src`.
@@ -86,8 +86,7 @@ into your build.
 
 ## Requirements
 
-slang's `dev` branch until its next release: typed Postgres mapping needs
-the compiler-backed `pg.rows_as`. zokor also needs generic structs and methods
-and the `dir` sub-directory pin. HTTPS (`TLS_CERT_FILE`) needs `link.tls_accept`
-and served WebSocket and Socket.IO routes need `link.split`, both on
-slang's `dev` branch until its next release.
+slang 0.2.8 or later. zokor v0.2.1's whole suite (`make check`) passes on
+the 0.2.8 release. Older slang releases lack pieces zokor uses: the
+compiler-backed `pg.rows_as`, `link.tls_accept` for HTTPS, and `link.split`
+for served WebSocket and Socket.IO routes.
