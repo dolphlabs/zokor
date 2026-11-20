@@ -55,3 +55,24 @@ fn test_password_decoy_takes_as_long_as_a_real_check() {
     let decoy = (time.mono() - t1) as int;
     assert(decoy * 3 > real);
 }
+
+// Hashes made elsewhere: htpasswd's bcrypt, and Python's hashlib in
+// Django's two formats.
+fn test_password_checks_hashes_from_other_systems() {
+    let hashes = [
+        "$2y$04$Fm.6qJ/hc1KL12qfk5r5Ou1WLcS/Va6Op.Whay8xInoUti2ZIfqQC",
+        "pbkdf2_sha256$1000$seasalt123$KuEnssc6S4MzVSS8Tu48m1RDSrTAn7j3CfgvvjkvfWA=",
+        "scrypt$1024$NaClSalt$8$1$3+AKEn+QQbfs7YP78DSMS6l4KSrl6u/UhL0QeqFeMfL1jAl7PNpU3vT970ttPj99WO9FgIEMfuaL23MriZ82Cw=="
+    ];
+    for h in hashes {
+        assert(check_password("correct horse", h) ?? false, h);
+        assert(!(check_password("wrong horse", h) ?? true), h);
+        assert(password_needs_rehash(h) ?? false, h);
+    }
+    for broken in ["$2y$04$short", "pbkdf2_sha256$x$salt$aGFzaA==", "pbkdf2_sha256$1000$salt$!!!",
+                   "scrypt$1000$salt$8$1$aGFzaGhhc2hoYXNoaGFzaA==", "scrypt$1024$salt$8$1"] {
+        let r = check_password("correct horse", broken);
+        guard let _b = r else { continue; }
+        panic("a broken hash must be an error: " + broken);
+    }
+}

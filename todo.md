@@ -159,6 +159,11 @@ library, made and merged there first.
   `dolphlabs/mongo` (optional, like `redis_from_config`), and the error
   shape for a duplicate key, so a service on Mongo gets what a service on
   Postgres does.
+- [x] **Carried-over password hashes**: `check_password` verifies bcrypt
+  ($2a$/$2b$/$2y$) and Django's pbkdf2_sha256 and scrypt formats, and
+  `password_needs_rehash` is true for them, so a migrated user base is
+  re-hashed to Argon2id at login. Uses slang's `crypto.bcrypt_verify` and
+  `crypto.scrypt` (slang dev, after 0.2.8).
 - [x] **Mail over SMTP**: `mailer_from_config` (`SMTP_URL` as
   `smtps://`, `smtp://` with STARTTLS required, or `smtp+plain://` for
   loopback only), `new_mail`, `m.send`. Protocol and MIME are sans-io in
