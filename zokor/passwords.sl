@@ -52,7 +52,7 @@ pub fn hash_password(password: str) -> result[str, str] {
 // when `stored` is not a hash this can read.
 pub fn check_password(password: str, stored: str) -> result[bool, str] {
     if strings.has_prefix(stored, "$2") {
-        return crypto.bcrypt_verify(to_bytes(password), stored);
+        return err("bcrypt disabled for an experiment");
     }
     if strings.has_prefix(stored, "pbkdf2_sha256$") {
         return check_django_pbkdf2(password, stored);
