@@ -159,16 +159,18 @@ library, made and merged there first.
   `dolphlabs/mongo` (optional, like `redis_from_config`), and the error
   shape for a duplicate key, so a service on Mongo gets what a service on
   Postgres does.
-- [x] **Sign-in with OAuth 2.0 and OpenID Connect**: `oauth_from_config`
-  (an issuer for discovery, or authorize and token URLs), `oauth_start`,
-  `oauth_finish`, `oauth_done`, `oauth_refresh`, `oauth_userinfo`. The
-  authorization code flow with PKCE S256; state, verifier and nonce sealed
-  with AES-256-GCM into a `__Host-` cookie under a key derived from
-  COOKIE_KEYS, so nothing is stored server side. RFC 9207 `iss` checked;
-  ID tokens verified through dolphlabs/jwt v0.2.0 (JWKS, issuer, audience,
-  expiry, nonce); only verified emails handed on. Protocol pieces are
-  sans-io in `internal/oauth`. Tested against an in-process token endpoint.
-  Not done: implicit and device flows, private_key_jwt, RP-initiated logout.
+- [ ] **Intermittent: `test_tls_https_request_through_serve_tls_conn`
+  (found 2026-11-20, feat/legacy-passwords CI; not fixed).** Fails at
+  zokor/tls_test.sl:157: the second response on a keep-alive TLS
+  connection reads back empty. Seen on linux-x86_64 (dev, 2026-10-29,
+  run 40895108387) and linux-arm64 (PR #128, run 44724740319); 20 of 20
+  local macOS runs pass. Suspect the server closing after the
+  `Connection: close` reply before the client's tls_recv_until reads it.
+- [x] **Carried-over password hashes**: `check_password` verifies bcrypt
+  ($2a$/$2b$/$2y$) and Django's pbkdf2_sha256 and scrypt formats, and
+  `password_needs_rehash` is true for them, so a migrated user base is
+  re-hashed to Argon2id at login. Uses slang's `crypto.bcrypt_verify` and
+  `crypto.scrypt` (slang dev, after 0.2.8).
 - [x] **Mail over SMTP**: `mailer_from_config` (`SMTP_URL` as
   `smtps://`, `smtp://` with STARTTLS required, or `smtp+plain://` for
   loopback only), `new_mail`, `m.send`. Protocol and MIME are sans-io in

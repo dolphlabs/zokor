@@ -1478,11 +1478,11 @@
         },
         {
           "signature": "check_password(password: str, stored: str) -> result[bool, str]",
-          "description": "Whether `password` matches `stored`."
+          "description": "Whether `password` matches `stored`, an Argon2id hash or one of the carried-over formats above."
         },
         {
           "signature": "password_needs_rehash(stored: str) -> result[bool, str]",
-          "description": "Whether `stored` is below the current default cost: after a successful check_password, hash the password again and store that."
+          "description": "Whether `stored` should be replaced: an Argon2id hash below the current default cost, or any carried-over format."
         },
         {
           "signature": "password_decoy(password: str)",

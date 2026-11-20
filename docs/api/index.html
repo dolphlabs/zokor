@@ -457,8 +457,8 @@
 <section class="api-module"><h2 id="passwords-sl">passwords.sl<a class="anchor" href="#passwords-sl" aria-label="Link to this section">#</a></h2>
 <p class="api-module-description">Password hashing.</p>
 <div class="api-item" id="passwords-sl-hash-password"><code>hash_password(password: str) -&gt; result[str, str]</code><p>A new salted hash of <code>password</code>, at the default cost.</p></div>
-<div class="api-item" id="passwords-sl-check-password"><code>check_password(password: str, stored: str) -&gt; result[bool, str]</code><p>Whether <code>password</code> matches <code>stored</code>.</p></div>
-<div class="api-item" id="passwords-sl-password-needs-rehash"><code>password_needs_rehash(stored: str) -&gt; result[bool, str]</code><p>Whether <code>stored</code> is below the current default cost: after a successful check_password, hash the password again and store that.</p></div>
+<div class="api-item" id="passwords-sl-check-password"><code>check_password(password: str, stored: str) -&gt; result[bool, str]</code><p>Whether <code>password</code> matches <code>stored</code>, an Argon2id hash or one of the carried-over formats above.</p></div>
+<div class="api-item" id="passwords-sl-password-needs-rehash"><code>password_needs_rehash(stored: str) -&gt; result[bool, str]</code><p>Whether <code>stored</code> should be replaced: an Argon2id hash below the current default cost, or any carried-over format.</p></div>
 <div class="api-item" id="passwords-sl-password-decoy"><code>password_decoy(password: str)</code><p>The work of one check_password, for when there is no hash to check.</p></div>
 </section>
 <section class="api-module"><h2 id="postgres-sl">postgres.sl<a class="anchor" href="#postgres-sl" aria-label="Link to this section">#</a></h2>
