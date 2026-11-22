@@ -18,6 +18,8 @@ import "internal/path";
 import "strings";
 import "json";
 import "builder";
+import "context";
+import "time";
 
 // The HTTP methods, as a closed set. A service names `zokor.Method.GET`,
 // not "GET": a typo is then a compile error rather than a route that
@@ -89,6 +91,14 @@ pub gc struct Ctx[S] {
     // serve loop takes the connection over for once the 101 is written.
     // A shared none otherwise.
     upgrade: opt[Socket],
+    // When this request must be finished by, as an absolute time.mono()
+    // in ns; 0 for no deadline (the router has no request_timeout). An
+    // int, not a Context, so a request that never asks costs nothing:
+    // deadline() and deadline_within() turn it into an `until`.
+    deadline_ns: int,
+    // The request's Context, made by the first call to context() and
+    // released when the request ends. A shared none until then.
+    cx: opt[context.Context],
 }
 
 // A response and the route pattern that produced it, for the request
@@ -205,6 +215,11 @@ pub gc struct Router[S] {
     sockets: [WsRoute[S]],
     // The none every Ctx's and Served's `upgrade` starts as.
     no_socket: opt[Socket],
+    // Off (0) until `r.request_timeout(ns)` or REQUEST_TIMEOUT; see
+    // Ctx.deadline.
+    request_timeout_ns: int,
+    // The none every Ctx's `cx` starts as.
+    no_cx: opt[context.Context],
 }
 
 // An application builds its router from its state alone; everything else
@@ -242,7 +257,9 @@ pub fn new_router[S](state: S) -> Router[S] {
         spans: none,
         request_locals: none,
         sockets: [],
-        no_socket: none
+        no_socket: none,
+        request_timeout_ns: 0,
+        no_cx: none
     };
 }
 
@@ -563,6 +580,31 @@ impl Router[S] {
     // 304 and no body. Off by default: it hashes every such body. A
     // response that already carries an ETag (a handler's own, from
     // `with_validators`) is left alone. Static routes are not tagged.
+    // Gives every request a deadline `ns` from when routing starts, which
+    // Ctx.deadline() hands to whatever the handler waits on: one budget
+    // for the whole request, however many database or upstream calls it
+    // makes, instead of a fresh timeout for each. Sessions, bearer tokens
+    // and idempotency keys stop at it too. Nothing interrupts a handler
+    // that is computing rather than waiting; the calls it waits on fail
+    // once the deadline passes, and the handler answers from that. 0, the
+    // default, is no deadline. Returns -1, changing nothing, for ns < 0.
+    pub fn request_timeout(self: Router[S], ns: int) -> int {
+        if ns < 0 {
+            return -1;
+        }
+        self.request_timeout_ns = ns;
+        return 0;
+    }
+
+    // The deadline a request routed now gets: one clock read, and only
+    // when a timeout is set.
+    fn request_deadline(self: Router[S]) -> int {
+        if self.request_timeout_ns == 0 {
+            return 0;
+        }
+        return (time.mono() as int) + self.request_timeout_ns;
+    }
+
     pub fn etags(self: Router[S]) -> int {
         self.auto_etag = true;
         return 0;
@@ -991,11 +1033,11 @@ impl Router[S] {
                          request_id: str, client_ip: str) -> Served {
         if let driver = self.tracer {
             let generated = trace_context(driver, f.headers);
-            guard let context = generated else { return trace_failed(self, http.wire_request(f), request_id, client_ip); }
-            let scoped = trace_router(self, context);
-            let start = self.span_start(context);
+            guard let tc = generated else { return trace_failed(self, http.wire_request(f), request_id, client_ip); }
+            let scoped = trace_router(self, tc);
+            let start = self.span_start(tc);
             let served = scoped.serve_frame_core(f, request_id, client_ip);
-            self.span_end(context, f.method, served.route, served.resp.status as int, start);
+            self.span_end(tc, f.method, served.route, served.resp.status as int, start);
             return served;
         }
         // Method without from_str: the frame path already holds the
@@ -1067,7 +1109,9 @@ impl Router[S] {
                     out: self.no_lines,
                     locals: self.request_locals,
                     errors: self.errors,
-                    upgrade: self.no_socket
+                    upgrade: self.no_socket,
+                    deadline_ns: self.request_deadline(),
+                    cx: self.no_cx
                 };
                 let resp = self.run(c, r);
                 return Served { resp: resp, route: r.pattern, upgrade: c.upgrade };
@@ -1118,7 +1162,9 @@ impl Router[S] {
                     out: self.no_lines,
                     locals: self.request_locals,
                     errors: self.errors,
-                    upgrade: self.no_socket
+                    upgrade: self.no_socket,
+                    deadline_ns: self.request_deadline(),
+                    cx: self.no_cx
                 };
                 let resp = self.run(c, r);
                 return Served { resp: resp, route: r.pattern, upgrade: c.upgrade };
@@ -1150,11 +1196,11 @@ impl Router[S] {
                       request_id: str, client_ip: str) -> Served {
         if let driver = self.tracer {
             let generated = trace_context(driver, req.raw_headers);
-            guard let context = generated else { return trace_failed(self, req, request_id, client_ip); }
-            let scoped = trace_router(self, context);
-            let start = self.span_start(context);
+            guard let tc = generated else { return trace_failed(self, req, request_id, client_ip); }
+            let scoped = trace_router(self, tc);
+            let start = self.span_start(tc);
             let served = scoped.serve_id_core(req, request_id, client_ip);
-            self.span_end(context, req.method, served.route, served.resp.status as int, start);
+            self.span_end(tc, req.method, served.route, served.resp.status as int, start);
             return served;
         }
         let p = path.strip_query(req.path);
@@ -1175,7 +1221,9 @@ impl Router[S] {
                 out: self.no_lines,
                 locals: self.request_locals,
                 errors: self.errors,
-                upgrade: self.no_socket
+                upgrade: self.no_socket,
+                deadline_ns: self.request_deadline(),
+                cx: self.no_cx
             };
             return Served { resp: self.finish(uc, respond(self.errors, "not_implemented",
                                                           request_id)),
@@ -1254,7 +1302,9 @@ impl Router[S] {
                 out: self.no_lines,
                 locals: self.request_locals,
                 errors: self.errors,
-                upgrade: self.no_socket
+                upgrade: self.no_socket,
+                deadline_ns: self.request_deadline(),
+                cx: self.no_cx
             };
             let resp = self.run(c, r);
             return Served { resp: resp, route: r.pattern, upgrade: c.upgrade };
@@ -1272,7 +1322,9 @@ impl Router[S] {
             out: self.no_lines,
             locals: self.request_locals,
             errors: self.errors,
-            upgrade: self.no_socket
+            upgrade: self.no_socket,
+            deadline_ns: self.request_deadline(),
+            cx: self.no_cx
         };
         if !path_seen {
             if let m = self.observations {
@@ -1350,6 +1402,16 @@ impl Router[S] {
     // `after`s still run, so a logging or header hook cannot be skipped
     // by a short circuit.
     fn run(self: Router[S], c: Ctx[S], r: Route[S]) -> http.Response {
+        let resp = self.run_hooks(c, r);
+        // The request is over: anything still waiting under its context
+        // (a task the handler started, a watched fd) is cancelled with it.
+        if let k = c.cx {
+            context.release(k);
+        }
+        return resp;
+    }
+
+    fn run_hooks(self: Router[S], c: Ctx[S], r: Route[S]) -> http.Response {
         // Ahead of every hook, so nothing downstream sees an unchecked body.
         if self.sanitize != SanitizeMode.OFF {
             let why = sanitize_request(c.req, self.sanitize);
@@ -1489,7 +1551,9 @@ fn static_probe[S](state: S, errors: Registry) -> Ctx[S] {
         out: none,
         locals: none,
         errors: errors,
-        upgrade: none
+        upgrade: none,
+        deadline_ns: 0,
+        cx: none
     };
 }
 
@@ -1655,7 +1719,67 @@ impl Group[S] {
     }
 }
 
+// The earlier of a request deadline (0 for none) and ns from now, as an
+// absolute time.mono() in ns.
+fn earlier_deadline(deadline_ns: int, ns: int) -> int {
+    let at = (time.mono() as int) + ns;
+    if deadline_ns != 0 && deadline_ns < at {
+        return deadline_ns;
+    }
+    return at;
+}
+
 impl Ctx[S] {
+    // When this request must be done by, for every call that waits:
+    //
+    //     zokor.query_all[User](pool, sql, args, c.deadline())
+    //
+    // Never, when the router has no request_timeout.
+    pub fn deadline(self: Ctx[S]) -> until {
+        if self.deadline_ns == 0 {
+            return until_never();
+        }
+        return until_of(self.deadline_ns);
+    }
+
+    // The earlier of the request's deadline and ns from now: for a call
+    // that should give up sooner than the request has to.
+    pub fn deadline_within(self: Ctx[S], ns: int) -> until {
+        return until_of(earlier_deadline(self.deadline_ns, ns));
+    }
+
+    // Nanoseconds left before the request's deadline (0 once passed), or
+    // -1 without one: for a timeout another protocol carries, such as a
+    // database statement_timeout or an outgoing grpc-timeout.
+    pub fn remaining(self: Ctx[S]) -> int {
+        if self.deadline_ns == 0 {
+            return -1;
+        }
+        let left = self.deadline_ns - (time.mono() as int);
+        if left < 0 {
+            return 0;
+        }
+        return left;
+    }
+
+    // The request as a context.Context, for code that takes one: it ends
+    // at the request's deadline, and it is cancelled ("released") when
+    // the request ends, so a task the handler started to work for it
+    // stops with it. Made on first call; a request that never calls this
+    // allocates nothing for it.
+    pub fn context(self: Ctx[S]) -> context.Context {
+        if let k = self.cx {
+            return k;
+        }
+        // A root of its own, not a child of one shared server context:
+        // releasing a child walks its parent's list of children, so a
+        // shared parent would cost every request time in proportion to
+        // how many others are in flight.
+        let k = context.with_deadline_at(context.background(), self.deadline_ns);
+        self.cx = some(k);
+        return k;
+    }
+
     // Empty identifiers when tracing is off. Reserved __zokor_ locals
     // reuse the hook context without increasing every untraced Ctx.
     pub fn trace(self: Ctx[S]) -> TraceContext {

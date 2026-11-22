@@ -258,7 +258,9 @@ fn test_ctx_form_and_upload() {
         out: none,
         locals: none,
         errors: new_registry(),
-        upgrade: none
+        upgrade: none,
+        deadline_ns: 0,
+        cx: none
     };
     let r = c.upload(uploads_allowing(["image/png"]));
     guard let f = r else {
@@ -279,7 +281,9 @@ fn test_ctx_form_and_upload() {
         out: none,
         locals: none,
         errors: new_registry(),
-        upgrade: none
+        upgrade: none,
+        deadline_ns: 0,
+        cx: none
     };
     let r2 = c2.upload(default_uploads());
     guard let _f2 = r2 else let e = err_of(r2) {

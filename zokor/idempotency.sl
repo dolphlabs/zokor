@@ -207,7 +207,7 @@ fn idem_start[S](ip: Idempotency, c: Ctx[S], route: str) -> IdemStart {
 
 fn idem_start_remote[S](ip: Idempotency, c: Ctx[S], p: redis.Pool, slot: str,
                         fp: str) -> IdemStart {
-    let dl = until_of(time.mono() + 2000000000);
+    let dl = c.deadline_within(2000000000);
     let running = to_bytes("running " + fp);
     let sr = redis.pool_do(p, [to_bytes("SET"), to_bytes(slot), running, to_bytes("NX"),
                                to_bytes("PX"), to_bytes(to_str(ip.lock_ttl / 1000000))], dl);

@@ -30,7 +30,9 @@ fn g_router() -> Router[GState] {
         no_tracer: none, spans: none,
         request_locals: none,
         sockets: [],
-        no_socket: none
+        no_socket: none,
+        request_timeout_ns: 0,
+        no_cx: none
     };
 }
 

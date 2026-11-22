@@ -89,8 +89,10 @@ impl TokenStore {
         return self.issue_at(subject, time.mono() as int);
     }
 
-    fn store_deadline(self: TokenStore) -> until {
-        return until_of(time.mono() + self.timeout);
+    // The store's own timeout, cut short by `cap`, the request's deadline
+    // (an absolute time.mono() in ns; 0 for none).
+    fn store_deadline(self: TokenStore, cap: int) -> until {
+        return until_of(earlier_deadline(cap, self.timeout));
     }
 
     fn issue_shared(self: TokenStore, p: redis.Pool, subject: str) -> result[str, str] {
@@ -98,7 +100,7 @@ impl TokenStore {
         guard let tok = r else let e = err_of(r) {
             return err(e);
         }
-        let dl = self.store_deadline();
+        let dl = self.store_deadline(0);
         let slot = token_slot(tok);
         let cmd = [to_bytes("SET"), slot, to_bytes(subject)];
         if self.ttl > 0 {
@@ -145,12 +147,16 @@ impl TokenStore {
     // The subject a live token was issued to; none for an unknown,
     // revoked or expired token (an expired one is dropped on the way).
     pub fn lookup(self: TokenStore, token: str) -> opt[str] {
+        return self.lookup_capped(token, 0);
+    }
+
+    fn lookup_capped(self: TokenStore, token: str, cap: int) -> opt[str] {
         if let p = self.remote {
             if len(token) == 0 {
                 return none;
             }
             let gr = redis.pool_do(p, [to_bytes("GET"), token_slot(token)],
-                                   self.store_deadline());
+                                   self.store_deadline(cap));
             guard let got = gr else {
                 return none;
             }
@@ -231,7 +237,7 @@ impl TokenStore {
     // Whether a token was live and has gone. A failed call answers
     // false: the token may still be live, which a caller must not hide.
     fn revoke_shared(self: TokenStore, p: redis.Pool, token: str) -> bool {
-        let dl = self.store_deadline();
+        let dl = self.store_deadline(0);
         let slot = token_slot(token);
         let gr = redis.pool_do(p, [to_bytes("GET"), slot], dl);
         guard let got = gr else {
@@ -249,7 +255,7 @@ impl TokenStore {
     }
 
     fn revoke_subject_shared(self: TokenStore, p: redis.Pool, subject: str) -> int {
-        let dl = self.store_deadline();
+        let dl = self.store_deadline(0);
         let mr = redis.pool_do(p, [to_bytes("SMEMBERS"), token_index(subject)], dl);
         guard let members = mr else {
             return 0;
@@ -296,5 +302,5 @@ fn sweep_expired(s: TokenStore, now: int) {
 // The subject behind the request's `Authorization: Bearer <token>`, or
 // none when the header is missing or the token is not live.
 pub fn bearer_subject[S](c: Ctx[S], store: TokenStore) -> opt[str] {
-    return store.lookup(c.bearer());
+    return store.lookup_capped(c.bearer(), c.deadline_ns);
 }

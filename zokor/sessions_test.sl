@@ -284,11 +284,11 @@ fn test_session_refuses_a_stored_value_it_cannot_read() {
 fn ss_data(ss: Sessions, user: str) {
     let r = ss_router(ss);
     let token = ss_login_as(r, user, "");
-    let first = ss.load(token) ?? none;
+    let first = ss.load(token, 0) ?? none;
     guard let s = first else { assert(false); return; }
     s.set("cart", "42");
     assert((ss.save(s) ?? -1) == 0);
-    let second = ss.load(token) ?? none;
+    let second = ss.load(token, 0) ?? none;
     guard let again = second else { assert(false); return; }
     assert(again.get("cart") == "42");
     assert(again.get("missing") == "");
@@ -311,10 +311,10 @@ fn test_session_changes_need_a_save() {
     let ss = ss_memory();
     let r = ss_router(ss);
     let token = ss_login_as(r, "ada", "");
-    let first = ss.load(token) ?? none;
+    let first = ss.load(token, 0) ?? none;
     guard let s = first else { assert(false); return; }
     s.set("cart", "42");
-    let second = ss.load(token) ?? none;
+    let second = ss.load(token, 0) ?? none;
     guard let again = second else { assert(false); return; }
     assert(again.get("cart") == "");
 }
@@ -323,7 +323,7 @@ fn test_session_csrf_token_is_compared_exactly() {
     let ss = ss_memory();
     let r = ss_router(ss);
     let token = ss_login_as(r, "ada", "");
-    let got = ss.load(token) ?? none;
+    let got = ss.load(token, 0) ?? none;
     guard let s = got else { assert(false); return; }
     assert(s.csrf_matches(s.csrf));
     assert(!s.csrf_matches(""));
@@ -334,7 +334,7 @@ fn test_session_csrf_token_is_compared_exactly() {
 fn test_session_cookie_needs_the_request_that_started_it() {
     let ss = ss_memory();
     let token = ss_login_as(ss_router(ss), "ada", "");
-    let got = ss.load(token) ?? none;
+    let got = ss.load(token, 0) ?? none;
     guard let s = got else { assert(false); return; }
     let r = session_cookie(ok_json("{}"), ss, s);
     guard let _c = r else {
