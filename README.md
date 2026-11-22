@@ -295,6 +295,7 @@ let sc = zokor.server_config_from(cfg);
 // TRUSTED_PROXIES, PROXY_HEADER, LOG_FORMAT, LOG_LEVEL, LOG_REQUESTS,
 // MAX_CONNECTIONS, TLS_CERT_FILE, TLS_KEY_FILE, TLS_CLIENT_CA_FILE,
 // TLS_HANDSHAKE_TIMEOUT
+r.request_timeout(zokor.request_timeout_from(cfg));   // REQUEST_TIMEOUT
 spawn zokor.listen_and_serve_with(r, port, sc);
 ```
 
@@ -326,6 +327,37 @@ arriving and then stalls -- the slow-loris shape a tight window exists
 to catch; `write_timeout` (10s) bounds sending the response,
 separately, since a client that stopped reading is a different problem
 than one that stopped sending.
+
+Those four bound the connection; **a request deadline** bounds the work
+a request does. `r.request_timeout(ns)` (or `REQUEST_TIMEOUT`, read with
+`zokor.request_timeout_from(cfg)`; off by default) gives each request one
+budget, starting when it is routed, and `c.deadline()` hands it to
+whatever the handler waits on:
+
+```slang
+r.request_timeout(zokor.request_timeout_from(cfg));   // REQUEST_TIMEOUT=10s
+
+fn orders(c: zokor.Ctx[App]) -> http.Response {
+    // Both queries share the request's 10s; neither gets its own.
+    let user = zokor.query_one[User](c.state.db, sql_user, args, c.deadline());
+    let rows = zokor.query_all[Order](c.state.db, sql_orders, args, c.deadline());
+    ...
+}
+```
+
+`c.deadline_within(ns)` is the earlier of the deadline and `ns` from now,
+for a call that should give up sooner; `c.remaining()` is what is left in
+nanoseconds (-1 without a deadline), for a timeout another protocol
+carries. Sessions, bearer-token lookups and idempotency keys stop at the
+deadline too, so a stalled Redis costs the request what it has left, not
+the store's own 2s on top. `c.context()` is the request as a
+`context.Context`, for code that takes one: it ends at the deadline and
+is cancelled when the request ends, so a task the handler started for it
+stops with it. It is made on first use; a request that never asks pays
+one clock read for its deadline and nothing else. Nothing interrupts a
+handler that is computing rather than waiting: the calls it waits on fail
+once the deadline passes, and it answers from that (a `504` is the usual
+choice).
 
 `max_request_bytes` (default 16KB) refuses an oversized request at
 read time -- `431` if the headers alone never complete, `413` if a

@@ -188,6 +188,15 @@ pub fn server_config_from(cfg: Config) -> ServerConfig {
     };
 }
 
+// REQUEST_TIMEOUT from config (a duration, e.g. "10s"), for
+// `r.request_timeout(zokor.request_timeout_from(cfg))`; 0, no deadline,
+// when unset. A router setting rather than a ServerConfig field because
+// the router is what hands the deadline to each request, and tests that
+// call r.serve directly get it too.
+pub fn request_timeout_from(cfg: Config) -> int {
+    return duration_or(cfg, "REQUEST_TIMEOUT", 0);
+}
+
 // TLS_CERT_FILE and TLS_KEY_FILE together turn HTTPS on; one without the
 // other is recorded for check(cfg), as is a client CA with no certificate
 // to go with it. The files are opened when the server starts, not here.
@@ -461,7 +470,7 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
                 if !logging { t0 = time.mono(); }
             }
         }
-        let context = empty_trace();
+        let tctx = empty_trace();
         if let driver = r.tracer {
             let made = trace_context(driver, wf.headers);
             guard let ctx = made else {
@@ -480,7 +489,7 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
                 if logging { log_request(lg, wf.method, "", wf.path, 500, t0, len(failure.body), "", peer_ip, ""); }
                 return;
             }
-            context = ctx;
+            tctx = ctx;
         }
         // The request that HITS max_requests_per_conn is still
         // answered normally -- only the one after it would not be.
@@ -503,12 +512,12 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
                 client = client_ip_of(peer_ip, wf.headers, sc.trusted_proxies);
             }
             let scope = r;
-            if len(context.trace_id) > 0 { scope = trace_router(r, context); }
-            let span_at = r.span_start(context);
+            if len(tctx.trace_id) > 0 { scope = trace_router(r, tctx); }
+            let span_at = r.span_start(tctx);
             let h = spawn dispatch(scope, wf, rid, client);
             let jr = join_wait(h);
             guard let routed = jr else let pe = err_of(jr) {
-                r.span_end(context, wf.method, "", 500, span_at);
+                r.span_end(tctx, wf.method, "", 500, span_at);
                 // The handler panicked. spawn/join_wait already
                 // isolated it -- this task, and the process, are
                 // both still fine -- but the client is still owed an
@@ -540,16 +549,16 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
                     }
                 }
                 if logging {
-                    let bound = traced_logger(lg, context);
+                    let bound = traced_logger(lg, tctx);
                     bound.request_id = rid;
                     bound.error("HTTP", "handler panicked: " + pe +
                              request_suffix(rid));
                     log_request(lg, wf.method, "", wf.path, 500, t0,
-                                len(resp500.body), rid, client, context.trace_id);
+                                len(resp500.body), rid, client, tctx.trace_id);
                 }
                 return;
             }
-            r.span_end(context, wf.method, routed.route, routed.resp.status as int, span_at);
+            r.span_end(tctx, wf.method, routed.route, routed.resp.status as int, span_at);
             if let sock = routed.upgrade {
                 if routed.resp.status == 101 && wf.method == "GET" {
                     // A WebSocket route accepted: the 101, then the
@@ -557,7 +566,7 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
                     let uw = http.write(&mut c, routed.resp, &mut sa, write_deadline(sc));
                     if logging {
                         log_request(lg, wf.method, routed.route, wf.path, 101, t0, 0,
-                                    rid, client, context.trace_id);
+                                    rid, client, tctx.trace_id);
                     }
                     if let m = r.observations {
                         if measured {
@@ -588,7 +597,7 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
             }
             if logging {
                 log_request(lg, wf.method, routed.route, wf.path,
-                            out.status as int, t0, len(out.body), rid, client, context.trace_id);
+                            out.status as int, t0, len(out.body), rid, client, tctx.trace_id);
             }
             if let m = r.observations {
                 if measured {
@@ -638,7 +647,7 @@ pub fn serve_conn[S](r: Router[S], c: link, sc: ServerConfig) {
                 sclient = client_ip_of(peer_ip, wf.headers, sc.trusted_proxies);
             }
             log_request(lg, wf.method, r.routes[si].pattern, wf.path,
-                        resp.status as int, t0, len(resp.body), "", sclient, context.trace_id);
+                        resp.status as int, t0, len(resp.body), "", sclient, tctx.trace_id);
         }
         guard let _n = sw else {
             return;
