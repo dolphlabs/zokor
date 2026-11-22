@@ -1005,7 +1005,14 @@ optionally `PROXY_HEADER=forwarded`, X-Forwarded-For by default).
 `READ_BODY_TIMEOUT`, `WRITE_TIMEOUT`, `SHUTDOWN_TIMEOUT` ("30s"),
 `MAX_REQUEST_BYTES`, `MAX_REQUESTS_PER_CONN`, `REQUEST_IDS`, `TRUSTED_PROXIES`,
 `PROXY_HEADER`, `MAX_CONNECTIONS`, and the `LOG_*` settings. `listen_and_serve(r, port)`
-uses the defaults. A start script: `slangc main.sl -o app && exec ./app`
+uses the defaults. Request deadline: `r.request_timeout(ns)` or
+`r.request_timeout(zokor.request_timeout_from(cfg))` (`REQUEST_TIMEOUT`,
+off by default) gives each request one budget; pass `c.deadline()` to every
+call that waits (queries, Redis, httpc) so they share it.
+`c.deadline_within(ns)` is the earlier of it and ns from now,
+`c.remaining()` the ns left (-1 for none), and `c.context()` a
+`context.Context` released when the request ends. Sessions, bearer tokens
+and idempotency stop at it too. A start script: `slangc main.sl -o app && exec ./app`
 (builds take ~10 s); to test by hand, run `./app > app.log 2>&1 &`,
 poll `/health`, then `kill $!`.
 

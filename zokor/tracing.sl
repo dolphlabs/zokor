@@ -165,7 +165,8 @@ fn trace_router[S](r: Router[S], ctx: TraceContext) -> Router[S] {
         static_paths: r.static_paths, idem: r.idem, gzip: r.gzip, mounts: r.mounts,
         no_lines: r.no_lines, observations: r.observations, tracer: r.no_tracer,
         no_tracer: r.no_tracer, spans: r.spans, request_locals: trace_locals(ctx),
-        sockets: r.sockets, no_socket: r.no_socket };
+        sockets: r.sockets, no_socket: r.no_socket,
+        request_timeout_ns: r.request_timeout_ns, no_cx: r.no_cx };
 }
 
 fn trace_failed[S](r: Router[S], req: http.Request, rid: str, client: str) -> Served {

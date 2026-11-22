@@ -194,7 +194,9 @@ fn test_ctx_json_body() {
         out: none,
         locals: none,
         errors: new_registry(),
-        upgrade: none
+        upgrade: none,
+        deadline_ns: 0,
+        cx: none
     };
     let r = c.json_body();
     guard let j = r else {

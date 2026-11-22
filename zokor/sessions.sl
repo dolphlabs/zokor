@@ -185,8 +185,10 @@ fn sweep_every() -> int {
 }
 
 impl Sessions {
-    fn store_deadline(self: Sessions) -> until {
-        return until_of(time.mono() + self.timeout);
+    // The store's own timeout, cut short by `cap`, the request's deadline
+    // (an absolute time.mono() in ns; 0 for none).
+    fn store_deadline(self: Sessions, cap: int) -> until {
+        return until_of(earlier_deadline(cap, self.timeout));
     }
 
     fn now_ns(self: Sessions) -> int {
@@ -232,7 +234,7 @@ impl Sessions {
         }
     }
 
-    fn put(self: Sessions, s: Session, now: int) -> result[int, str] {
+    fn put(self: Sessions, s: Session, now: int, cap: int) -> result[int, str] {
         let left = self.time_left(s, now);
         if left <= 0 {
             return err("the session has expired");
@@ -241,7 +243,7 @@ impl Sessions {
             subject: s.subject, data: s.data, csrf: s.csrf, created: s.created, seen: s.seen
         });
         if let p = self.remote {
-            let dl = self.store_deadline();
+            let dl = self.store_deadline(cap);
             let ms = left / timez.MILLISECOND;
             if ms < 1 {
                 ms = 1;
@@ -272,11 +274,11 @@ impl Sessions {
 
     // Remembers a new session under its subject, for end_all. Redis keeps
     // the set no longer than the longest session in it can live.
-    fn index(self: Sessions, s: Session) -> result[int, str] {
+    fn index(self: Sessions, s: Session, cap: int) -> result[int, str] {
         guard let p = self.remote else {
             return ok(0);
         }
-        let dl = self.store_deadline();
+        let dl = self.store_deadline(cap);
         let ar = redis.pool_do(p, [to_bytes("SADD"), remote_index(s.subject), to_bytes(s.key)], dl);
         guard let _a = ar else let e = err_of(ar) {
             return err("session store: " + e);
@@ -289,9 +291,9 @@ impl Sessions {
         return ok(0);
     }
 
-    fn fetch(self: Sessions, key: str, now: int) -> result[opt[str], str] {
+    fn fetch(self: Sessions, key: str, now: int, cap: int) -> result[opt[str], str] {
         if let p = self.remote {
-            let gr = redis.pool_do(p, [to_bytes("GET"), remote_slot(key)], self.store_deadline());
+            let gr = redis.pool_do(p, [to_bytes("GET"), remote_slot(key)], self.store_deadline(cap));
             guard let got = gr else let e = err_of(gr) {
                 return err("session store: " + e);
             }
@@ -315,9 +317,9 @@ impl Sessions {
         return ok(some(held.text));
     }
 
-    fn forget(self: Sessions, key: str, subject: str) -> result[int, str] {
+    fn forget(self: Sessions, key: str, subject: str, cap: int) -> result[int, str] {
         if let p = self.remote {
-            let dl = self.store_deadline();
+            let dl = self.store_deadline(cap);
             let dr = redis.pool_do(p, [to_bytes("DEL"), remote_slot(key)], dl);
             guard let _d = dr else let e = err_of(dr) {
                 return err("session store: " + e);
@@ -338,13 +340,13 @@ impl Sessions {
     // written back only once a tenth of idle_ttl has passed, so a burst of
     // requests is not a burst of writes; that much is all its idle time
     // can be short by.
-    fn load(self: Sessions, token: str) -> result[opt[Session], str] {
+    fn load(self: Sessions, token: str, cap: int) -> result[opt[Session], str] {
         if !session_token_ok(token) {
             return ok(none);
         }
         let key = session_key(token);
         let now = self.now_ns();
-        let fr = self.fetch(key, now);
+        let fr = self.fetch(key, now, cap);
         guard let found = fr else let e = err_of(fr) {
             return err(e);
         }
@@ -361,7 +363,7 @@ impl Sessions {
             seen: st.seen, key: key, token: ""
         };
         if self.time_left(s, now) <= 0 {
-            let fg = self.forget(key, s.subject);
+            let fg = self.forget(key, s.subject, cap);
             guard let _f = fg else let e = err_of(fg) {
                 return err(e);
             }
@@ -370,21 +372,21 @@ impl Sessions {
         if now - s.seen >= self.idle_ttl / 10 {
             s.seen = now;
             // A failed touch costs idle time, not this request.
-            let _p = self.put(s, now);
+            let _p = self.put(s, now, cap);
         }
         return ok(some(s));
     }
 
     // Stores what has changed in `s`.
     pub fn save(self: Sessions, s: Session) -> result[int, str] {
-        return self.put(s, self.now_ns());
+        return self.put(s, self.now_ns(), 0);
     }
 
     // Ends every session of `subject`, on every device: after a password
     // change, or to lock an account. Returns how many ended.
     pub fn end_all(self: Sessions, subject: str) -> result[int, str] {
         if let p = self.remote {
-            let dl = self.store_deadline();
+            let dl = self.store_deadline(0);
             let mr = redis.pool_do(p, [to_bytes("SMEMBERS"), remote_index(subject)], dl);
             guard let members = mr else let e = err_of(mr) {
                 return err("session store: " + e);
@@ -441,12 +443,12 @@ pub fn session_start[S](c: Ctx[S], ss: Sessions, subject: str) -> result[Session
     if len(subject) == 0 {
         return err("a session needs a subject");
     }
-    let lr = ss.load(c.cookie(ss.cookie.name));
+    let lr = ss.load(c.cookie(ss.cookie.name), c.deadline_ns);
     guard let before = lr else let e = err_of(lr) {
         return err(e);
     }
     if let old = before {
-        let fg = ss.forget(old.key, old.subject);
+        let fg = ss.forget(old.key, old.subject, c.deadline_ns);
         guard let _f = fg else let e = err_of(fg) {
             return err(e);
         }
@@ -465,11 +467,11 @@ pub fn session_start[S](c: Ctx[S], ss: Sessions, subject: str) -> result[Session
         subject: subject, csrf: csrf, created: now, data: data, seen: now,
         key: session_key(token), token: token
     };
-    let pr = ss.put(s, now);
+    let pr = ss.put(s, now, c.deadline_ns);
     guard let _p = pr else let e = err_of(pr) {
         return err(e);
     }
-    let ir = ss.index(s);
+    let ir = ss.index(s, c.deadline_ns);
     guard let _i = ir else let e = err_of(ir) {
         return err(e);
     }
@@ -487,7 +489,7 @@ pub fn session_cookie(resp: http.Response, ss: Sessions, s: Session) -> result[h
 // The request's session, none when it has no good one. err when the
 // store cannot say: treat that as a failure, not as logged out.
 pub fn session_of[S](c: Ctx[S], ss: Sessions) -> result[opt[Session], str] {
-    return ss.load(c.cookie(ss.cookie.name));
+    return ss.load(c.cookie(ss.cookie.name), c.deadline_ns);
 }
 
 // The request's session, or the response to send: 401 without one, 503
@@ -510,7 +512,7 @@ pub fn session_end[S](c: Ctx[S], ss: Sessions, resp: http.Response) -> result[ht
         return err(e);
     }
     if let s = found {
-        let fg = ss.forget(s.key, s.subject);
+        let fg = ss.forget(s.key, s.subject, c.deadline_ns);
         guard let _f = fg else let e = err_of(fg) {
             return err(e);
         }

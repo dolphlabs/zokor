@@ -1725,7 +1725,7 @@
           "description": "The HTTP methods, as a closed set."
         },
         {
-          "signature": "gc struct Ctx[S] { state: S, req: http.Request, params: opt[map[str]str], param1_name: str, param1_value: str, route: str, request_id: str, client_ip: str, out: opt[[str]], locals: opt[map[str]str], errors: Registry, upgrade: opt[Socket] }",
+          "signature": "gc struct Ctx[S] { state: S, req: http.Request, params: opt[map[str]str], param1_name: str, param1_value: str, route: str, request_id: str, client_ip: str, out: opt[[str]], locals: opt[map[str]str], errors: Registry, upgrade: opt[Socket], deadline_ns: int, cx: opt[context.Context] }",
           "description": ""
         },
         {
@@ -1737,7 +1737,7 @@
           "description": ""
         },
         {
-          "signature": "gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security, sanitize: SanitizeMode, auto_etag: bool, rindex: [RNode], static_paths: map[str]int, idem: opt[Idempotency], gzip: opt[Compression], mounts: [FileMount], no_lines: opt[[str]], observations: opt[Metrics], tracer: opt[Tracer], no_tracer: opt[Tracer], spans: opt[SpanExporter], request_locals: opt[map[str]str], sockets: [WsRoute[S]], no_socket: opt[Socket] }",
+          "signature": "gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security, sanitize: SanitizeMode, auto_etag: bool, rindex: [RNode], static_paths: map[str]int, idem: opt[Idempotency], gzip: opt[Compression], mounts: [FileMount], no_lines: opt[[str]], observations: opt[Metrics], tracer: opt[Tracer], no_tracer: opt[Tracer], spans: opt[SpanExporter], request_locals: opt[map[str]str], sockets: [WsRoute[S]], no_socket: opt[Socket], request_timeout_ns: int, no_cx: opt[context.Context] }",
           "description": "A `before` runs ahead of the handler and may end the request by returning a response; `none` carries on."
         },
         {
@@ -1825,8 +1825,12 @@
           "description": ""
         },
         {
-          "signature": "Router.etags() -> int",
+          "signature": "Router.request_timeout(ns: int) -> int",
           "description": "Tags every 200 answer to a GET or HEAD with a strong ETag -- a hash of the body it sends -- and answers a matching..."
+        },
+        {
+          "signature": "Router.etags() -> int",
+          "description": ""
         },
         {
           "signature": "Router.idempotency(store: Idempotency) -> int",
@@ -1991,6 +1995,22 @@
         {
           "signature": "Group.options(p: str, h: fn(Ctx[S]) -> http.Response) -> int",
           "description": ""
+        },
+        {
+          "signature": "Ctx.deadline() -> until",
+          "description": "When this request must be done by, for every call that waits:      zokor.query_all[User](pool, sql, args, c.deadline()) ..."
+        },
+        {
+          "signature": "Ctx.deadline_within(ns: int) -> until",
+          "description": "The earlier of the request's deadline and ns from now: for a call that should give up sooner than the request has to."
+        },
+        {
+          "signature": "Ctx.remaining() -> int",
+          "description": "Nanoseconds left before the request's deadline (0 once passed), or -1 without one: for a timeout another protocol carries,..."
+        },
+        {
+          "signature": "Ctx.context() -> context.Context",
+          "description": "The request as a context.Context, for code that takes one: it ends at the request's deadline, and it is cancelled (\"released\")..."
         },
         {
           "signature": "Ctx.trace() -> TraceContext",
@@ -2213,6 +2233,10 @@
         {
           "signature": "server_config_from(cfg: Config) -> ServerConfig",
           "description": "The same defaults, overridable per field from config: IDLE_TIMEOUT, READ_HEADER_TIMEOUT, READ_BODY_TIMEOUT, WRITE_TIMEOUT,..."
+        },
+        {
+          "signature": "request_timeout_from(cfg: Config) -> int",
+          "description": "REQUEST_TIMEOUT from config (a duration, e.g."
         },
         {
           "signature": "serve_conn[S](r: Router[S], c: link, sc: ServerConfig)",

@@ -657,11 +657,11 @@ cache_for(r: http.Response, seconds: int) -> http.Response
 ## router.sl -- The router: a request goes in, a response comes out, and the application's own state comes with it.
 enum Method { GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, TRACE, CONNECT }
     The HTTP methods, as a closed set.
-gc struct Ctx[S] { state: S, req: http.Request, params: opt[map[str]str], param1_name: str, param1_value: str, route: str, request_id: str, client_ip: str, out: opt[[str]], locals: opt[map[str]str], errors: Registry, upgrade: opt[Socket] }
+gc struct Ctx[S] { state: S, req: http.Request, params: opt[map[str]str], param1_name: str, param1_value: str, route: str, request_id: str, client_ip: str, out: opt[[str]], locals: opt[map[str]str], errors: Registry, upgrade: opt[Socket], deadline_ns: int, cx: opt[context.Context] }
 struct Served { resp: http.Response, route: str, upgrade: opt[Socket] }
     A response and the route pattern that produced it, for the request log.
 gc struct Route[S] { method: Method, pattern: str, befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], segs: [str], names: [str], wild: int, fkind: int, fpath: str, handler: fn(Ctx[S]) -> http.Response, has_static: bool, static_status: i32, static_ctype: str, static_body: bytes, static_rendered: bytes, static_hit: opt[http.StaticBody], static_close_hit: opt[http.StaticBody], no_map: opt[map[str]str], ws: int }
-gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security, sanitize: SanitizeMode, auto_etag: bool, rindex: [RNode], static_paths: map[str]int, idem: opt[Idempotency], gzip: opt[Compression], mounts: [FileMount], no_lines: opt[[str]], observations: opt[Metrics], tracer: opt[Tracer], no_tracer: opt[Tracer], spans: opt[SpanExporter], request_locals: opt[map[str]str], sockets: [WsRoute[S]], no_socket: opt[Socket] }
+gc struct Router[S] { routes: [Route[S]], befores: [fn(Ctx[S]) -> opt[http.Response]], afters: [fn(Ctx[S], http.Response) -> http.Response], state: S, errors: Registry, auto_options: bool, auto_head: bool, ready: Readiness[S], cors: Cors, security: Security, sanitize: SanitizeMode, auto_etag: bool, rindex: [RNode], static_paths: map[str]int, idem: opt[Idempotency], gzip: opt[Compression], mounts: [FileMount], no_lines: opt[[str]], observations: opt[Metrics], tracer: opt[Tracer], no_tracer: opt[Tracer], spans: opt[SpanExporter], request_locals: opt[map[str]str], sockets: [WsRoute[S]], no_socket: opt[Socket], request_timeout_ns: int, no_cx: opt[context.Context] }
     A `before` runs ahead of the handler and may end the request by returning a response; `none` carries on.
 new_router[S](state: S) -> Router[S]
     An application builds its router from its state alone; everything else starts empty or at the default a correct server should...
@@ -694,8 +694,9 @@ Router.guarded(method: Method, pattern: str, h: fn(Ctx[S]) -> http.Response, bef
     Middleware for one route, which is the other half of the same need: `r.guarded(Method.DELETE, "/orgs/:id", drop,...
 Router.before(f: fn(Ctx[S]) -> opt[http.Response]) -> int
 Router.after(f: fn(Ctx[S], http.Response) -> http.Response) -> int
-Router.etags() -> int
+Router.request_timeout(ns: int) -> int
     Tags every 200 answer to a GET or HEAD with a strong ETag -- a hash of the body it sends -- and answers a matching...
+Router.etags() -> int
 Router.idempotency(store: Idempotency) -> int
     Answers a retried POST or PATCH that carries an Idempotency-Key with the first answer, from `store` (see idempotency.sl).
 Router.compress(z: Compression) -> int
@@ -760,6 +761,14 @@ Group.put(p: str, h: fn(Ctx[S]) -> http.Response) -> int
 Group.patch(p: str, h: fn(Ctx[S]) -> http.Response) -> int
 Group.delete(p: str, h: fn(Ctx[S]) -> http.Response) -> int
 Group.options(p: str, h: fn(Ctx[S]) -> http.Response) -> int
+Ctx.deadline() -> until
+    When this request must be done by, for every call that waits:      zokor.query_all[User](pool, sql, args, c.deadline()) ...
+Ctx.deadline_within(ns: int) -> until
+    The earlier of the request's deadline and ns from now: for a call that should give up sooner than the request has to.
+Ctx.remaining() -> int
+    Nanoseconds left before the request's deadline (0 once passed), or -1 without one: for a timeout another protocol carries,...
+Ctx.context() -> context.Context
+    The request as a context.Context, for code that takes one: it ends at the request's deadline, and it is cancelled ("released")...
 Ctx.trace() -> TraceContext
     Empty identifiers when tracing is off.
 Ctx.trace_request(req: httpc.Request) -> result[httpc.Request, str]
@@ -849,6 +858,8 @@ default_server_config() -> ServerConfig
     Safe rather than infinite, per the todo item this answers.
 server_config_from(cfg: Config) -> ServerConfig
     The same defaults, overridable per field from config: IDLE_TIMEOUT, READ_HEADER_TIMEOUT, READ_BODY_TIMEOUT, WRITE_TIMEOUT,...
+request_timeout_from(cfg: Config) -> int
+    REQUEST_TIMEOUT from config (a duration, e.g.
 serve_conn[S](r: Router[S], c: link, sc: ServerConfig)
     One connection, until the client goes away or asks to close.
 gc struct ConnGate { lock: mutex, open: int, max: int, refused: int, reported_at: int }
