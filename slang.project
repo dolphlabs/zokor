@@ -1,5 +1,5 @@
 name zokor
-version 0.1.0
+version 0.3.0
 exclude bench
 exclude docs
 exclude examples
