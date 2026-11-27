@@ -842,6 +842,9 @@ fn accept_loop[S](r: Router[S], ln: link, sc: ServerConfig, gate: ConnGate,
             }
             continue;
         }
+        if proc.shutdown_requested() {
+            break;
+        }
         if backoff == 0 {
             sc.logger.error("Server", "accept failed: " + why +
                             " (backing off; at the open-file limit, raise it or MAX_CONNECTIONS)");
